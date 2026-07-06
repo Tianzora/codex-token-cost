@@ -1,0 +1,8 @@
+*
+
+!.gitignore
+!README.md
+!scripts/
+!scripts/codex-live-token-cost.js
+!scripts/codex-local-usage-helper.cjs
+!scripts/start-helper.ps1
