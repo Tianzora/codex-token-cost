@@ -40,6 +40,12 @@ Codex Token Cost 是一个面向 Codex++ 的本地 userscript。它在 Codex 输
 
 ![Codex Token Cost 使用统计面板](docs/images/codex-token-cost-usage.png)
 
+### 本地 Profile
+
+解锁 Codex 个人 Profile，展示本地累计 Token、活跃热力图、连续使用天数、推理强度以及 skill / plugin 使用情况。
+
+![Codex Token Cost 解锁后的个人 Profile](docs/images/codex-token-cost-profile.png)
+
 ### 模型价格
 
 内置常用模型价格，并允许为新模型添加或覆盖本地定价。缓存读取和缓存写入分别计价。

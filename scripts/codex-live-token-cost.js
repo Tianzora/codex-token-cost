@@ -224,6 +224,7 @@
     newConversationSessionKeyAt: 0,
     startupSessionKey: `new:startup:${Date.now().toString(36)}`,
     localLedger: [],
+    localUsageArchive: { version: 1, updatedAt: 0, days: {} },
     localLedgerLoaded: false,
     localLast: null,
     localCurrentTurn: null,
@@ -1602,16 +1603,18 @@
     const saved = loadJson(LOCAL_USAGE_KEY, null);
     state.localLedgerLoaded = true;
     if (!Array.isArray(saved?.turns)) return;
-    const loaded = saved.turns.filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item))).slice(-LOCAL_LEDGER_LIMIT);
-    const removedTransient = loaded.length !== saved.turns.filter((item) => normalizeUsage(item?.usage).exact).slice(-LOCAL_LEDGER_LIMIT).length;
-    state.localLedger = loaded;
+    const valid = saved.turns.filter((item) => normalizeUsage(item?.usage).exact);
+    const compacted = compactLocalLedger(saved.turns, saved.archive);
+    const removedEntries = compacted.turns.length !== valid.length;
+    state.localLedger = compacted.turns;
+    state.localUsageArchive = compacted.archive;
     state.localLast = state.localLedger[state.localLedger.length - 1] || null;
     state.localTurnSeq = toCount(saved.seq);
     for (const [sourceKey, targetKey] of Object.entries(saved.sessionAliases || {})) {
       if (!isClientNewThreadKey(sourceKey) || !targetKey || isClientNewThreadKey(targetKey)) continue;
       state.sessionAliases.set(sourceKey.replace(/^local:/, ""), normalizeText(targetKey, 240));
     }
-    if (removedTransient || isTransientSessionKey(turnSessionKey(saved.last))) saveLocalLedger();
+    if (removedEntries || isTransientSessionKey(turnSessionKey(saved.last))) saveLocalLedger();
   }
 
   function ensureLocalLedgerLoaded() {
@@ -1620,18 +1623,21 @@
 
   function saveLocalLedger() {
     try {
-      state.localLedger = state.localLedger.filter((item) => !isTransientSessionKey(turnSessionKey(item)));
+      const compacted = compactLocalLedger(state.localLedger, state.localUsageArchive);
+      state.localLedger = compacted.turns;
+      state.localUsageArchive = compacted.archive;
       if (isTransientSessionKey(turnSessionKey(state.localLast))) state.localLast = state.localLedger[state.localLedger.length - 1] || null;
       localStorage.setItem(
         LOCAL_USAGE_KEY,
         JSON.stringify({
-          turns: state.localLedger.slice(-LOCAL_LEDGER_LIMIT),
+          turns: state.localLedger,
+          archive: state.localUsageArchive,
           last: state.localLast,
           seq: state.localTurnSeq,
           sessionAliases: Object.fromEntries(state.sessionAliases),
         }),
       );
-      refreshAnalyticsRollupDates(localDateKey(turnTimestampMs(state.localLast)));
+      refreshAnalyticsRollupDates([...compacted.dates, localDateKey(turnTimestampMs(state.localLast))]);
     } catch {
       // Ignore quota or privacy-mode failures.
     }
@@ -1691,6 +1697,96 @@
     };
   }
 
+  function trimLocalLedger(turns) {
+    const exact = (Array.isArray(turns) ? turns : [])
+      .filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item)));
+    const local = exact.filter((turn) => {
+      const source = normalizeText(turn?.source, 80);
+      const importSource = normalizeText(turn?.importSource, 80);
+      return source !== "cc-switch" && importSource !== "cc-switch";
+    });
+    const retainedLocal = new Set(local.slice(-LOCAL_LEDGER_LIMIT));
+    return exact.filter((turn) => {
+      const source = normalizeText(turn?.source, 80);
+      const importSource = normalizeText(turn?.importSource, 80);
+      return source === "cc-switch" || importSource === "cc-switch" || retainedLocal.has(turn);
+    });
+  }
+
+  function normalizeLocalUsageArchive(raw) {
+    return raw?.version === 1 && raw.days && typeof raw.days === "object"
+      ? { version: 1, updatedAt: toCount(raw.updatedAt), days: raw.days }
+      : { version: 1, updatedAt: 0, days: {} };
+  }
+
+  function localUsageArchiveTurns(archive = state.localUsageArchive, dates = null) {
+    const source = normalizeLocalUsageArchive(archive);
+    const targets = dates ? new Set(Array.from(dates).map((date) => normalizeText(date, 10)).filter(Boolean)) : null;
+    const rollup = targets
+      ? { ...source, days: Object.fromEntries(Object.entries(source.days).filter(([date]) => targets.has(date))) }
+      : source;
+    return analyticsTurnsFromRollup(rollup).map((turn) => ({
+      ...turn,
+      turnId: turn.turnId.replace(/^analytics:/, "local-archive:"),
+      source: "local-usage-archive",
+    }));
+  }
+
+  function mergeLocalUsageArchive(archive, turns) {
+    const items = Array.isArray(turns) ? turns : [];
+    if (!items.length) return normalizeLocalUsageArchive(archive);
+    const rollup = buildAnalyticsRollup([...localUsageArchiveTurns(archive), ...items]);
+    return { version: 1, updatedAt: Date.now(), days: rollup.days };
+  }
+
+  function compactLocalLedger(turns, archive = null) {
+    const exact = (Array.isArray(turns) ? turns : [])
+      .filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item)));
+    const retained = trimLocalLedger(exact);
+    const retainedSet = new Set(retained);
+    const ccImportedAtByDate = new Map();
+    for (const turn of exact) {
+      const source = normalizeText(turn?.source, 80);
+      const importSource = normalizeText(turn?.importSource, 80);
+      if (source !== "cc-switch" && importSource !== "cc-switch") continue;
+      const date = localDateKey(turnTimestampMs(turn));
+      ccImportedAtByDate.set(date, Math.max(toCount(ccImportedAtByDate.get(date)), toCount(turn.importedAt || turn.observedAt || turn.createdAt)));
+    }
+    const evicted = exact.filter((turn) => {
+      const source = normalizeText(turn?.source, 80);
+      const importSource = normalizeText(turn?.importSource, 80);
+      return source !== "cc-switch" && importSource !== "cc-switch" && !retainedSet.has(turn);
+    });
+    const uncovered = evicted.filter((turn) => {
+      const importedAt = toCount(ccImportedAtByDate.get(localDateKey(turnTimestampMs(turn))));
+      return !importedAt || turnTimestampMs(turn) >= importedAt;
+    });
+    return {
+      turns: retained,
+      archive: mergeLocalUsageArchive(archive, uncovered),
+      evicted: evicted.length,
+      archived: uncovered.length,
+      dates: Array.from(new Set(uncovered.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+    };
+  }
+
+  function removeLocalUsageArchiveDates(dates) {
+    const targets = new Set((Array.isArray(dates) ? dates : [dates]).map((date) => normalizeText(date, 10)).filter(Boolean));
+    if (!targets.size) return false;
+    const archive = normalizeLocalUsageArchive(state.localUsageArchive);
+    let changed = false;
+    for (const date of targets) {
+      if (!archive.days[date]) continue;
+      delete archive.days[date];
+      changed = true;
+    }
+    if (changed) {
+      archive.updatedAt = Date.now();
+      state.localUsageArchive = archive;
+    }
+    return changed;
+  }
+
   function importLocalUsageTurns(rows, options = {}) {
     ensureLocalLedgerLoaded();
     const items = Array.isArray(rows) ? rows : [];
@@ -1700,6 +1796,7 @@
     const byId = new Map(existing.map((turn) => [turn.turnId, turn]));
     let imported = 0;
     let skipped = 0;
+    const importedDates = new Set();
     items.forEach((row, index) => {
       const turn = normalizeImportedUsageTurn(row, index, { importedAt });
       if (!turn) {
@@ -1707,12 +1804,13 @@
         return;
       }
       byId.set(turn.turnId, turn);
+      if (replaceSource === "cc-switch") importedDates.add(localDateKey(turnTimestampMs(turn)));
       imported++;
     });
-    state.localLedger = Array.from(byId.values())
-      .filter((item) => normalizeUsage(item?.usage).exact)
-      .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")))
-      .slice(-LOCAL_LEDGER_LIMIT);
+    state.localLedger = Array.from(byId.values()).sort(
+      (a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")),
+    );
+    if (replaceSource === "cc-switch") removeLocalUsageArchiveDates(Array.from(importedDates));
     state.localLast = state.localLedger[state.localLedger.length - 1] || null;
     saveLocalLedger();
     if (replaceSource) rebuildAnalyticsRollup();
@@ -3014,7 +3112,7 @@
     const metric = localTurnMetric(localCurrentTurn(key));
     if (!metric) return false;
     state.localLast = { ...metric, persistReason: reason };
-    state.localLedger = state.localLedger.filter((item) => item.turnId !== metric.turnId).concat(state.localLast).slice(-LOCAL_LEDGER_LIMIT);
+    state.localLedger = state.localLedger.filter((item) => item.turnId !== metric.turnId).concat(state.localLast);
     state.localPersistedUsage.set(usageKey(metric.usage), Date.now());
     saveLocalLedger();
     rememberDailyUsage(metric);
@@ -3383,7 +3481,7 @@
     state.analyticsRollup = saved?.version === 1 && saved.days && typeof saved.days === "object" ? pruneAnalyticsRollup(saved) : null;
     if (!state.analyticsRollup) {
       ensureLocalLedgerLoaded();
-      state.analyticsRollup = pruneAnalyticsRollup(buildAnalyticsRollup(state.localLedger));
+      state.analyticsRollup = pruneAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurns(), ...state.localLedger]));
       saveAnalyticsRollup(state.analyticsRollup);
     }
     return state.analyticsRollup;
@@ -3403,7 +3501,7 @@
 
   function rebuildAnalyticsRollup() {
     ensureLocalLedgerLoaded();
-    return saveAnalyticsRollup(buildAnalyticsRollup(state.localLedger));
+    return saveAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurns(), ...state.localLedger]));
   }
 
   function refreshAnalyticsRollupDates(dates) {
@@ -3411,7 +3509,9 @@
     const targets = new Set((Array.isArray(dates) ? dates : [dates]).map((date) => normalizeText(date, 10)).filter(Boolean));
     if (!targets.size) return false;
     const next = loadAnalyticsRollup();
-    const partial = buildAnalyticsRollup(state.localLedger.filter((turn) => targets.has(localDateKey(turnTimestampMs(turn)))));
+    const partial = buildAnalyticsRollup(
+      [...localUsageArchiveTurns(state.localUsageArchive, targets), ...state.localLedger].filter((turn) => targets.has(localDateKey(turnTimestampMs(turn)))),
+    );
     for (const date of targets) {
       if (partial.days[date]) next.days[date] = partial.days[date];
       else delete next.days[date];
@@ -3543,7 +3643,12 @@
     const customEnd = options.customEnd || state.analyticsCustomEnd;
     const range = analyticsRangeForPreset(preset, now, { start: parseLocalDateInput(customStart), end: parseLocalDateInput(customEnd) });
     const previousRange = analyticsComparisonRange(range, preset);
-    const sourceTurns = Array.isArray(options.turns) ? options.turns : preset === "today" ? state.localLedger : analyticsTurnsFromRollup(loadAnalyticsRollup());
+    const sourceTurns =
+      Array.isArray(options.turns)
+        ? options.turns
+        : preset === "today"
+          ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
+          : analyticsTurnsFromRollup(loadAnalyticsRollup());
     const turns = analyticsVisibleTurns(sourceTurns);
     const model = options.model ?? state.analyticsModel;
     const filtered = model ? turns.filter((turn) => normalizeText(turn?.model, 120) === model) : turns;
@@ -3815,7 +3920,7 @@
     const ccSwitchDates = new Set();
     const ccSwitchImportedAtByDate = new Map();
     const ledgerTurnIds = new Set();
-    for (const turn of state.localLedger) {
+    for (const turn of [...localUsageArchiveTurns(), ...state.localLedger]) {
       const usage = normalizeUsage(turn?.usage);
       if (!usage.exact) continue;
       const turnId = normalizeText(turn?.turnId || turn?.id, 120);
@@ -7732,6 +7837,9 @@
       migrateLegacyLocationSessionTurns,
       currentSessionTurns,
       localProfileThreadCount,
+      trimLocalLedger,
+      compactLocalLedger,
+      localUsageArchiveTurns,
       localDailyUsage,
       localDateKey,
       analyticsRangeForPreset,
