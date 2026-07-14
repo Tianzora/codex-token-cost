@@ -2,21 +2,25 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - main
+    paths:
+      - README.md
+      - docs/images/**
+      - scripts/**
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-main
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out tagged source
+      - name: Check out main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -27,36 +31,76 @@ jobs:
           node-version: 22
 
       - name: Validate release version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
+        id: version
         run: |
           set -euo pipefail
-          node <<'NODE'
+          version="$(node <<'NODE'
           const fs = require("node:fs");
-
-          const tag = process.env.RELEASE_TAG;
-          const version = tag?.match(/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)?.[0]?.slice(1);
-          if (!version) throw new Error(`Invalid release tag: ${tag}`);
 
           const source = fs.readFileSync("scripts/codex-live-token-cost.js", "utf8");
           const metadata = source.match(/@version\s+([^\r\n]+)/)?.[1]?.trim();
           const runtime = source.match(/const VERSION = "([^"]+)"/)?.[1];
           const readme = fs.readFileSync("README.md", "utf8");
           const readmeVersion = readme.match(/<code>v([^<]+)<\/code>/)?.[1];
+          const version = metadata;
 
-          for (const [label, actual] of [["metadata", metadata], ["runtime", runtime], ["README", readmeVersion]]) {
+          if (!version || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) {
+            throw new Error(`Invalid version: ${version}`);
+          }
+          for (const [label, actual] of [["runtime", runtime], ["README", readmeVersion]]) {
             if (actual !== version) throw new Error(`${label} version ${actual} does not match ${version}`);
           }
+          process.stdout.write(version);
           NODE
-          node --check scripts/codex-live-token-cost.js
-          git diff --check "${RELEASE_TAG}^" "$RELEASE_TAG"
+          )"
+          tag="v${version}"
+          tag_commit="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "Tag $tag already points to $tag_commit, not $GITHUB_SHA. Bump the version before pushing." >&2
+            exit 1
+          fi
+          {
+            echo "release_version=$version"
+            echo "release_tag=$tag"
+            if [[ -n "$tag_commit" ]]; then
+              echo "tag_exists=true"
+            else
+              echo "tag_exists=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        if: steps.version.outputs.tag_exists != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$RELEASE_TAG" --message "Release $RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "$RELEASE_TAG"
+
+      - name: Check existing GitHub Release
+        id: release-state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build release archive
+        if: steps.release-state.outputs.exists != 'true'
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: |
           set -euo pipefail
           archive="codex-token-cost-${RELEASE_TAG}.zip"
+          git diff --check "${RELEASE_TAG}^" "$RELEASE_TAG"
           git archive \
             --format=zip \
             --prefix="codex-token-cost-${RELEASE_TAG}/" \
@@ -75,12 +119,14 @@ jobs:
           cat "${archive}.sha256"
 
       - name: Publish GitHub Release
+        if: steps.release-state.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.version.outputs.release_tag }}
         run: |
           set -euo pipefail
           archive="codex-token-cost-${RELEASE_TAG}.zip"
           gh release create "$RELEASE_TAG" "$archive" "${archive}.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "Codex Token Cost ${RELEASE_TAG}" \
             --generate-notes
