@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.1
+// @version      0.7.2
 // @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.7.1";
+  const VERSION = "0.7.2";
   const ROOT_ID = "codex-live-token-cost";
   const SETTINGS_BUTTON_ID = "codex-live-token-cost-settings";
   const STYLE_ID = "codex-live-token-cost-style";
@@ -24,6 +24,8 @@
   const LOCAL_USAGE_KEY = "__codexLiveTokenCostLocalUsageV1";
   const ANALYTICS_ROLLUP_KEY = "__codexLiveTokenCostAnalyticsRollupV1";
   const ANALYTICS_MAX_DAYS = 365;
+  const RUNTIME_SESSION_BINDING_TTL_MS = 5 * 60 * 1000;
+  const OFFICIAL_RUNTIME_STATE_TTL_MS = 10 * 60 * 1000;
   const PROFILE_PREFS_KEY = "__codexLiveTokenCostProfilePrefsV1";
   const PROFILE_OVERRIDES_KEY = "__codexLiveTokenCostProfileOverridesV1";
   const PROFILE_DEFAULTS_KEY = "__codexLiveTokenCostProfileDefaultsV1";
@@ -319,6 +321,7 @@
     turnShimmerOutputStartedAt: 0,
     turnShimmerSessions: new Map(),
     officialThreadRuntimeStates: new Map(),
+    runtimeSessionBindings: new Map(),
   };
 
   function toCount(value) {
@@ -1349,8 +1352,12 @@
     for (const turn of state.localLedger) {
       if (!sameSessionKey(turnSessionKey(turn), sourceKey)) continue;
       turn.sessionKey = targetKey;
+      turn.threadKey = targetKey;
     }
-    if (sameSessionKey(turnSessionKey(state.localLast), sourceKey)) state.localLast.sessionKey = targetKey;
+    if (sameSessionKey(turnSessionKey(state.localLast), sourceKey)) {
+      state.localLast.sessionKey = targetKey;
+      state.localLast.threadKey = targetKey;
+    }
     for (const [candidateKey, turn] of state.localCurrentTurns.entries()) {
       if (!sameSessionKey(candidateKey, sourceKey)) continue;
       state.localCurrentTurns.delete(candidateKey);
@@ -1579,6 +1586,7 @@
     const key = localStateSessionKey(sessionKey);
     if (turn) {
       turn.sessionKey = key;
+      turn.threadKey = localStateSessionKey(turn.threadKey || key);
       state.localCurrentTurns.set(key, turn);
     } else {
       state.localCurrentTurns.delete(key);
@@ -1600,10 +1608,12 @@
     for (const turn of state.localLedger) {
       if (turn?.source !== "codex-live-token-cost" || turnSessionKey(turn) !== legacyKey) continue;
       turn.sessionKey = targetKey;
+      turn.threadKey = targetKey;
       migrated += 1;
     }
     if (state.localLast?.source === "codex-live-token-cost" && turnSessionKey(state.localLast) === legacyKey) {
       state.localLast.sessionKey = targetKey;
+      state.localLast.threadKey = targetKey;
     }
     const legacyCurrentTurn = localCurrentTurn(legacyKey);
     if (legacyCurrentTurn) {
@@ -1615,7 +1625,7 @@
   }
 
   function turnSessionKey(turn) {
-    return normalizeText(turn?.sessionKey || turn?.conversationKey || turn?.threadId || turn?.conversationId, 240);
+    return normalizeText(turn?.threadKey || turn?.sessionKey || turn?.conversationKey || turn?.threadId || turn?.conversationId, 240);
   }
 
   function sameSessionKey(left, right) {
@@ -1714,6 +1724,7 @@
     const finishedAt = toCount(raw.finishedAt || raw.finished_at || raw.completedAt || raw.completed_at || raw.endTime || raw.end_time || observedAt) || startedAt;
     const durationMs = normalizedDurationMs(raw, startedAt, finishedAt);
     const sessionKey = resolveSessionKey(raw.sessionKey || raw.session_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || raw.sessionId || raw.session_id);
+    const threadKey = resolveSessionKey(raw.threadKey || raw.thread_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || sessionKey);
     if (isTransientSessionKey(sessionKey)) return null;
     const turnId =
       normalizeText(raw.turnId || raw.turn_id || raw.request_id, 240) ||
@@ -1724,6 +1735,7 @@
       turnId,
       source: normalizeText(raw.source, 80) || "import",
       ...(sessionKey ? { sessionKey } : {}),
+      ...(threadKey ? { threadKey } : {}),
       callCount: toCount(raw.callCount ?? raw.call_count ?? raw.requestCount ?? raw.request_count) || 1,
       model: normalizeText(raw.model || raw.request_model || raw.pricing_model, 120) || UNKNOWN_MODEL,
       effort: normalizeReasoningEffort(raw.effort),
@@ -1934,86 +1946,202 @@
     return "";
   }
 
-  function extractSessionInfo(value, depth = 0, seen = new WeakSet()) {
-    if (!value || depth > 7) return "";
+  function emptySessionIdentity() {
+    return { threadKey: "", conversationKey: "", runtimeSessionKey: "", turnId: "", requestId: "", streamId: "" };
+  }
+
+  function mergeSessionIdentity(left = {}, right = {}) {
+    const merged = emptySessionIdentity();
+    for (const field of ["threadKey", "conversationKey", "runtimeSessionKey", "turnId", "requestId", "streamId"]) {
+      merged[field] = normalizeText(left[field] || right[field], 240);
+    }
+    return merged;
+  }
+
+  function extractSessionIdentityFromUrl(value) {
+    const text = String(value || "").trim();
+    if (!text) return emptySessionIdentity();
+    const identity = emptySessionIdentity();
+    const assignQueryKey = (name, candidate) => {
+      const key = normalizeText(candidate, 240);
+      if (!key) return;
+      if (/thread/i.test(name)) identity.threadKey ||= key;
+      else if (/conversation|chat/i.test(name)) identity.conversationKey ||= key;
+      else if (/session/i.test(name)) identity.runtimeSessionKey ||= key;
+    };
+    try {
+      const url = new URL(text, location?.href || "app://-/");
+      for (const name of ["threadId", "thread_id", "conversationId", "conversation_id", "sessionId", "session_id", "chatId", "chat_id"]) {
+        assignQueryKey(name, url.searchParams.get(name));
+      }
+      const path = decodeURIComponent(url.pathname || "");
+      const pathMatch = path.match(/\/(thread|threads|conversation|conversations|chat|chats|session|sessions)\/([^/?#]+)/i);
+      if (pathMatch?.[2]) {
+        const kind = pathMatch[1].toLowerCase();
+        const key = normalizeText(pathMatch[2], 240);
+        if (/^thread/.test(kind)) identity.threadKey ||= key;
+        else if (/^conversation|^chat/.test(kind)) identity.conversationKey ||= key;
+        else identity.runtimeSessionKey ||= key;
+      }
+    } catch {
+      // Fall through to regex parsing below.
+    }
+    for (const match of text.matchAll(/[?&](threadId|thread_id|conversationId|conversation_id|sessionId|session_id|chatId|chat_id)=([^&#]+)/gi)) {
+      try {
+        assignQueryKey(match[1], decodeURIComponent(match[2]));
+      } catch {
+        assignQueryKey(match[1], match[2]);
+      }
+    }
+    return identity;
+  }
+
+  function extractSessionIdentity(value, depth = 0, seen = new WeakSet()) {
+    if (!value || depth > 8) return emptySessionIdentity();
     if (typeof value === "string") {
-      const fromUrl = extractSessionKeyFromUrl(value);
-      if (fromUrl) return fromUrl;
       const parsed = parseMaybeJson(value);
-      return parsed ? extractSessionInfo(parsed, depth + 1, seen) : "";
+      return parsed ? extractSessionIdentity(parsed, depth + 1, seen) : extractSessionIdentityFromUrl(value);
     }
     if (Array.isArray(value)) {
-      for (const item of value) {
-        const key = extractSessionInfo(item, depth + 1, seen);
-        if (key) return key;
-      }
-      return "";
+      let identity = emptySessionIdentity();
+      for (const item of value) identity = mergeSessionIdentity(identity, extractSessionIdentity(item, depth + 1, seen));
+      return identity;
     }
-    if (typeof value !== "object" || seen.has(value)) return "";
+    if (typeof value !== "object" || seen.has(value)) return emptySessionIdentity();
     seen.add(value);
 
-    const direct = normalizeText(
-      value.threadId ??
-        value.thread_id ??
-        value.currentThreadId ??
-        value.current_thread_id ??
-        value.conversationId ??
-        value.conversation_id ??
-        value.currentConversationId ??
-        value.current_conversation_id ??
-        value.sessionId ??
-        value.session_id ??
-        value.chatId ??
-        value.chat_id ??
-        value.turn?.threadId ??
-        value.turn?.thread_id ??
-        value.turn?.conversationId ??
-        value.turn?.conversation_id ??
-        value.thread?.id ??
-        value.thread?.threadId ??
-        value.thread?.thread_id ??
-        value.conversation?.id ??
-        value.session?.id ??
-        value.params?.threadId ??
-        value.params?.thread_id ??
-        value.params?.conversationId ??
-        value.params?.conversation_id ??
-        value.params?.sessionId ??
-        value.params?.session_id ??
-        value.params?.turn?.threadId ??
-        value.params?.turn?.thread_id ??
-        value.params?.turn?.conversationId ??
-        value.params?.turn?.conversation_id ??
-        value.params?.thread?.id ??
-        value.params?.conversation?.id ??
-        value.params?.session?.id ??
-        value.request?.conversationId ??
-        value.request?.conversation_id ??
-        value.request?.threadId ??
-        value.request?.thread_id ??
-        value.request?.params?.conversationId ??
-        value.request?.params?.conversation_id ??
-        value.request?.params?.threadId ??
-        value.request?.params?.thread_id ??
-        value.request?.params?.sessionId ??
-        value.request?.params?.session_id ??
-        value.request?.params?.turn?.threadId ??
-        value.request?.params?.turn?.thread_id ??
-        value.request?.params?.thread?.id,
-      240,
-    );
-    if (direct) return direct;
-    for (const key of ["url", "href", "request", "params", "data", "payload", "message", "thread", "conversation", "session", "turn", "body", "bodyJsonString", "result", "response"]) {
-      const found = extractSessionInfo(value[key], depth + 1, seen);
-      if (found) return found;
+    let identity = {
+      threadKey: normalizeText(
+        value.threadId ?? value.thread_id ?? value.currentThreadId ?? value.current_thread_id ?? value.thread?.id ?? value.thread?.threadId ?? value.thread?.thread_id ?? value.turn?.threadId ?? value.turn?.thread_id,
+        240,
+      ),
+      conversationKey: normalizeText(
+        value.conversationId ?? value.conversation_id ?? value.currentConversationId ?? value.current_conversation_id ?? value.chatId ?? value.chat_id ?? value.conversation?.id ?? value.turn?.conversationId ?? value.turn?.conversation_id,
+        240,
+      ),
+      runtimeSessionKey: normalizeText(
+        value.sessionId ?? value.session_id ?? value.runtimeSessionId ?? value.runtime_session_id ?? value.session?.id ?? value.runtimeSession?.id ?? value.runtime_session?.id,
+        240,
+      ),
+      turnId: normalizeText(value.turnId ?? value.turn_id ?? value.turn?.id, 240),
+      requestId: normalizeText(value.requestId ?? value.request_id ?? value.request?.requestId ?? value.request?.request_id ?? value.request?.id, 240),
+      streamId: normalizeText(value.streamId ?? value.stream_id ?? value.stream?.id ?? value.response?.streamId ?? value.response?.stream_id, 240),
+    };
+    for (const key of [
+      "url",
+      "href",
+      "request",
+      "params",
+      "data",
+      "payload",
+      "message",
+      "thread",
+      "conversation",
+      "session",
+      "runtimeSession",
+      "runtime_session",
+      "turn",
+      "stream",
+      "body",
+      "bodyJsonString",
+      "result",
+      "response",
+    ]) {
+      if (key in value) identity = mergeSessionIdentity(identity, extractSessionIdentity(value[key], depth + 1, seen));
     }
-    return "";
+    return identity;
+  }
+
+  function extractSessionInfo(value) {
+    const identity = extractSessionIdentity(value);
+    return identity.threadKey || identity.conversationKey || identity.runtimeSessionKey;
+  }
+
+  function sessionIdentityHasSessionReference(identity) {
+    return Boolean(identity?.threadKey || identity?.conversationKey || identity?.runtimeSessionKey);
+  }
+
+  function sessionIdentityCorrelationFields(identity) {
+    return ["turnId", "requestId", "streamId"].filter((field) => Boolean(normalizeText(identity?.[field], 240)));
+  }
+
+  function pruneRuntimeSessionBindings(now = Date.now()) {
+    for (const [key, binding] of state.runtimeSessionBindings.entries()) {
+      if (!binding?.expiresAt || binding.expiresAt <= now) state.runtimeSessionBindings.delete(key);
+    }
+  }
+
+  function runtimeSessionBindingKey(identity) {
+    return JSON.stringify([
+      normalizeText(identity?.runtimeSessionKey, 240),
+      normalizeText(identity?.turnId, 240),
+      normalizeText(identity?.requestId, 240),
+      normalizeText(identity?.streamId, 240),
+    ]);
+  }
+
+  function bindRuntimeSessionToThread(identity, threadKey, now = Date.now()) {
+    const runtimeSessionKey = normalizeText(identity?.runtimeSessionKey, 240);
+    const resolvedThreadKey = normalizeText(threadKey, 240);
+    if (!runtimeSessionKey || !resolvedThreadKey || !sessionIdentityCorrelationFields(identity).length) return false;
+    pruneRuntimeSessionBindings(now);
+    const key = runtimeSessionBindingKey(identity);
+    const previous = state.runtimeSessionBindings.get(key);
+    if (previous?.ambiguous || (previous?.threadKey && !sameSessionKey(previous.threadKey, resolvedThreadKey))) {
+      state.runtimeSessionBindings.set(key, {
+        ...previous,
+        runtimeSessionKey,
+        threadKey: previous.threadKey || resolvedThreadKey,
+        ambiguous: true,
+        observedAt: now,
+        expiresAt: now + RUNTIME_SESSION_BINDING_TTL_MS,
+      });
+      return false;
+    }
+    state.runtimeSessionBindings.set(key, {
+      runtimeSessionKey,
+      threadKey: resolvedThreadKey,
+      turnId: normalizeText(identity.turnId, 240),
+      requestId: normalizeText(identity.requestId, 240),
+      streamId: normalizeText(identity.streamId, 240),
+      ambiguous: false,
+      observedAt: now,
+      expiresAt: now + RUNTIME_SESSION_BINDING_TTL_MS,
+    });
+    return true;
+  }
+
+  function resolveRuntimeSessionBinding(identity, now = Date.now()) {
+    const runtimeSessionKey = normalizeText(identity?.runtimeSessionKey, 240);
+    const correlationFields = sessionIdentityCorrelationFields(identity);
+    if (!runtimeSessionKey || !correlationFields.length) return "";
+    pruneRuntimeSessionBindings(now);
+    const matches = [];
+    for (const binding of state.runtimeSessionBindings.values()) {
+      if (binding?.ambiguous || normalizeText(binding?.runtimeSessionKey, 240) !== runtimeSessionKey) continue;
+      if (!correlationFields.every((field) => normalizeText(binding?.[field], 240) === normalizeText(identity?.[field], 240))) continue;
+      matches.push(binding);
+    }
+    const threadKeys = [...new Set(matches.map((binding) => normalizeText(binding.threadKey, 240)).filter(Boolean))];
+    return threadKeys.length === 1 ? threadKeys[0] : "";
+  }
+
+  function resolveSessionIdentity(valueOrIdentity) {
+    const identity = valueOrIdentity && typeof valueOrIdentity === "object" && !Array.isArray(valueOrIdentity) && "threadKey" in valueOrIdentity ? valueOrIdentity : extractSessionIdentity(valueOrIdentity);
+    const directKey = resolveSessionKey(identity.threadKey || identity.conversationKey);
+    if (directKey) {
+      const key = localStateSessionKey(directKey);
+      if (identity.runtimeSessionKey) bindRuntimeSessionToThread(identity, key);
+      return { identity, sessionKey: key, reliable: true, unresolved: false };
+    }
+    const boundKey = resolveRuntimeSessionBinding(identity);
+    if (boundKey) return { identity, sessionKey: localStateSessionKey(boundKey), reliable: true, unresolved: false };
+    return { identity, sessionKey: "", reliable: false, unresolved: Boolean(identity.runtimeSessionKey) };
   }
 
   function observeSessionInfo(value) {
-    const raw = extractSessionInfo(value);
-    if (!raw) return false;
-    let key = resolveSessionKey(raw);
+    const resolved = resolveSessionIdentity(value);
+    let key = resolved.sessionKey;
     if (!key) return false;
     const activeKey = activeSidebarThreadKey();
     if (rememberSessionAlias(activeKey, key)) key = resolveSessionKey(key);
@@ -2162,18 +2290,9 @@
     const type = normalizeText(payload.type, 160);
     const event = normalizeText(payload.event, 160);
     const descriptor = normalizeText(method || event || type, 160).toLowerCase().replace(/[\s-]+/g, "_");
-    const sessionKey = extractSessionInfo(payload);
-    const turnId = normalizeText(
-      payload.turnId ??
-        payload.turn_id ??
-        payload.params?.turnId ??
-        payload.params?.turn_id ??
-        payload.params?.turn?.id ??
-        payload.turn?.id ??
-        payload.payload?.turn_id ??
-        payload.payload?.turnId,
-      120,
-    );
+    const identity = extractSessionIdentity(payload);
+    const sessionKey = resolveSessionIdentity(identity).sessionKey;
+    const turnId = normalizeText(identity.turnId, 120);
     const timing = officialRuntimeTimingFromPayload(payload);
 
     if (method === "turn/started" || descriptor === "turn_started" || descriptor === "codex/event/task_started") {
@@ -2221,13 +2340,44 @@
     return turn;
   }
 
+  function pruneOfficialThreadRuntimeStates(now = Date.now()) {
+    for (const [key, item] of state.officialThreadRuntimeStates.entries()) {
+      if (!item?.observedAt || now - item.observedAt > OFFICIAL_RUNTIME_STATE_TTL_MS) state.officialThreadRuntimeStates.delete(key);
+    }
+  }
+
+  function officialRuntimeRunningCount() {
+    pruneOfficialThreadRuntimeStates();
+    const running = new Set();
+    for (const [sessionKey, item] of state.officialThreadRuntimeStates.entries()) {
+      if (!item?.running) continue;
+      running.add(localStateSessionKey(sessionKey).replace(/^local:/, ""));
+    }
+    return running.size;
+  }
+
+  function turnCompletionMatchesCurrent(sessionKey, turnId, options = {}) {
+    const current = localCurrentTurn(sessionKey);
+    if (!current) return true;
+    const expectedTurnId = normalizeText(current.id, 120);
+    const completedTurnId = normalizeText(turnId, 120);
+    if (!completedTurnId && options.allowTurnless) return true;
+    return Boolean(completedTurnId && expectedTurnId && completedTurnId === expectedTurnId);
+  }
+
   function setOfficialThreadRuntime(sessionKey, running, details = {}) {
+    pruneOfficialThreadRuntimeStates();
     const resolvedSessionKey = resolveSessionKey(sessionKey) || sessionKey;
     if (!resolvedSessionKey) return false;
     const key = localStateSessionKey(resolvedSessionKey);
     if (!key) return false;
     const previous = state.officialThreadRuntimeStates.get(key);
     const turnId = normalizeText(details.turnId, 120);
+    if (!running) {
+      const allowTurnlessCompletion = details.reason === "thread/status/changed" && !previous?.turnId;
+      if (previous?.turnId && turnId && previous.turnId !== turnId) return false;
+      if (!turnCompletionMatchesCurrent(key, turnId, { allowTurnless: allowTurnlessCompletion })) return false;
+    }
     const status = normalizeText(details.status, 80) || (running ? "running" : "idle");
     const reason = normalizeText(details.reason, 120);
     const changed = !previous || previous.running !== Boolean(running) || previous.turnId !== turnId || previous.status !== status;
@@ -2285,6 +2435,7 @@
   }
 
   function isOfficialThreadRunning(sessionKey = currentSessionKey()) {
+    pruneOfficialThreadRuntimeStates();
     const key = localStateSessionKey(resolveSessionKey(sessionKey) || sessionKey);
     let stateForKey = state.officialThreadRuntimeStates.get(key) || null;
     for (const [runtimeKey, item] of state.officialThreadRuntimeStates.entries()) {
@@ -2295,9 +2446,9 @@
   }
 
   function uniqueOfficialRunningSessionKey() {
+    pruneOfficialThreadRuntimeStates();
     const running = [];
     const seen = new Set();
-    const activeKey = currentSessionKey();
     for (const [sessionKey, item] of state.officialThreadRuntimeStates.entries()) {
       if (!item?.running) continue;
       const key = localStateSessionKey(sessionKey);
@@ -2306,13 +2457,11 @@
       seen.add(comparable);
       running.push(key);
     }
-    const activeRunning = running.find((key) => sameSessionKey(key, activeKey));
-    if (activeRunning) return activeRunning;
     return running.length === 1 ? running[0] : "";
   }
 
   function sessionlessUsageRuntimeSessionKey(payload) {
-    if (extractSessionInfo(payload)) return "";
+    if (sessionIdentityHasSessionReference(extractSessionIdentity(payload))) return "";
     if (!isTokenCountPayload(payload) && collectUsages(payload).length <= 0) return "";
     return uniqueOfficialRunningSessionKey();
   }
@@ -3109,6 +3258,7 @@
       usage: aggregate,
       turnId: turn.id,
       sessionKey: turn.sessionKey,
+      threadKey: turn.threadKey || turn.sessionKey,
       source: "codex-live-token-cost",
       callCount: turn.calls.length,
       model: modelName(),
@@ -3180,9 +3330,12 @@
 
   function inspectLocalPayload(payload, source) {
     if (isComposerDraftPayload(payload)) return false;
-    const rawSessionKey = extractSessionInfo(payload);
-    const payloadSessionKey = rawSessionKey ? resolveSessionKey(rawSessionKey) : "";
-    const fallbackRuntimeSessionKey = payloadSessionKey ? "" : sessionlessUsageRuntimeSessionKey(payload);
+    const identity = extractSessionIdentity(payload);
+    const resolvedSession = resolveSessionIdentity(identity);
+    const payloadSessionKey = resolvedSession.sessionKey;
+    const hasSessionReference = sessionIdentityHasSessionReference(identity);
+    const unresolvedSessionIdentity = hasSessionReference && !payloadSessionKey;
+    const fallbackRuntimeSessionKey = hasSessionReference ? "" : sessionlessUsageRuntimeSessionKey(payload);
     const sessionKey = localStateSessionKey(payloadSessionKey || fallbackRuntimeSessionKey || currentSessionKey());
     const hasReliableSessionKey = Boolean(payloadSessionKey || fallbackRuntimeSessionKey);
     const sessionChanged = observeSessionInfo(payload);
@@ -3199,10 +3352,12 @@
       invocations,
     });
     const requestStart = /body/i.test(String(source || "")) && shouldStartTurnFromRequestPayload(payload);
-    if (requestStart) beginLocalRequestTurn({ sessionKey });
-    const canUseCurrentSessionForUsage = Boolean(hasReliableSessionKey || requestStart || localCurrentTurn(sessionKey));
+    const canStartRequest = requestStart && !unresolvedSessionIdentity;
+    if (canStartRequest) beginLocalRequestTurn({ sessionKey });
+    const canUseSessionlessCurrentTurn = !hasSessionReference && officialRuntimeRunningCount() <= 1;
+    const canUseCurrentSessionForUsage = Boolean(hasReliableSessionKey || canStartRequest || (!unresolvedSessionIdentity && canUseSessionlessCurrentTurn && localCurrentTurn(sessionKey)));
     if (hasProfileContext(explicitContext) && /body|websocket/i.test(String(source || ""))) {
-      const turn = localCurrentTurn(sessionKey) || (requestStart ? beginLocalRequestTurn({ sessionKey }) : null);
+      const turn = localCurrentTurn(sessionKey) || (canStartRequest ? beginLocalRequestTurn({ sessionKey }) : null);
       if (turn) turn.context = mergeProfileContext(turn.context, explicitContext);
     }
     const turnContext = localCurrentTurn(sessionKey)?.context || {};
@@ -3218,9 +3373,9 @@
         changed = rememberLocalUsage(usage, source, context, { persist: persistUsage, sessionKey }) || changed;
       }
     }
-    const genericTaskCompleteWithoutSession = !payloadSessionKey && isGenericTaskCompletePayload(payload);
+    const genericTaskCompleteWithoutSession = !hasSessionReference && isGenericTaskCompletePayload(payload);
     const taskCompleteSessionKey = payloadSessionKey || "";
-    const taskCompleteHandled = Boolean(taskCompletePayload && taskCompleteSessionKey);
+    const taskCompleteHandled = Boolean(taskCompletePayload && taskCompleteSessionKey && turnCompletionMatchesCurrent(taskCompleteSessionKey, identity.turnId));
     const officialRuntimeChanged = observeOfficialRuntimePayload(payload, source);
     if (taskCompleteHandled) {
       clearLocalTurnTimer(taskCompleteSessionKey);
@@ -3252,6 +3407,7 @@
             id: current.id,
             turnId: current.id,
             sessionKey: current.sessionKey,
+            threadKey: current.threadKey || current.sessionKey,
             startedAt: current.startedAt,
             callCount: current.calls.length,
             durationMs: currentDurationMs,
@@ -3645,6 +3801,7 @@
     const chartHeight = height - inset.top - inset.bottom;
     const max = Math.max(1, ...buckets.map((item) => item.value));
     const gap = buckets.length > 60 ? 1 : buckets.length > 30 ? 2 : 4;
+    const stagger = buckets.length > 60 ? 18 : buckets.length > 30 ? 24 : 32;
     const barWidth = Math.max(2, (width - inset.left - inset.right - gap * Math.max(0, buckets.length - 1)) / Math.max(1, buckets.length));
     const labelEvery = Math.max(1, Math.ceil(buckets.length / 7));
     const bars = buckets
@@ -3658,7 +3815,7 @@
         const tooltipY = Math.max(2, y - 25);
         const label = index % labelEvery === 0 || index === buckets.length - 1 ? `<text x="${x + barWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(item.label)}</text>` : "";
         return `<g class="cltc-analytics-bar">
-          <rect tabindex="0" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
+          <rect tabindex="0" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
           <g class="cltc-analytics-tooltip" aria-hidden="true">
             <rect x="${tooltipX}" y="${tooltipY}" width="${tooltipWidth}" height="20" rx="5"></rect>
             <text x="${tooltipX + tooltipWidth / 2}" y="${tooltipY + 14}" text-anchor="middle">${escapeHtml(display)}</text>
@@ -6032,7 +6189,14 @@
         stroke-width: 2px;
         vector-effect: non-scaling-stroke;
         outline: none !important;
+        transform-box: fill-box;
+        transform-origin: center bottom;
+        animation: cltc-analytics-bar-grow 720ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;
         transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
+      }
+      @keyframes cltc-analytics-bar-grow {
+        from { transform: scaleY(0); }
+        to { transform: scaleY(1); }
       }
       .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index]:focus-visible {
         opacity: .66;
@@ -6289,7 +6453,9 @@
           transition: none;
           transform: none;
         }
-        .cltc-settings-overlay .cltc-analytics-chart rect {
+        .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index] {
+          animation: none;
+          transform: scaleY(1);
           transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
         }
         .cltc-settings-overlay .cltc-sync-status,
@@ -8141,6 +8307,7 @@
     state.profileRequestIds.clear();
     state.codexModulePromises.clear();
     state.officialThreadRuntimeStates.clear();
+    state.runtimeSessionBindings.clear();
     if (window.__codexLiveTokenCostBridgeHook === VERSION) delete window.__codexLiveTokenCostBridgeHook;
     if (window.__codexLiveTokenCostProfileRequestPatch === VERSION) delete window.__codexLiveTokenCostProfileRequestPatch;
     if (window.__codexLiveTokenCostProfilePhotoPatch === VERSION) delete window.__codexLiveTokenCostProfilePhotoPatch;
@@ -8244,6 +8411,7 @@
       activeSidebarThreadKey,
       extractSessionKeyFromUrl,
       extractSessionInfo,
+      extractSessionIdentity,
       observeSessionInfo,
       currentSessionKey,
       conversationContentState,

@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <code>v0.7.1</code>
+  <code>v0.7.2</code>
   &nbsp;·&nbsp;
   <code>Windows / macOS</code>
   &nbsp;·&nbsp;
@@ -20,6 +20,14 @@
 Codex Token Cost 是一个面向 [Codex++](https://github.com/BigPizzaV3/CodexPlusPlus) 的本地 userscript。它在 Codex 输入区上方展示本轮、当前会话、缓存命中、费用和今日累计，并提供独立使用统计、模型价格管理及本地 Profile 数据。
 
 主脚本可独立运行。可选 helper 用于补充 CC Switch、Codex SQLite 会话数和 skill / plugin 统计。
+
+## 更新日志
+
+### v0.7.2 · 2026-07-14
+
+- 使用统计趋势柱状图新增自然的数据生成动画：柱体从底部基线开始，按时间顺序从左到右错峰展开。
+- 使用 `cubic-bezier(.16, 1, .3, 1)` 平滑减速，固定柱体宽度，动画结束后保持静止。
+- 支持 `prefers-reduced-motion`，关闭动效时直接显示最终高度。
 
 ## 核心能力
 
