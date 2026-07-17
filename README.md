@@ -64,6 +64,8 @@ Codex Token Cost 是一个面向 [Codex++](https://github.com/BigPizzaV3/CodexPl
 
 HUD 可随时关闭；helper 不可用时自动降级到 userscript 本地捕获，不影响基础统计。
 
+“启用本地 Profile 解锁”默认开启，以保持既有行为。若不需要本地 Profile，可以在“数据与显示”中关闭；脚本会立即停止资料伪装和 Profile 专属补丁，同时保留 Token、费用、HUD 与使用统计。由于 Codex 内部页面可能已经加载，切换后如界面未完全恢复或解锁，请重启 Codex。
+
 ![Codex Token Cost 数据与显示面板](docs/images/codex-token-cost-data-display.png)
 
 ## 工作方式

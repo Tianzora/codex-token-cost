@@ -30,6 +30,7 @@
   const PROFILE_OVERRIDES_KEY = "__codexLiveTokenCostProfileOverridesV1";
   const PROFILE_DEFAULTS_KEY = "__codexLiveTokenCostProfileDefaultsV1";
   const HUB_VISIBLE_KEY = "__codexLiveTokenCostHubVisibleV1";
+  const PROFILE_UNLOCK_ENABLED_KEY = "__codexLiveTokenCostProfileUnlockEnabledV1";
   const PROJECT_CONTEXT_ROW_SELECTOR =
     "[data-codex-composer-root] [data-composer-utility-bar-scroll-area] [data-composer-navigation-target='workspace-project']";
   const PROFILE_GATE_ID = "2478676115";
@@ -418,6 +419,23 @@
     return value;
   }
 
+  function profileUnlockEnabled() {
+    try {
+      return localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  }
+
+  function saveProfileUnlockEnabled(value) {
+    try {
+      localStorage.setItem(PROFILE_UNLOCK_ENABLED_KEY, value ? "true" : "false");
+    } catch {
+      // Keep the setting best-effort; the current runtime can still apply it.
+    }
+    return value;
+  }
+
   function hasCodexProjectContextRow(doc = document) {
     return Boolean(doc?.querySelector?.(PROJECT_CONTEXT_ROW_SELECTOR));
   }
@@ -767,7 +785,7 @@
     react.useContext = function codexLiveTokenCostProfileUseContext(context) {
       const value = originalUseContext(context);
       rememberProfileQueryClient(value);
-      if (context === authContext) return spoofProfileAuthContextValue(value);
+      if (profileUnlockEnabled() && context === authContext) return spoofProfileAuthContextValue(value);
       return value;
     };
     react.useContext.__codexLiveTokenCostProfileAuthPatch = VERSION;
@@ -819,6 +837,7 @@
   }
 
   function profileUnlockedSettingsSections(source, visible) {
+    if (!profileUnlockEnabled()) return visible;
     if (!isSettingsSectionsArray(source) || !Array.isArray(visible) || visible.some((item) => item?.slug === "profile")) return visible;
     const profile = source.find((item) => item?.slug === "profile");
     if (!profile) return visible;
@@ -4433,7 +4452,7 @@
   }
 
   function scheduleProfileIdentitySync(delay = 80) {
-    if (state.profileIdentitySyncTimer || typeof window === "undefined" || typeof window.setTimeout !== "function") return;
+    if (!profileUnlockEnabled() || state.profileIdentitySyncTimer || typeof window === "undefined" || typeof window.setTimeout !== "function") return;
     state.profileIdentitySyncTimer = window.setTimeout(() => {
       state.profileIdentitySyncTimer = 0;
       syncProfileIdentity();
@@ -4441,7 +4460,7 @@
   }
 
   function installProfileIdentityObserver() {
-    if (state.profileIdentityObserver || window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof MutationObserver !== "function") return;
+    if (!profileUnlockEnabled() || state.profileIdentityObserver || window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof MutationObserver !== "function") return;
     const target = document.body || document.documentElement;
     if (!target) return;
     state.profileIdentityObserver = new MutationObserver((mutations) => {
@@ -4568,17 +4587,25 @@
   }
 
   function patchProfileStatsigClient(client) {
-    if (!client || typeof client !== "object" || client.__codexLiveTokenCostProfileGatePatched === VERSION) return;
+    if (!client || typeof client !== "object") return;
+    if (client.__codexLiveTokenCostProfileGatePatched === VERSION) {
+      try {
+        if (typeof client.$emt === "function") client.$emt({ name: "values_updated" });
+      } catch {
+        // Statsig event emission is best-effort.
+      }
+      return;
+    }
     if (typeof client.checkGate === "function") {
       const originalCheckGate = client.__codexLiveTokenCostOriginalCheckGate || client.checkGate.bind(client);
-      client.checkGate = (name, options) => (name === PROFILE_GATE_ID ? true : originalCheckGate(name, options));
+      client.checkGate = (name, options) => (profileUnlockEnabled() && name === PROFILE_GATE_ID ? true : originalCheckGate(name, options));
       client.__codexLiveTokenCostOriginalCheckGate = originalCheckGate;
     }
     if (typeof client.getFeatureGate === "function") {
       const originalGetFeatureGate = client.__codexLiveTokenCostOriginalGetFeatureGate || client.getFeatureGate.bind(client);
       client.getFeatureGate = (name, options) => {
         const gate = originalGetFeatureGate(name, options);
-        if (name !== PROFILE_GATE_ID) return gate;
+        if (!profileUnlockEnabled() || name !== PROFILE_GATE_ID) return gate;
         return gate && typeof gate === "object" ? { ...gate, value: true } : gate;
       };
       client.__codexLiveTokenCostOriginalGetFeatureGate = originalGetFeatureGate;
@@ -4599,7 +4626,7 @@
     const originalTest = RegExp.prototype.__codexLiveTokenCostOriginalTest || RegExp.prototype.test;
     if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) return;
     const patchedTest = function codexLiveTokenCostProfileUsernameTest(value) {
-      if (this?.source === "^[a-z0-9._-]+$" && this?.flags === "") return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
+      if (profileUnlockEnabled() && this?.source === "^[a-z0-9._-]+$" && this?.flags === "") return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
       return originalTest.call(this, value);
     };
     patchedTest.__codexLiveTokenCostProfileUnlock = VERSION;
@@ -4686,7 +4713,7 @@
   }
 
   async function invalidateProfileQuery(queryKey) {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return false;
+    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return false;
     if (!state.profileQueryClient) {
       rememberProfileQueryClient(profileQueryClientFromFiberNode(findSidebarProfileButton(document)));
     }
@@ -4726,12 +4753,14 @@
   }
 
   function scheduleProfileAccountsCheckRefresh() {
+    if (!profileUnlockEnabled()) return Promise.resolve(false);
     const next = chainProfileQueryRefresh(state.profileAccountsRefreshPromise, invalidateProfileAccountsCheckQuery);
     state.profileAccountsRefreshPromise = next.catch(() => false);
     return state.profileAccountsRefreshPromise;
   }
 
   function scheduleProfileUsageRefresh(delay = 1000) {
+    if (!profileUnlockEnabled()) return;
     state.profileUsageRefreshRequests += 1;
     if (window.__CODEX_LIVE_TOKEN_COST_TEST__ || state.profileUsageRefreshTimer || typeof window.setTimeout !== "function") return;
     state.profileUsageRefreshTimer = window.setTimeout(() => {
@@ -4748,14 +4777,14 @@
     const originalSafePatch = client.__codexLiveTokenCostOriginalSafePatch || client.safePatch?.bind(client);
     if (typeof originalSafeGet === "function") {
       client.safeGet = async function codexLiveTokenCostProfileSafeGet(url, ...args) {
-        if (isProfileUsageUrl(url) || isProfileAccountsCheckUrl(url)) return profileFetchBodyAsync("GET", null, url);
+        if (profileUnlockEnabled() && (isProfileUsageUrl(url) || isProfileAccountsCheckUrl(url))) return profileFetchBodyAsync("GET", null, url);
         return originalSafeGet(url, ...args);
       };
       client.__codexLiveTokenCostOriginalSafeGet = originalSafeGet;
     }
     if (typeof originalSafePatch === "function") {
       client.safePatch = async function codexLiveTokenCostProfileSafePatch(url, options, ...args) {
-        if (isProfileUsageUrl(url)) {
+        if (profileUnlockEnabled() && isProfileUsageUrl(url)) {
           applyLocalProfilePatch(options);
           return localProfileResponse();
         }
@@ -4772,7 +4801,7 @@
     if (client.__codexLiveTokenCostProfilePhotoPatch === VERSION) return true;
     const originalPost = client.__codexLiveTokenCostOriginalPost || client.post.bind(client);
     client.post = async function codexLiveTokenCostProfilePhotoPost(url, body, headers, ...args) {
-      if (isProfilePhotoUrl(url)) {
+      if (profileUnlockEnabled() && isProfilePhotoUrl(url)) {
         applyLocalProfilePhotoUpload(body);
         return { status: 200, body: { asset_pointer: "local-profile-photo" }, headers: { "content-type": "application/json" } };
       }
@@ -4784,9 +4813,10 @@
   }
 
   async function installProfileRequestClientPatch() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const module = await loadCodexAppModule("request-");
+      if (!profileUnlockEnabled()) return;
       let patched = 0;
       for (const value of Object.values(module || {})) {
         if (patchProfileRequestClient(value)) patched += 1;
@@ -4799,9 +4829,10 @@
   }
 
   async function installProfilePhotoUploadPatch() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const module = await loadCodexAppModule("vscode-api-");
+      if (!profileUnlockEnabled()) return;
       let patched = 0;
       for (const value of Object.values(module || {})) {
         try {
@@ -4819,13 +4850,14 @@
   }
 
   async function installProfileAuthContextPatch() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const reactUrl = profileReactAssetUrl();
       const [reactModule, authModule] = await Promise.all([
         reactUrl ? import(reactUrl) : loadCodexAppModule("jsx-runtime-"),
         loadCodexAppModule("use-auth-"),
       ]);
+      if (!profileUnlockEnabled()) return;
       const patched = patchProfileReactAuthContext(profileReactFromModule(reactModule), profileAuthContextFromModule(authModule));
       window.__codexLiveTokenCostProfileAuthPatch = patched ? VERSION : "not-found";
     } catch (error) {
@@ -4835,7 +4867,7 @@
   }
 
   function isProfileFetchMessage(message) {
-    return message?.type === "fetch" && (isProfileUsageUrl(message.url) || isProfilePhotoUrl(message.url) || isProfileAccountsCheckUrl(message.url));
+    return profileUnlockEnabled() && message?.type === "fetch" && (isProfileUsageUrl(message.url) || isProfilePhotoUrl(message.url) || isProfileAccountsCheckUrl(message.url));
   }
 
   function rememberProfileRequestId(requestId) {
@@ -4993,6 +5025,7 @@
   }
 
   function installOfficialProfileUnlock() {
+    if (!profileUnlockEnabled()) return;
     const originalFilter = Array.prototype.__codexLiveTokenCostOriginalFilter || Array.prototype.filter;
     if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock !== VERSION) {
       const patchedFilter = function codexLiveTokenCostProfileFilter(callback, thisArg) {
@@ -5010,6 +5043,7 @@
         const wrappedFulfilled =
           typeof onFulfilled === "function"
             ? function codexLiveTokenCostProfileFulfilled(value) {
+                if (!profileUnlockEnabled()) return onFulfilled.call(this, value);
                 const spoofedValue = isProfileAccountPayload(value)
                   ? spoofProfileAccountPayload(value)
                   : isProfileAccountsCheckPayload(value)
@@ -5033,6 +5067,52 @@
     void installProfileAuthContextPatch();
     patchProfileElectronBridge();
     patchProfileStatsigGate();
+  }
+
+  function uninstallOfficialProfileUnlock() {
+    if (state.profileIdentitySyncTimer) window.clearTimeout(state.profileIdentitySyncTimer);
+    if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
+    state.profileIdentitySyncTimer = 0;
+    state.profileUsageRefreshTimer = 0;
+    state.profileIdentityObserver?.disconnect?.();
+    state.profileIdentityObserver = null;
+    state.profileAccountsRefreshPromise = null;
+    state.profileRequestIds.clear();
+    if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock === VERSION) {
+      Array.prototype.filter = Array.prototype.__codexLiveTokenCostOriginalFilter;
+    }
+    if (Promise.prototype.then.__codexLiveTokenCostProfileUnlock === VERSION) {
+      Promise.prototype.then = Promise.prototype.__codexLiveTokenCostOriginalThen;
+    }
+    if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) {
+      RegExp.prototype.test = RegExp.prototype.__codexLiveTokenCostOriginalTest;
+    }
+    if (window.electronBridge?.sendMessageFromView?.__codexLiveTokenCostProfileUnlock === VERSION) {
+      try {
+        window.electronBridge.sendMessageFromView = window.electronBridge.__codexLiveTokenCostOriginalSendMessageFromView;
+      } catch {
+        // Read-only preload bridges remain wrapped but pass through while disabled.
+      }
+    }
+    if (window.__codexLiveTokenCostProfileMessageIntercept === VERSION) {
+      window.removeEventListener("codex-message-from-view", handleProfileFetchEvent, true);
+      window.removeEventListener("message", handleProfileFetchResponseEvent, true);
+      delete window.__codexLiveTokenCostProfileMessageIntercept;
+    }
+    patchProfileStatsigGate();
+  }
+
+  function setProfileUnlockEnabled(value) {
+    const enabled = saveProfileUnlockEnabled(Boolean(value));
+    if (enabled) {
+      installOfficialProfileUnlock();
+      installProfileIdentityObserver();
+      scheduleProfileIdentitySync(0);
+    } else {
+      uninstallOfficialProfileUnlock();
+      if (state.settingsPanel === "profile") state.settingsPanel = "general";
+    }
+    return enabled;
   }
 
   function findComposerBox() {
@@ -6841,6 +6921,13 @@
           </span>
           <input type="checkbox" data-misc-field="hubVisible"${hubVisible() ? " checked" : ""}>
         </label>
+        <label class="cltc-toggle-field">
+          <span>
+            <strong>启用本地 Profile 解锁</strong>
+            <small>关闭后停止资料伪装与 Profile 补丁；如界面未完全恢复，请重启 Codex。</small>
+          </span>
+          <input type="checkbox" data-misc-field="profileUnlockEnabled"${profileUnlockEnabled() ? " checked" : ""}>
+        </label>
         <div class="cltc-settings-row">
           <div>
             <strong>本地 helper</strong>
@@ -6917,7 +7004,10 @@
     const price = priceFor(model) || { input: "", cachedInput: "", output: "" };
     const value = (field) => (price[field] == null ? "" : String(price[field]));
     const source = !price ? "未定价" : priceUsable(normalizePrice(overrides[model])) ? "自定义" : DEFAULT_PRICES[model] ? "默认" : "自定义";
-    const panel = ["profile", "general", "usage", "pricing"].includes(state.settingsPanel) ? state.settingsPanel : "profile";
+    const profileEnabled = profileUnlockEnabled();
+    const allowedPanels = profileEnabled ? ["profile", "general", "usage", "pricing"] : ["general", "usage", "pricing"];
+    const panel = allowedPanels.includes(state.settingsPanel) ? state.settingsPanel : profileEnabled ? "profile" : "general";
+    state.settingsPanel = panel;
     const row = (name) => {
       const item = priceFor(name);
       const cell = (field) => (item?.[field] == null ? "-" : String(item[field]));
@@ -6987,7 +7077,7 @@
         <div class="cltc-settings-shell">
           <aside class="cltc-settings-sidebar">
             <nav class="cltc-settings-nav" aria-label="设置分组">
-              <button type="button" data-settings-panel="profile" data-active="${String(panel === "profile")}">个人资料</button>
+              ${profileEnabled ? `<button type="button" data-settings-panel="profile" data-active="${String(panel === "profile")}">个人资料</button>` : ""}
               <button type="button" data-settings-panel="general" data-active="${String(panel === "general")}">数据与显示</button>
               <button type="button" data-settings-panel="usage" data-active="${String(panel === "usage")}">使用统计</button>
               <button type="button" data-settings-panel="pricing" data-active="${String(panel === "pricing")}">模型价格</button>
@@ -7854,6 +7944,12 @@
       scheduleHubVisibilitySync(0);
       return;
     }
+    const profileUnlockToggle = event.target?.closest?.("[data-misc-field='profileUnlockEnabled']");
+    if (profileUnlockToggle) {
+      setProfileUnlockEnabled(Boolean(profileUnlockToggle.checked));
+      renderSettingsOverlay(liveSnapshot());
+      return;
+    }
   }
 
   function handleDocumentPointerDown(event) {
@@ -7871,7 +7967,7 @@
     async function wrappedFetch(input, init) {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
-      if (isProfileUsageUrl(url) || isProfilePhotoUrl(url)) {
+      if (profileUnlockEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url))) {
         return new Response(JSON.stringify(await profileFetchBodyAsync(method, init?.body)), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -8222,9 +8318,9 @@
     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     installOfficialModelObserver();
     installTaskRunningObserver();
-    installProfileIdentityObserver();
+    if (profileUnlockEnabled()) installProfileIdentityObserver();
     installHubVisibilityObserver();
-    scheduleProfileIdentitySync(0);
+    if (profileUnlockEnabled()) scheduleProfileIdentitySync(0);
     refreshLocalHelperStatsOnStart();
     startCcSwitchStartupSync();
     render();
@@ -8469,6 +8565,12 @@
       ccSwitchSettingsHtml,
       helperStatusText,
       profileUsageRefreshRequests: () => state.profileUsageRefreshRequests,
+      profileUnlockEnabled,
+      saveProfileUnlockEnabled,
+      setProfileUnlockEnabled,
+      installLocalFetchCapture,
+      isProfileUsageUrl,
+      isCodexApiUrl,
       hubVisible,
       saveHubVisible,
       hasCodexProjectContextRow,
@@ -8521,7 +8623,7 @@
     };
   }
 
-  installOfficialProfileUnlock();
+  if (profileUnlockEnabled()) installOfficialProfileUnlock();
 
   scheduleStart();
 })();
