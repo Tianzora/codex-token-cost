@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <code>v0.7.4</code>
+  <code>v0.7.5</code>
   &nbsp;·&nbsp;
   <code>Windows / macOS</code>
   &nbsp;·&nbsp;

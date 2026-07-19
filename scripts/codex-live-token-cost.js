@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.4
+// @version      0.7.5
 // @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.7.4";
+  const VERSION = "0.7.5";
   const ROOT_ID = "codex-live-token-cost";
   const SETTINGS_BUTTON_ID = "codex-live-token-cost-settings";
   const STYLE_ID = "codex-live-token-cost-style";
@@ -30,6 +30,7 @@
   const PROFILE_OVERRIDES_KEY = "__codexLiveTokenCostProfileOverridesV1";
   const PROFILE_DEFAULTS_KEY = "__codexLiveTokenCostProfileDefaultsV1";
   const HUB_VISIBLE_KEY = "__codexLiveTokenCostHubVisibleV1";
+  const OUTPUT_RATE_VISIBLE_KEY = "__codexLiveTokenCostOutputRateVisibleV1";
   const PROFILE_UNLOCK_ENABLED_KEY = "__codexLiveTokenCostProfileUnlockEnabledV1";
   let profileUnlockEnabledRuntime;
   const PROJECT_CONTEXT_ROW_SELECTOR =
@@ -419,6 +420,25 @@
       // Keep the setting best-effort; DOM sync can still use the default.
     }
     return value;
+  }
+
+  function outputRateVisible() {
+    try {
+      return localStorage.getItem(OUTPUT_RATE_VISIBLE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveOutputRateVisible(value) {
+    const visible = Boolean(value);
+    try {
+      localStorage.setItem(OUTPUT_RATE_VISIBLE_KEY, visible ? "true" : "false");
+    } catch {
+      // Keep the setting best-effort; the current runtime can still use the value.
+    }
+    if (!visible) cancelOutputRateRefresh();
+    return visible;
   }
 
   function profileUnlockEnabled() {
@@ -4136,9 +4156,10 @@
     const dayCost = todayCost();
     const dayUsage = todayUsage();
     const fastMode = state.detectedFastMode === true;
-    const rate = outputTokenRate(currentTurn, running);
-    const averageRate = averageOutputTokenRate(lastTurn, running);
-    return { current, session: displaySession, turns: turns.length, sessionKey, model, modelInfo, price, sessionCost, dayCost, dayUsage, confidence, running, fastMode, rate, averageRate };
+    const outputRateEnabled = outputRateVisible();
+    const rate = outputRateEnabled ? outputTokenRate(currentTurn, running) : { active: false, visible: false, value: 0 };
+    const averageRate = outputRateEnabled ? averageOutputTokenRate(lastTurn, running) : { visible: false, value: 0 };
+    return { current, session: displaySession, turns: turns.length, sessionKey, model, modelInfo, price, sessionCost, dayCost, dayUsage, confidence, running, fastMode, outputRateEnabled, rate, averageRate };
   }
 
   function emptyDailyUsageBucket(date = "") {
@@ -5319,7 +5340,7 @@
         color-scheme: light dark;
         position: relative;
         display: grid;
-        grid-template-columns: minmax(0, 2.05fr) minmax(0, .62fr) minmax(0, .88fr) minmax(0, .76fr) minmax(0, .76fr) minmax(0, 1.20fr);
+        grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);
         align-items: center;
         gap: 0;
         width: min(100%, 760px);
@@ -5374,13 +5395,18 @@
         display: inline-flex;
         align-items: center;
         gap: 3px;
+      }
+      #${ROOT_ID}[data-cltc-output-rate-visible="true"] {
+        grid-template-columns: minmax(0, 2.05fr) repeat(4, minmax(0, .755fr)) minmax(0, 1.20fr);
+      }
+      #${ROOT_ID}[data-cltc-output-rate-visible="true"] .cltc-current-flow {
         min-width: 0;
         max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      #${ROOT_ID} .cltc-output-rate[hidden] {
+      #${ROOT_ID}[data-cltc-output-rate-visible="true"] .cltc-output-rate[hidden] {
         display: none;
       }
       #${ROOT_ID} .cltc-model-label {
@@ -6985,6 +7011,13 @@
         </label>
         <label class="cltc-toggle-field">
           <span>
+            <strong>显示 Token 输出速率</strong>
+            <small>显示本轮实时与上一轮平均输出速率。</small>
+          </span>
+          <input type="checkbox" data-misc-field="outputRateVisible"${outputRateVisible() ? " checked" : ""}>
+        </label>
+        <label class="cltc-toggle-field">
+          <span>
             <strong>启用本地 Profile 解锁</strong>
             <small>关闭后停止资料伪装与 Profile 补丁；如界面未完全恢复，请重启 Codex。</small>
           </span>
@@ -7908,29 +7941,38 @@
     return `<span class="cltc-text-slot" data-cltc-text-key="${escapeHtml(key)}"></span>`;
   }
 
-  function currentFlowSkeleton() {
-    return `本轮 输入 ${valueSlot("current-input")}<span class="cltc-current-spacer" aria-hidden="true">&nbsp;&nbsp;</span>输出 ${valueSlot("current-output")}<span class="cltc-output-rate" data-cltc-output-rate="live" hidden> · ${valueSlot("current-output-rate")} token/s</span><span class="cltc-output-rate" data-cltc-output-rate="average" hidden> · ${valueSlot("current-average-output-rate")} token/s</span>`;
+  function currentFlowSkeleton(showOutputRate = outputRateVisible()) {
+    const outputRateMarkup = showOutputRate
+      ? `<span class="cltc-output-rate" data-cltc-output-rate="live" hidden> · ${valueSlot("current-output-rate")} token/s</span><span class="cltc-output-rate" data-cltc-output-rate="average" hidden> · ${valueSlot("current-average-output-rate")} token/s</span>`
+      : "";
+    return `本轮 输入 ${valueSlot("current-input")}<span class="cltc-current-spacer" aria-hidden="true">&nbsp;&nbsp;</span>输出 ${valueSlot("current-output")}${outputRateMarkup}`;
   }
 
-  function hubSkeletonHtml() {
-    const currentFlow = currentFlowSkeleton();
+  function hubSkeletonHtml(showOutputRate = outputRateVisible()) {
+    const currentFlow = currentFlowSkeleton(showOutputRate);
+    const sessionCache = showOutputRate
+      ? `缓存 ${valueSlot("session-cache-percent")}`
+      : `缓存 ${valueSlot("session-cached")} (${valueSlot("session-cache-percent")})`;
     return `
       <span class="cltc-pill cltc-current-pill"><span class="cltc-current-flow">${cadencedShimmerHtml(currentFlow)}</span></span>
       <span class="cltc-pill">会话 ${valueSlot("session-total")}</span>
-      <span class="cltc-pill">缓存 ${valueSlot("session-cached")} (${valueSlot("session-cache-percent")})</span>
+      <span class="cltc-pill">${sessionCache}</span>
       <span class="cltc-pill">花费 ${valueSlot("session-cost")}${textSlot("session-priced-label")}</span>
       <span class="cltc-pill">今日 ${valueSlot("day-cost")}${textSlot("day-priced-label")}</span>
       <span class="cltc-pill" data-cltc-model-pill="true"><span class="cltc-model-label">${officialFastModeIconHtml()}<span class="cltc-model-text">${textSlot("model")}<span class="cltc-model-effort" data-cltc-model-effort="true" data-cltc-text-key="model-effort"></span></span></span></span>
     `;
   }
 
-  function ensureHubSkeleton(root) {
+  function ensureHubSkeleton(root, showOutputRate = outputRateVisible()) {
+    const outputRateEnabled = Boolean(showOutputRate);
+    root.dataset.cltcOutputRateVisible = String(outputRateEnabled);
+    const hasOutputRateMarkup = Boolean(root.querySelector?.("[data-cltc-output-rate='average']"));
     if (
       root.dataset.cltcSkeletonVersion === VERSION &&
       root.querySelector?.("[data-cltc-value-key='current-input']") &&
-      root.querySelector?.("[data-cltc-output-rate='average']")
+      hasOutputRateMarkup === outputRateEnabled
     ) return;
-    root.innerHTML = hubSkeletonHtml();
+    root.innerHTML = hubSkeletonHtml(outputRateEnabled);
     root.dataset.cltcSkeletonVersion = VERSION;
   }
 
@@ -7994,7 +8036,7 @@
     const sessionPricedLabel = costPricedLabel(snap.sessionCost, snap.session);
     const dayPricedLabel = costPricedLabel(snap.dayCost, snap.dayUsage);
     root.dataset.running = String(snap.running);
-    ensureHubSkeleton(root);
+    ensureHubSkeleton(root, snap.outputRateEnabled);
     updateHubContent(root, snap, sessionPricedLabel, dayPricedLabel);
       syncCadencedShimmer(snap.running);
       syncOutputRateRefresh(snap.rate);
@@ -8017,6 +8059,12 @@
       saveHubVisible(Boolean(hubToggle.checked));
       syncHubVisibility();
       scheduleHubVisibilitySync(0);
+      return;
+    }
+    const outputRateToggle = event.target?.closest?.("[data-misc-field='outputRateVisible']");
+    if (outputRateToggle) {
+      saveOutputRateVisible(Boolean(outputRateToggle.checked));
+      render(true);
       return;
     }
     const profileUnlockToggle = event.target?.closest?.("[data-misc-field='profileUnlockEnabled']");
@@ -8632,6 +8680,7 @@
       syncOutputRateRefresh,
       cancelOutputRateRefresh,
       currentFlowSkeleton,
+      hubSkeletonHtml,
       updateValueSlot,
       rememberLocalUsage,
       persistLocalCurrentTurn,
@@ -8655,6 +8704,8 @@
       isCodexApiUrl,
       hubVisible,
       saveHubVisible,
+      outputRateVisible,
+      saveOutputRateVisible,
       hasCodexProjectContextRow,
       syncHubVisibility,
       profileSettingsHtml,
