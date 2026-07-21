@@ -8,12 +8,84 @@ const priceSourcePath = path.join(__dirname, "..", "scripts", "codex-live-token-
 const code = fs.readFileSync(scriptPath, "utf8").replace(/\r\n/g, "\n");
 const priceSourceCode = fs.readFileSync(priceSourcePath, "utf8").replace(/\r\n/g, "\n");
 
+function createIndexedDbTestDouble() {
+  const databases = new Map();
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const databaseApi = (record) => ({
+    objectStoreNames: { contains: (name) => record.stores.has(name) },
+    createObjectStore(name, options = {}) {
+      const store = { keyPath: options.keyPath, rows: new Map() };
+      record.stores.set(name, store);
+      return store;
+    },
+    transaction(names) {
+      const tx = { error: null, oncomplete: null, onerror: null, onabort: null };
+      const allowed = Array.isArray(names) ? names : [names];
+      let operations = 0;
+      let completed = 0;
+      const schedule = (callback) => {
+        operations += 1;
+        queueMicrotask(() => {
+          callback();
+          completed += 1;
+          if (completed === operations) tx.oncomplete?.();
+        });
+      };
+      tx.objectStore = (name) => {
+        assert.equal(allowed.includes(name), true);
+        const store = record.stores.get(name);
+        assert.ok(store);
+        return {
+          put(value) {
+            const request = { result: undefined, onsuccess: null, onerror: null };
+            schedule(() => {
+              store.rows.set(String(value[store.keyPath]), clone(value));
+              request.result = value;
+              request.onsuccess?.({ target: request });
+            });
+            return request;
+          },
+          getAll() {
+            const request = { result: [], onsuccess: null, onerror: null };
+            schedule(() => {
+              request.result = Array.from(store.rows.values()).map(clone);
+              request.onsuccess?.({ target: request });
+            });
+            return request;
+          },
+        };
+      };
+      return tx;
+    },
+    close() {},
+  });
+  return {
+    open(name, version) {
+      const request = { result: null, error: null, onupgradeneeded: null, onsuccess: null, onerror: null };
+      queueMicrotask(() => {
+        let record = databases.get(name);
+        const needsUpgrade = !record || Number(version) > record.version;
+        if (!record) {
+          record = { version: Number(version) || 1, stores: new Map() };
+          databases.set(name, record);
+        } else if (needsUpgrade) {
+          record.version = Number(version);
+        }
+        request.result = databaseApi(record);
+        if (needsUpgrade) request.onupgradeneeded?.({ target: request });
+        request.onsuccess?.({ target: request });
+      });
+      return request;
+    },
+  };
+}
+
 assert.equal(code.includes('data-settings-panel-slug", "codex-live-usage"'), false);
 assert.equal(code.includes('pushState(history.state, "", "/settings/profile")'), false);
 assert.equal(code.includes("@run-at       document-start"), true);
 assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
-assert.equal(code.includes('const VERSION = "0.7.5"'), true);
+assert.equal(code.includes('const VERSION = "0.7.6"'), true);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
 assert.equal(code.includes("--cltc-calendar-accent: rgb(76, 78, 80)"), true);
 assert.equal(code.includes("#10a37f !important"), false);
@@ -284,7 +356,8 @@ assert.equal(code.includes("function isTaskCompletePayload"), true);
 assert.equal(code.includes("const running = isTurnShimmerRunning(sessionKey) || isOfficialThreadRunning(sessionKey);"), true);
 assert.equal(code.includes("const resultOutputStarted = hasAssistantResultOutputStarted(payload, source);"), true);
 assert.equal(code.includes("if (resultOutputStarted) stopTurnShimmer"), false);
-assert.equal(code.includes('persistLocalCurrentTurn("complete", taskCompleteSessionKey)'), true);
+assert.equal(code.includes('persistLocalCurrentTurn("complete", taskCompleteSessionKey, {'), true);
+assert.equal(code.includes('durationStatus: "completed",\n          completedAt: taskCompleteTiming.completedAtMs,'), true);
 assert.equal(code.includes('persistLocalCurrentTurn("live", sessionKey)'), true);
 assert.equal(code.includes("if (persist) turn.calls = [{ usage, source, observedAt: now }]"), false);
 assert.equal(code.includes("animation: cltc-cadenced-shimmer-sweep 4s steps(48, end) .6s infinite"), false);
@@ -421,9 +494,9 @@ assert.equal(code.includes("https://github.com/Tianzora/codex-token-cost/blob/ma
 assert.equal(code.includes(">查看脚本</a>"), true);
 assert.equal(code.includes("startCcSwitchStartupSync()"), true);
 assert.equal(code.includes("const HELPER_POLL_MS"), false);
-assert.equal(code.includes("const HELPER_STATS_REFRESH_URL = `${HELPER_STATS_URL}?refresh=1`;"), true);
+assert.equal(code.includes("const HELPER_STATS_REFRESH_URL = `${HELPER_STATS_URL}?refresh=1`;"), false);
 assert.equal(code.includes("void refreshProfileData();"), true);
-assert.equal(code.includes("function openSettingsEditor() {\n    state.priceEditorOpen = true;\n    state.priceEditorModel = modelName();\n    void pollLocalHelperStats();\n    render(true);"), true);
+assert.equal(code.includes("function openSettingsEditor() {\n    state.priceEditorOpen = true;\n    state.priceEditorModel = modelName();\n    render(true);"), true);
 assert.match(code, /function openSettingsEditor\(\) \{[\s\S]*?render\(true\);\s+const focusModal = \(\) => state\.settingsOverlay\?\.querySelector\("\[data-action='close-price'\]"\)\?\.focus\?\.\(\);[\s\S]*?requestAnimationFrame\(focusModal\);/);
 assert.equal(code.includes("function refreshCcSwitchUsageFromHelper()"), false);
 assert.equal(code.includes('const PROFILE_USAGE_QUERY_KEY = ["profile", "usage"]'), true);
@@ -1073,7 +1146,7 @@ const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   ],
 });
 assert.equal(unavailableCacheWriteHtml.includes("写缓存<strong>未提供</strong>"), true);
-    assert.equal(context.__codexLiveTokenCost.version, "0.7.5");
+assert.equal(context.__codexLiveTokenCost.version, "0.7.6");
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.extractSessionKeyFromUrl("/thread/thread-1"), "thread-1");
 assert.equal(api.extractSessionKeyFromUrl("/api/conversation?conversationId=thread-1"), "thread-1");
@@ -1794,6 +1867,18 @@ const cacheWriteUsage = api.normalizeUsage({
 assert.equal(cacheWriteUsage.input, 1000);
 assert.equal(cacheWriteUsage.cached, 200);
 assert.equal(cacheWriteUsage.cacheWriteTokens, 300);
+const officialTokenUsage = api.normalizeUsage({
+  input_tokens: 1000,
+  cached_input_tokens: 400,
+  cache_write_input_tokens: 75,
+  output_tokens: 100,
+  reasoning_output_tokens: 12,
+  total_tokens: 1100,
+});
+assert.equal(officialTokenUsage.input, 1000);
+assert.equal(officialTokenUsage.cached, 400);
+assert.equal(officialTokenUsage.cacheWriteTokens, 75);
+assert.equal(officialTokenUsage.reasoningOutputTokens, 12);
 assert.equal(
   api.costForModelUsage(cacheWriteUsage, "gpt-5.6-sol").value,
   (500 * 5 + 200 * 0.5 + 300 * 6.25 + 100 * 30) / 1_000_000,
@@ -2055,6 +2140,7 @@ assert.equal(api.extractFastMode({ serviceTier: null }), false);
 assert.equal(api.extractFastMode({ serviceTier: "standard" }), false);
 assert.equal(api.extractFastMode({ service_tier: "fast" }), true);
 assert.equal(api.extractFastMode({ message: "/fast hello" }), null);
+assert.equal(api.collectProfileInvocations({ type: "mcp_tool_call_end", invocation: { server: "docs", tool: "search" } }).length, 0);
 assert.equal(api.collectProfileInvocations(activityPayload).length, 2);
 api.rememberLocalUsage(
   { input_tokens: 2000, output_tokens: 1000, cached_tokens: 0, total_tokens: 3000 },
@@ -2174,22 +2260,23 @@ api.mergeHelperStats({
   },
 });
 const helperProfile = api.localProfileResponse();
-assert.equal(helperProfile.stats.unique_skills_used, 4);
-assert.equal(helperProfile.stats.total_skills_used, 9);
-assert.equal(helperProfile.stats.total_threads, 42);
+assert.equal(helperProfile.stats.unique_skills_used, 2);
+assert.equal(helperProfile.stats.total_skills_used, 2);
+assert.equal(helperProfile.stats.total_threads, 2);
 assert.equal(
   JSON.stringify(helperProfile.stats.top_invocations),
   JSON.stringify([
-    { type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 3 },
-    { type: "skill", skill_id: "systematic-debugging", skill_name: "systematic-debugging", usage_count: 2 },
+    { type: "plugin", plugin_id: "plugin-1", plugin_name: "GitHub", usage_count: 1 },
+    { type: "skill", skill_name: "review", usage_count: 1 },
+    { type: "skill", skill_id: "skill-2", skill_name: "write-tests", usage_count: 1 },
   ]),
 );
 assert.equal(
   JSON.stringify(helperProfile.stats.top_plugins),
-  JSON.stringify([{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 3 }]),
+  JSON.stringify([{ type: "plugin", plugin_id: "plugin-1", plugin_name: "GitHub", usage_count: 1 }]),
 );
 assert.equal(helperProfile.stats.most_used_plugin, "GitHub");
-assert.equal(helperProfile.stats.most_used_plugin_usage_count, 3);
+assert.equal(helperProfile.stats.most_used_plugin_usage_count, 1);
 api.importLocalUsageTurns([
   {
     turnId: "script:2026-06-10:gpt-5.5",
@@ -2249,7 +2336,7 @@ const importedDay = importedProfile.stats.daily_usage_buckets.find((day) => day.
 assert.equal(importedDay.tokens, 120);
 assert.equal(importedDay.requests, 3);
 assert.equal(importedDay.cost, 1.23);
-assert.equal(importedProfile.stats.longest_running_turn_sec, 62);
+assert.equal(importedProfile.stats.longest_running_turn_sec, 0);
 const ccSwitchDedupeDay = importedProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-06-15");
 assert.equal(ccSwitchDedupeDay.tokens, 5500);
 assert.equal(ccSwitchDedupeDay.requests, 4);
@@ -2494,7 +2581,7 @@ assert.equal(finalStreamTurns.at(-1).usage.total, 500);
 assert.equal(api.localUsageExport().currentTurn.callCount, 4);
 assert.equal(api.liveSnapshot().running, true);
 const finalStreamProfile = api.localProfileResponse();
-assert.equal(finalStreamProfile.stats.lifetime_tokens, beforeFinalStreamProfile.stats.lifetime_tokens + 215);
+assert.equal(finalStreamProfile.stats.lifetime_tokens, beforeFinalStreamProfile.stats.lifetime_tokens);
 assert.equal(finalStreamProfile.stats.total_threads, beforeFinalStreamProfile.stats.total_threads);
 
 api.beginLocalTurn({ forceNewIfUsed: true });
@@ -2582,6 +2669,7 @@ api.inspectLocalPayload({ type: "event_msg", payload: { type: "task_complete" } 
 assert.equal(api.localUsageExport().currentTurn.callCount, 0);
 assert.equal(api.liveSnapshot().running, false);
 api.finishLocalTurn(0, { reason: "generic-start-complete-reset", force: true });
+for (const sessionKey of api.currentLocalTurnSessionKeys()) api.setLocalCurrentTurn(null, sessionKey);
 
 const beforeInterruptedTurns = api.localUsageExport().turns.length;
 api.beginLocalTurn({ forceNewIfUsed: true });
@@ -3050,6 +3138,112 @@ assert.equal(officialDurationLast.turnId, "official-duration-running");
 assert.equal(officialDurationLast.durationMs, 180_000);
 assert.equal(officialDurationLast.durationSec, 180);
 assert.equal(api.localProfileResponse().stats.longest_running_turn_sec, 180);
+
+for (const sessionKey of api.currentLocalTurnSessionKeys()) api.setLocalCurrentTurn(null, sessionKey);
+const sessionlessUniqueSession = "legacy-sessionless-unique";
+const sessionlessUniqueTurn = "legacy-sessionless-unique-turn";
+const sessionlessUniqueStartedAt = currentNow - 800000;
+api.beginLocalTurn({ sessionKey: sessionlessUniqueSession, turnId: sessionlessUniqueTurn, startedAtMs: sessionlessUniqueStartedAt });
+api.rememberLocalUsage(
+  { input_tokens: 40, output_tokens: 4, total_tokens: 44 },
+  "websocket",
+  {},
+  { sessionKey: sessionlessUniqueSession, persist: false },
+);
+assert.equal(
+  api.extractSessionIdentity({ type: "task_complete", turn_id: sessionlessUniqueTurn }).turnId,
+  sessionlessUniqueTurn,
+);
+assert.equal(api.sessionlessTaskCompleteSessionKey(sessionlessUniqueTurn), sessionlessUniqueSession);
+api.inspectLocalPayload(
+  {
+    type: "event_msg",
+    payload: {
+      type: "task_complete",
+      turn_id: sessionlessUniqueTurn,
+      started_at: new Date(sessionlessUniqueStartedAt).toISOString(),
+      completed_at: new Date(sessionlessUniqueStartedAt + 654321).toISOString(),
+      duration_ms: 654321,
+    },
+  },
+  "message",
+);
+const sessionlessUniqueProfile = api.localProfileResponse();
+assert.equal(sessionlessUniqueProfile.stats.longest_running_turn_sec, 654);
+api.finishLocalTurn(0, { reason: "sessionless-unique-cleanup", force: true, sessionKey: sessionlessUniqueSession });
+
+const multipleSessionlessA = "legacy-sessionless-multiple-a";
+const multipleSessionlessB = "legacy-sessionless-multiple-b";
+api.beginLocalTurn({ sessionKey: multipleSessionlessA, turnId: "legacy-sessionless-multiple-turn-a", startedAtMs: currentNow - 900000 });
+api.rememberLocalUsage(
+  { input_tokens: 50, output_tokens: 5, total_tokens: 55 },
+  "websocket",
+  {},
+  { sessionKey: multipleSessionlessA, persist: false },
+);
+api.beginLocalTurn({ sessionKey: multipleSessionlessB, turnId: "legacy-sessionless-multiple-turn-b", startedAtMs: currentNow - 910000 });
+api.rememberLocalUsage(
+  { input_tokens: 60, output_tokens: 6, total_tokens: 66 },
+  "websocket",
+  {},
+  { sessionKey: multipleSessionlessB, persist: false },
+);
+const beforeAmbiguousSessionlessCompletion = api.localProfileResponse().stats.longest_running_turn_sec;
+api.inspectLocalPayload(
+  {
+    type: "task_complete",
+    turn_id: "legacy-sessionless-multiple-turn-a",
+    started_at: new Date(currentNow - 900000).toISOString(),
+    completed_at: new Date(currentNow + 1500000).toISOString(),
+    duration_ms: 2400000,
+  },
+  "message",
+);
+assert.equal(api.localProfileResponse().stats.longest_running_turn_sec, beforeAmbiguousSessionlessCompletion);
+api.finishLocalTurn(0, { reason: "sessionless-multiple-a-cleanup", force: true, sessionKey: multipleSessionlessA });
+api.finishLocalTurn(0, { reason: "sessionless-multiple-b-cleanup", force: true, sessionKey: multipleSessionlessB });
+
+const missingTurnIdSession = "legacy-sessionless-no-turn-id";
+api.beginLocalTurn({ sessionKey: missingTurnIdSession, turnId: "legacy-sessionless-no-turn-id-turn", startedAtMs: currentNow - 920000 });
+api.rememberLocalUsage(
+  { input_tokens: 70, output_tokens: 7, total_tokens: 77 },
+  "websocket",
+  {},
+  { sessionKey: missingTurnIdSession, persist: false },
+);
+const beforeMissingTurnIdCompletion = api.localProfileResponse().stats.longest_running_turn_sec;
+api.inspectLocalPayload(
+  {
+    type: "task_complete",
+    started_at: new Date(currentNow - 920000).toISOString(),
+    completed_at: new Date(currentNow + 1900000).toISOString(),
+    duration_ms: 2820000,
+  },
+  "message",
+);
+assert.equal(api.localProfileResponse().stats.longest_running_turn_sec, beforeMissingTurnIdCompletion);
+api.finishLocalTurn(0, { reason: "sessionless-no-turn-id-cleanup", force: true, sessionKey: missingTurnIdSession });
+
+const officialDetailsSession = api.currentSessionKey();
+api.beginLocalTurn({ sessionKey: officialDetailsSession, turnId: "official-detail-dedupe-turn", startedAtMs: currentNow });
+api.rememberLocalUsage(
+  { input_tokens: 100, output_tokens: 10, cache_write_input_tokens: 7, reasoning_output_tokens: 1, total_tokens: 110 },
+  "websocket",
+  {},
+  { sessionKey: officialDetailsSession, persist: false },
+);
+api.rememberLocalUsage(
+  { input_tokens: 100, output_tokens: 10, cache_write_input_tokens: 8, reasoning_output_tokens: 2, total_tokens: 110 },
+  "websocket",
+  {},
+  { sessionKey: officialDetailsSession, persist: false },
+);
+const officialDetailsExport = api.localUsageExport();
+assert.equal(officialDetailsExport.currentTurn.callCount, 2);
+assert.equal(officialDetailsExport.currentTurn.usage.cacheWriteTokens, 15);
+assert.equal(officialDetailsExport.currentTurn.usage.reasoningOutputTokens, 3);
+api.finishLocalTurn(0, { reason: "official-detail-dedupe-cleanup", force: true, sessionKey: officialDetailsSession });
+
 const beforeCompleteWithUsageTurns = api.localUsageExport().turns.length;
 api.beginLocalTurn({ forceNewIfUsed: true });
 api.rememberLocalUsage({ input_tokens: 5, output_tokens: 1, total_tokens: 6 }, "websocket");
@@ -3481,17 +3675,17 @@ api.mergeHelperStats({
   },
 });
 assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeDuplicateMerge);
-Promise.resolve()
+const profileLifecycleTest = Promise.resolve()
   .then(() => profileClient.safeGet("/wham/profiles/me"))
   .then((patchedGet) => {
     const helperBridgeUrls = bridgeCalls.map((message) => String(message.url || "")).filter(Boolean);
-    assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/stats?refresh=1"), true);
+    assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/stats?refresh=1"), false);
     assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/cc-switch/turns?refresh=1"), true);
-    assert.equal(patchedGet.stats.unique_skills_used, 1);
-    assert.equal(patchedGet.stats.total_skills_used, 1);
+    assert.equal(patchedGet.stats.unique_skills_used, 2);
+    assert.equal(patchedGet.stats.total_skills_used, 2);
     assert.equal(
       JSON.stringify(patchedGet.stats.top_plugins),
-      JSON.stringify([{ type: "plugin", plugin_id: "old", plugin_name: "Old", usage_count: 1 }]),
+      JSON.stringify([{ type: "plugin", plugin_id: "plugin-1", plugin_name: "GitHub", usage_count: 1 }]),
     );
     assert.equal(patchedGet.stats.most_used_plugin_usage_count, 1);
     assert.equal(patchedGet.profile.display_name, "Tian Envelope");
@@ -3506,13 +3700,13 @@ Promise.resolve()
         top_invocations: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 7 }],
       },
     });
-    assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeNewStats + 1);
+    assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeNewStats);
     return profileClient.safeGet("/wham/profiles/me");
   })
   .then((refreshedGet) => {
-    assert.equal(refreshedGet.stats.unique_skills_used, 6);
-    assert.equal(refreshedGet.stats.total_skills_used, 12);
-    assert.equal(refreshedGet.stats.most_used_plugin_usage_count, 7);
+    assert.equal(refreshedGet.stats.unique_skills_used, 2);
+    assert.equal(refreshedGet.stats.total_skills_used, 2);
+    assert.equal(refreshedGet.stats.most_used_plugin_usage_count, 1);
     return profileClient.safePatch("/wham/profiles/me", { requestBody: { display_name: "Tian Patched", username: "Tian_004" } });
   })
   .then((patchedPatch) => {
@@ -3523,7 +3717,7 @@ Promise.resolve()
     const localMessageHandler = api.localMessageHandler();
     assert.equal(typeof localMessageHandler, "function");
     assert.equal((windowListeners.get("message") || []).length, messageListenersBeforeLocalCapture + 1);
-assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.5");
+assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.6");
     context.document.getElementById = () => null;
     context.__codexLiveTokenCost.destroy();
     assert.equal((windowListeners.get("message") || []).includes(localMessageHandler), false);
@@ -3535,10 +3729,6 @@ assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.5");
     const originalFetch = context.fetch;
     const originalSetTimeout = context.setTimeout;
     const profileRefreshCalls = [];
-    const profileStatsResponses = [
-      { ok: true, refreshing: true, stats: { unique_skills_used: 1, total_skills_used: 1 } },
-      { ok: true, refreshing: false, stats: { unique_skills_used: 2, total_skills_used: 3 } },
-    ];
     const profileCcResponses = [
       { ok: true, refreshing: true, turns: [] },
       {
@@ -3566,22 +3756,24 @@ assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.5");
     context.fetch = async function profileRefreshFetch(url) {
       const text = String(url);
       profileRefreshCalls.push(text);
-      const queue = text.includes("/stats") ? profileStatsResponses : profileCcResponses;
+      const queue = profileCcResponses;
       return { ok: true, async json() { return queue.shift() || queue.at(-1); } };
+    };
+    context.setTimeout = function immediateRefreshTimer(handler) {
+      if (typeof handler === "function") handler();
+      return 1;
     };
     const firstProfileRefresh = api.refreshProfileData({ force: true, pollIntervalMs: 0, maxPolls: 2 });
     const secondProfileRefresh = api.refreshProfileData({ force: true, pollIntervalMs: 0, maxPolls: 2 });
     assert.strictEqual(firstProfileRefresh, secondProfileRefresh);
     const profileRefreshResult = await firstProfileRefresh;
     assert.equal(profileRefreshResult.ok, true);
-    assert.equal(profileRefreshResult.helperStats, true);
+    assert.equal(profileRefreshResult.helperStats, false);
     assert.equal(profileRefreshResult.ccSwitch.ok, true);
-    assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/stats?refresh=1")).length, 1);
     assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/cc-switch/turns?refresh=1")).length, 1);
-    assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/stats")).length, 1);
     assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/cc-switch/turns")).length, 1);
     assert.equal(api.localProfileResponse().stats.unique_skills_used, 2);
-    assert.equal(api.localProfileResponse().stats.total_skills_used, 3);
+    assert.equal(api.localProfileResponse().stats.total_skills_used, 2);
 
     context.location = originalLocation;
     context.fetch = async function blockedAppFetch(url) {
@@ -3624,9 +3816,27 @@ assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.5");
     assert.equal(retryPayload.stats.total_skills_used, 3);
     assert.equal(bridgeAttempts, 2);
     assert.equal(helperFetchCalls.length, helperFetchCallsBeforeRetry);
+
+    context.location = { pathname: "/", href: "http://localhost/", protocol: "http:", origin: "http://localhost" };
+    context.electronBridge = {
+      sendMessageFromView() {
+        return Promise.reject(new Error("bridge unavailable"));
+      },
+    };
+    context.fetch = async function missingCcDatabaseFetch() {
+      return { ok: true, async json() { return { ok: true, error: "missing_db", turns: [] }; } };
+    };
+    const missingCcDatabaseSync = await api.syncCcSwitchUsageFromHelper({ refresh: false });
+    assert.equal(missingCcDatabaseSync.ok, false);
+    assert.equal(missingCcDatabaseSync.error, "missing_db");
+    assert.equal(missingCcDatabaseSync.helperUnavailable, true);
+    assert.match(api.helperStatusText(), /CC Switch 同步不可用/);
+    context.location = originalLocation;
+    context.electronBridge = originalBridge;
+    context.fetch = originalFetch;
   });
 
-profileAndHelperTest.then(() => {
+profileLifecycleTest.then(async () => {
   api.importLocalUsageTurns([
     {
       turnId: "script:2026-07-05:local-larger",
@@ -3663,6 +3873,298 @@ profileAndHelperTest.then(() => {
   const localLargerDay = api.localDailyUsage().get("2026-07-05");
   assert.equal(localLargerDay.tokens, 50000);
   assert.equal(localLargerDay.requests, 6);
+
+  currentNow = Date.parse("2026-07-20T12:00:00.000Z");
+  const multiCallSession = "profile-ledger-multi-call-thread";
+  api.beginLocalTurn({ sessionKey: multiCallSession, turnId: "profile-ledger-multi-call-turn", startedAtMs: currentNow - 180000 });
+  const multiCallFirst = { input_tokens: 100, output_tokens: 10, total_tokens: 110 };
+  const multiCallSecond = { input_tokens: 200, output_tokens: 20, total_tokens: 220 };
+  assert.equal(api.rememberLocalUsage(multiCallFirst, "websocket", {}, { sessionKey: multiCallSession, persist: true }), true);
+  assert.equal(api.rememberLocalUsage(multiCallSecond, "websocket", {}, { sessionKey: multiCallSession, persist: true }), true);
+  const multiCallProfile = api.localProfileResponse();
+  const multiCallDay = multiCallProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-20");
+  assert.equal(multiCallDay.tokens, 330);
+  assert.equal(multiCallDay.requests, 2);
+  assert.equal(api.rememberLocalUsage(multiCallFirst, "websocket", {}, { sessionKey: multiCallSession, persist: true }), false);
+  assert.equal(api.localProfileResponse().stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-20").tokens, 330);
+  api.finishLocalTurn(0, { reason: "profile-ledger-multi-call-complete", force: true, sessionKey: multiCallSession });
+
+  const invocationSession = "profile-ledger-invocation-thread";
+  api.beginLocalTurn({ sessionKey: invocationSession, turnId: "profile-ledger-invocation-turn", startedAtMs: currentNow - 60000 });
+  const invocationBase = {
+    threadId: invocationSession,
+    turnId: "profile-ledger-invocation-turn",
+    tool_invocations: [
+      {
+        type: "skill",
+        skill_id: "skill-twice",
+        skill_name: "Twice",
+        invocation_id: "invocation-a",
+        command: "RAW_COMMAND_SHOULD_NOT_PERSIST",
+        api_key: "RAW_API_KEY_SHOULD_NOT_PERSIST",
+      },
+    ],
+  };
+  api.inspectLocalPayload(invocationBase, "websocket");
+  api.inspectLocalPayload({ ...invocationBase }, "websocket");
+  api.inspectLocalPayload(
+    {
+      ...invocationBase,
+      tool_invocations: [{ ...invocationBase.tool_invocations[0], invocation_id: "invocation-b" }],
+    },
+    "websocket",
+  );
+  const invocationBefore = api.localProfileResponse();
+  api.rememberLocalUsage(
+    { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+    "websocket",
+    {},
+    { sessionKey: invocationSession, persist: true },
+  );
+  api.finishLocalTurn(0, { reason: "profile-ledger-invocation-complete", force: true, sessionKey: invocationSession });
+  const invocationAfter = api.localProfileResponse();
+  const twiceSkill = invocationAfter.stats.top_invocations.find((item) => item.skill_id === "skill-twice");
+  assert.ok(twiceSkill);
+  assert.equal(twiceSkill.usage_count, 2);
+  assert.equal(invocationAfter.stats.total_skills_used - invocationBefore.stats.total_skills_used, 2);
+
+  const noIdInvocation = {
+    type: "skill",
+    skill_id: "skill-no-id",
+    skill_name: "No ID",
+  };
+  const noIdInvocationEvent = {
+    threadId: invocationSession,
+    turnId: "profile-ledger-invocation-turn",
+    requestId: "invocation-event-1",
+    tool_invocations: [noIdInvocation],
+  };
+  api.inspectLocalPayload(noIdInvocationEvent, "websocket");
+  api.inspectLocalPayload({ ...noIdInvocationEvent, tool_invocations: [{ ...noIdInvocation }] }, "websocket");
+  api.inspectLocalPayload(
+    {
+      ...noIdInvocationEvent,
+      requestId: "invocation-event-2",
+      tool_invocations: [{ ...noIdInvocation }, { ...noIdInvocation }],
+    },
+    "websocket",
+  );
+  const noIdSkill = api.localProfileResponse().stats.top_invocations.find((item) => item.skill_id === "skill-no-id");
+  assert.ok(noIdSkill);
+  assert.equal(noIdSkill.usage_count, 3);
+
+  const unknownBefore = api.localProfileResponse();
+  const unknownDayBefore = unknownBefore.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-20")?.tokens || 0;
+  const unknownSession = "runtime-session-without-thread";
+  api.beginLocalTurn({ sessionKey: unknownSession, turnId: "profile-ledger-unknown-turn", startedAtMs: currentNow - 30000 });
+  assert.equal(
+    api.rememberLocalUsage(
+      { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+      "websocket",
+      { effort: "low", fastMode: false },
+      { sessionKey: unknownSession, persist: true, profileThreadKey: "", threadAttributionStatus: "unknown" },
+    ),
+    true,
+  );
+  api.finishLocalTurn(0, { reason: "profile-ledger-unknown-complete", force: true, sessionKey: unknownSession });
+  const unknownAfter = api.localProfileResponse();
+  assert.equal(unknownAfter.stats.total_threads, unknownBefore.stats.total_threads);
+  assert.equal(unknownAfter.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-20").tokens, unknownDayBefore + 15);
+
+  const completedDurationSession = "profile-ledger-completed-duration-thread";
+  api.beginLocalTurn({ sessionKey: completedDurationSession, turnId: "profile-ledger-completed-duration-turn", startedAtMs: currentNow - 125000 });
+  api.rememberLocalUsage(
+    { input_tokens: 16, output_tokens: 4, total_tokens: 20 },
+    "websocket",
+    {},
+    { sessionKey: completedDurationSession, persist: true },
+  );
+  api.finishLocalTurn(0, { reason: "profile-ledger-duration-complete", force: true, sessionKey: completedDurationSession });
+  const completedDurationProfile = api.localProfileResponse();
+  const completedDurationSec = completedDurationProfile.stats.longest_running_turn_sec;
+  assert.ok(completedDurationSec >= 125);
+
+  const incompleteDurationSession = "profile-ledger-incomplete-duration-thread";
+  api.beginLocalTurn({ sessionKey: incompleteDurationSession, turnId: "profile-ledger-incomplete-duration-turn", startedAtMs: currentNow - 400000 });
+  api.rememberLocalUsage(
+    { input_tokens: 6, output_tokens: 1, total_tokens: 7 },
+    "websocket",
+    {},
+    { sessionKey: incompleteDurationSession, persist: false },
+  );
+  api.persistLocalCurrentTurn("incomplete", incompleteDurationSession, { durationStatus: "incomplete" });
+  api.setLocalCurrentTurn(null, incompleteDurationSession);
+  const incompleteDurationProfile = api.localProfileResponse();
+  assert.equal(incompleteDurationProfile.stats.longest_running_turn_sec, completedDurationSec);
+  assert.ok(incompleteDurationProfile.stats.longest_observed_turn_sec >= 400);
+
+  const noUsageDurationSession = "profile-ledger-no-usage-duration-thread";
+  api.beginLocalTurn({
+    sessionKey: noUsageDurationSession,
+    turnId: "profile-ledger-no-usage-duration-turn",
+    startedAtMs: currentNow - 500000,
+    profileThreadKey: noUsageDurationSession,
+    threadAttributionStatus: "reliable",
+  });
+  api.finishLocalTurn(0, { reason: "profile-ledger-no-usage-duration-complete", force: true, sessionKey: noUsageDurationSession });
+  assert.ok(api.localProfileResponse().stats.longest_running_turn_sec >= 500);
+
+  const bulkBefore = api.localProfileResponse();
+  const bulkRows = Array.from({ length: 2001 }, (_, index) => ({
+    turnId: `profile-ledger-bulk:${index}`,
+    source: "codex-live-token-cost",
+    model: "gpt-5.5",
+    createdAt: new Date(Date.parse("2010-01-01T00:00:00.000Z") + index * 86400000).toISOString(),
+    usage: { input: 1, output: 0, total: 1 },
+  }));
+  const bulkResult = api.importLocalUsageTurns(bulkRows);
+  assert.equal(bulkResult.imported, 2001);
+  const bulkAfter = api.localProfileResponse();
+  assert.equal(bulkAfter.stats.lifetime_tokens, bulkBefore.stats.lifetime_tokens + 2001);
+  assert.ok(
+    api.localUsageExport().turns.filter((turn) => turn.source !== "cc-switch" && turn.importSource !== "cc-switch").length <= 2000,
+  );
+
+  const profileBeforeSessionDelete = api.localProfileResponse();
+  storage.delete("__codexLiveTokenCostLocalUsageV1");
+  const profileAfterSessionDelete = api.localProfileResponse();
+  assert.equal(profileAfterSessionDelete.stats.lifetime_tokens, profileBeforeSessionDelete.stats.lifetime_tokens);
+  const profileSnapshot = context.localStorage.getItem("__codexLiveTokenCostProfileLedgerV2");
+  assert.ok(profileSnapshot);
+  assert.equal(JSON.parse(profileSnapshot).migrationComplete, true);
+  assert.equal(profileSnapshot.includes("RAW_COMMAND_SHOULD_NOT_PERSIST"), false);
+  assert.equal(profileSnapshot.includes("RAW_API_KEY_SHOULD_NOT_PERSIST"), false);
+
+  storage.set(
+    "__codexLiveTokenCostProfileLedgerV2",
+    JSON.stringify({
+      version: 2,
+      storage: "indexeddb",
+      migrationComplete: true,
+      rollup: {
+        version: 2,
+        updatedAt: currentNow,
+        days: {
+          "2026-07-20": {
+            date: "2026-07-20",
+            local: { input: 10, output: 2, cached: 1, total: 12, cost: 0, requests: 1, turns: 1 },
+            ccSwitch: { input: 0, output: 0, cached: 0, total: 0, cost: 0, requests: 0, turns: 0 },
+            tokens: 12,
+            input: 10,
+            output: 2,
+            cached: 1,
+            cost: 0,
+            requests: 1,
+            totalTurns: 1,
+            maxCompletedDurationMs: 123000,
+            maxObservedDurationMs: 456000,
+            fastModeTokens: 8,
+            totalTokens: 12,
+            fastModeTurns: 1,
+            reasoningEffort: { high: 1 },
+            invocationCounts: {
+              "skill\u0001\u0001\u0001snapshot-skill\u0001Snapshot": {
+                invocation: { type: "skill", skill_id: "snapshot-skill", skill_name: "Snapshot" },
+                count: 2,
+              },
+            },
+          },
+        },
+        threadKeys: ["snapshot-thread"],
+        activity: {
+          fastModeTokens: 8,
+          totalTokens: 12,
+          fastModeTurns: 1,
+          totalTurns: 1,
+          longestCompletedDurationMs: 123000,
+          longestObservedDurationMs: 456000,
+          effortCounts: { high: 1 },
+          invocationCounts: {
+            "skill\u0001\u0001\u0001snapshot-skill\u0001Snapshot": {
+              invocation: { type: "skill", skill_id: "snapshot-skill", skill_name: "Snapshot" },
+              count: 2,
+            },
+          },
+        },
+      },
+    }),
+  );
+  context.indexedDB = createIndexedDbTestDouble();
+  vm.runInNewContext(code, context, { filename: scriptPath });
+  const hydratedSnapshotProfile = context.__codexLiveTokenCostTest.localProfileResponse();
+  assert.equal(hydratedSnapshotProfile.stats.lifetime_tokens, 12);
+  assert.equal(hydratedSnapshotProfile.stats.total_threads, 1);
+  assert.equal(hydratedSnapshotProfile.stats.fast_mode_usage_percentage, 67);
+  assert.equal(hydratedSnapshotProfile.stats.longest_running_turn_sec, 123);
+  assert.equal(hydratedSnapshotProfile.stats.longest_observed_turn_sec, 456);
+  assert.equal(hydratedSnapshotProfile.stats.most_used_reasoning_effort, "high");
+  assert.equal(hydratedSnapshotProfile.stats.unique_skills_used, 1);
+  assert.equal(hydratedSnapshotProfile.stats.total_skills_used, 2);
+
+  const idbApi = context.__codexLiveTokenCostTest;
+  idbApi.localProfileResponse();
+  for (let index = 0; index < 3; index += 1) await new Promise((resolve) => setImmediate(resolve));
+  idbApi.beginLocalTurn({
+    sessionKey: "idb-roundtrip-thread",
+    turnId: "idb-roundtrip-turn",
+    startedAtMs: currentNow - 123000,
+    profileThreadKey: "idb-roundtrip-thread",
+    threadAttributionStatus: "reliable",
+  });
+  idbApi.rememberLocalUsage(
+    { input_tokens: 30, output_tokens: 12, total_tokens: 42 },
+    "websocket",
+    { effort: "high", fastMode: true, invocations: [{ type: "skill", skill_id: "idb-skill", skill_name: "IDB" }] },
+    {
+      sessionKey: "idb-roundtrip-thread",
+      persist: true,
+      profileThreadKey: "idb-roundtrip-thread",
+      threadAttributionStatus: "reliable",
+      invocationEventId: "idb-roundtrip-event",
+    },
+  );
+  idbApi.finishLocalTurn(0, { reason: "idb-roundtrip-complete", force: true, sessionKey: "idb-roundtrip-thread" });
+  for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setImmediate(resolve));
+  const persistedSnapshot = JSON.parse(storage.get("__codexLiveTokenCostProfileLedgerV2"));
+  assert.equal(persistedSnapshot.storage, "indexeddb");
+  assert.equal(persistedSnapshot.rollup.days["2026-07-20"].tokens, 42);
+  storage.set(
+    "__codexLiveTokenCostProfileLedgerV2",
+    JSON.stringify({
+      version: 2,
+      storage: "indexeddb",
+      migrationComplete: true,
+      rollup: {
+        version: 2,
+        updatedAt: currentNow,
+        days: {},
+        threadKeys: [],
+        activity: {
+          fastModeTokens: 0,
+          totalTokens: 0,
+          fastModeTurns: 0,
+          totalTurns: 0,
+          longestCompletedDurationMs: 0,
+          longestObservedDurationMs: 0,
+          effortCounts: {},
+          invocationCounts: {},
+        },
+      },
+    }),
+  );
+  context.__codexLiveTokenCost.destroy();
+  vm.runInNewContext(code, context, { filename: scriptPath });
+  const beforeIdbHydration = context.__codexLiveTokenCostTest.localProfileResponse();
+  assert.equal(beforeIdbHydration.stats.lifetime_tokens, 0);
+  for (let index = 0; index < 4; index += 1) await new Promise((resolve) => setImmediate(resolve));
+  const afterIdbHydration = context.__codexLiveTokenCostTest.localProfileResponse();
+  assert.equal(afterIdbHydration.stats.lifetime_tokens, 42);
+  assert.equal(afterIdbHydration.stats.total_threads, 1);
+  assert.equal(afterIdbHydration.stats.fast_mode_usage_percentage, 100);
+  assert.equal(afterIdbHydration.stats.longest_running_turn_sec, 123);
+  assert.equal(afterIdbHydration.stats.most_used_reasoning_effort, "high");
+  assert.equal(afterIdbHydration.stats.unique_skills_used, 1);
+  assert.equal(afterIdbHydration.stats.total_skills_used, 1);
 }).catch((error) => {
   setImmediate(() => {
     throw error;

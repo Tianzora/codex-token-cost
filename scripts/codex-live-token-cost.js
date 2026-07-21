@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.5
+// @version      0.7.6
 // @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "0.7.5";
+const VERSION = "0.7.6";
   const ROOT_ID = "codex-live-token-cost";
   const SETTINGS_BUTTON_ID = "codex-live-token-cost-settings";
   const STYLE_ID = "codex-live-token-cost-style";
@@ -32,6 +32,14 @@
   const HUB_VISIBLE_KEY = "__codexLiveTokenCostHubVisibleV1";
   const OUTPUT_RATE_VISIBLE_KEY = "__codexLiveTokenCostOutputRateVisibleV1";
   const PROFILE_UNLOCK_ENABLED_KEY = "__codexLiveTokenCostProfileUnlockEnabledV1";
+  const PROFILE_LEDGER_DB_NAME = "codex-live-token-cost-profile";
+  const PROFILE_LEDGER_DB_VERSION = 2;
+  const PROFILE_LEDGER_SNAPSHOT_KEY = "__codexLiveTokenCostProfileLedgerV2";
+  const PROFILE_LEDGER_VERSION = 2;
+  const PROFILE_LEDGER_STORE_TURNS = "profileTurns";
+  const PROFILE_LEDGER_STORE_USAGE_CALLS = "profileUsageCalls";
+  const PROFILE_LEDGER_STORE_INVOCATIONS = "profileInvocations";
+  const PROFILE_LEDGER_STORE_DAILY_ROLLUPS = "profileDailyRollups";
   let profileUnlockEnabledRuntime;
   const PROJECT_CONTEXT_ROW_SELECTOR =
     "[data-codex-composer-root] [data-composer-utility-bar-scroll-area] [data-composer-navigation-target='workspace-project']";
@@ -66,19 +74,16 @@
   const RENDER_THROTTLE_MS = 250;
   const SETTINGS_MODAL_EXIT_MS = 160;
   const PROFILE_SAVE_STATUS_DURATION_MS = 1800;
-  const HELPER_STATS_URL = "http://127.0.0.1:17888/stats";
-  const HELPER_STATS_REFRESH_URL = `${HELPER_STATS_URL}?refresh=1`;
   const CC_SWITCH_TURNS_URL = "http://127.0.0.1:17888/cc-switch/turns";
   const CC_SWITCH_TURNS_REFRESH_URL = `${CC_SWITCH_TURNS_URL}?refresh=1`;
   const PROFILE_DATA_REFRESH_MIN_INTERVAL_MS = 60000;
   const HELPER_REFRESH_POLL_INTERVAL_MS = 500;
   const HELPER_REFRESH_MAX_POLLS = 60;
   const HELPER_BRIDGE_RETRY_DELAYS_MS = [0, 250, 1000];
-  const HELPER_THREAD_CONTENT_URL = "http://127.0.0.1:17888/codex/thread-content";
   const HELPER_GITHUB_URL = "https://github.com/Tianzora/codex-token-cost/blob/main/scripts/codex-local-usage-helper.cjs";
-  const HELPER_STATUS_DEFAULT = "Helper 可选：未连接时使用本地捕获数据；CC Switch 同步、Codex SQLite 线程数、技能/插件统计会不可用。";
-  const HELPER_STATUS_CONNECTED = "Helper 已连接：CC Switch 同步、Codex SQLite 线程数、技能/插件统计可用。";
-  const HELPER_STATUS_DEGRADED = "Helper 未运行：已降级为本地捕获数据；CC Switch 同步、Codex SQLite 线程数、技能/插件统计不可用。";
+  const HELPER_STATUS_DEFAULT = "Helper 可选：未连接时使用本地 Profile ledger；CC Switch 同步不可用。";
+  const HELPER_STATUS_CONNECTED = "Helper 已连接：CC Switch bridge 可用；Profile activity 仍以本地 ledger 为准。";
+  const HELPER_STATUS_DEGRADED = "Helper 未运行：本地 Profile ledger 继续工作；CC Switch 同步不可用。";
   const HELPER_STATUS_CC_SWITCH_DEGRADED = "Helper 未运行：无法同步 CC Switch；今日统计仅使用本地捕获与已有本地记录。";
   const SHIMMER_ACTIVE_MS = 1000;
   const SHIMMER_INTERVAL_MS = 4000;
@@ -249,6 +254,14 @@
     localTurnSeq: 0,
     localSeenUsage: new Map(),
     localPersistedUsage: new Map(),
+    profileLedger: null,
+    profileLedgerLoaded: false,
+    profileLedgerStorage: typeof globalThis?.indexedDB === "object" || typeof globalThis?.indexedDB === "function" ? "indexeddb" : "localStorage-fallback",
+    profileLedgerDb: null,
+    profileLedgerDbPromise: null,
+    profileLedgerWriteQueue: Promise.resolve(),
+    profileLedgerMigrationChecked: false,
+    profileInvocationSeq: 0,
     legacySessionMigrations: new Set(),
     sessionAliases: new Map(),
     localMessageHandler: null,
@@ -306,6 +319,7 @@
     helperThreadContentInFlight: new Set(),
     ccSwitchSyncInFlight: false,
     ccSwitchSyncPromise: null,
+    ccSwitchSyncGeneration: 0,
     ccSwitchStartupSyncStarted: false,
     ccSwitchSyncStatus: "",
     settingsStatusPulseFrame: 0,
@@ -390,6 +404,593 @@
     } catch {
       return fallback;
     }
+  }
+
+  function profileEmptyBucket() {
+    return { input: 0, output: 0, cached: 0, total: 0, cost: 0, requests: 0, turns: 0 };
+  }
+
+  function profileEmptyRollup() {
+    return {
+      version: PROFILE_LEDGER_VERSION,
+      updatedAt: 0,
+      days: {},
+      threadKeys: [],
+      activity: {
+        fastModeTokens: 0,
+        totalTokens: 0,
+        fastModeTurns: 0,
+        totalTurns: 0,
+        longestCompletedDurationMs: 0,
+        longestObservedDurationMs: 0,
+        effortCounts: {},
+        invocationCounts: {},
+      },
+    };
+  }
+
+  function profileEmptyLedger() {
+    return { version: PROFILE_LEDGER_VERSION, turns: [], usageCalls: {}, invocations: {}, rollup: profileEmptyRollup(), migrationComplete: false };
+  }
+
+  function isCcSwitchProfileTurn(turn) {
+    const source = normalizeText(turn?.source, 80);
+    const importSource = normalizeText(turn?.importSource, 80);
+    return source === "cc-switch" || importSource === "cc-switch";
+  }
+
+  function profileDurationRank(status) {
+    return status === "completed" ? 3 : status === "recovered" ? 2 : 1;
+  }
+
+  function profileTimestampIso(value, fallback = "") {
+    const numeric = toTimestampMs(value);
+    if (numeric) return new Date(numeric).toISOString();
+    const parsed = Date.parse(String(value || ""));
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : fallback;
+  }
+
+  function profileNormalizeTurn(raw = {}) {
+    const turnId = normalizeText(raw.turnId || raw.turn_id || raw.id, 240);
+    if (!turnId) return null;
+    const threadCandidate = normalizeText(raw.threadKey || raw.thread_key || raw.sessionKey || raw.session_key, 240);
+    const threadKey = raw.threadAttributionStatus === "unknown" || isTransientSessionKey(threadCandidate) ? "" : threadCandidate;
+    const hasUsage = normalizeUsage(raw.usage).exact;
+    const durationStatus = ["completed", "recovered", "incomplete"].includes(raw.durationStatus) ? raw.durationStatus : "incomplete";
+    const startedAt = profileTimestampIso(raw.startedAt || raw.started_at || raw.createdAt || raw.created_at, "");
+    const completedAt = durationStatus === "completed" ? profileTimestampIso(raw.completedAt || raw.completed_at || raw.finishedAt || raw.finished_at, "") : "";
+    const invocations = (Array.isArray(raw.invocations) ? raw.invocations : [])
+      .map((item) => normalizeProfileInvocationRecord(item))
+      .filter(Boolean);
+    return {
+      turnId,
+      threadKey,
+      threadAttributionStatus: threadKey ? "reliable" : "unknown",
+      startedAt,
+      completedAt,
+      durationMs: Math.max(0, Math.round(Number(raw.durationMs) || 0)),
+      durationStatus,
+      model: normalizeText(raw.model, 120) || UNKNOWN_MODEL,
+      usage: hasUsage ? normalizeUsage(raw.usage) : null,
+      costUsd: Number.isFinite(Number(raw.costUsd)) && Number(raw.costUsd) > 0 ? Number(raw.costUsd) : null,
+      fastMode: typeof raw.fastMode === "boolean" ? raw.fastMode : null,
+      effort: normalizeReasoningEffort(raw.effort || raw.reasoningEffort),
+      callCount: Math.max(0, toCount(raw.callCount ?? raw.call_count)),
+      source: normalizeText(raw.source, 80) || "codex-live-token-cost",
+      capturedAt: profileTimestampIso(raw.capturedAt || raw.captured_at || raw.observedAt || raw.observed_at, new Date().toISOString()),
+      persistReason: normalizeText(raw.persistReason || raw.persist_reason, 80) || "observed",
+      invocationIds: Array.from(new Set((Array.isArray(raw.invocationIds) ? raw.invocationIds : []).map((id) => normalizeText(id, 240)).filter(Boolean))),
+      invocations,
+    };
+  }
+
+  function profileNormalizeSnapshot(raw) {
+    const ledger = profileEmptyLedger();
+    if (!raw || typeof raw !== "object" || raw.version !== PROFILE_LEDGER_VERSION) return ledger;
+    ledger.migrationComplete = raw.migrationComplete === true;
+    ledger.turns = (Array.isArray(raw.turns) ? raw.turns : []).map(profileNormalizeTurn).filter(Boolean);
+    for (const call of Array.isArray(raw.usageCalls) ? raw.usageCalls : []) {
+      const id = normalizeText(call?.id || call?.usageCallId, 300);
+      const turnId = normalizeText(call?.turnId, 240);
+      const usage = normalizeUsage(call?.usage);
+      if (id && turnId && usage.exact) ledger.usageCalls[id] = { id, turnId, usage, usageKey: normalizeText(call.usageKey, 500) || usageKey(usage), observedAt: toCount(call.observedAt), source: normalizeText(call.source, 80) };
+    }
+    for (const invocation of Array.isArray(raw.invocations) ? raw.invocations : []) {
+      const normalized = normalizeProfileInvocation(invocation);
+      const id = normalizeText(invocation?.invocationId || invocation?.id, 300);
+      if (normalized && id) ledger.invocations[id] = { ...normalized, invocationId: id, turnId: normalizeText(invocation.turnId, 240), occurrence: toCount(invocation.occurrence) || 1, observedAt: toCount(invocation.observedAt), source: normalizeText(invocation.source, 80) };
+    }
+    ledger.rollup = raw.rollup && typeof raw.rollup === "object" ? raw.rollup : profileEmptyRollup();
+    return ledger;
+  }
+
+  function profileSnapshotPayload() {
+    const ledger = state.profileLedger || profileEmptyLedger();
+    const payload = {
+      version: PROFILE_LEDGER_VERSION,
+      storage: state.profileLedgerStorage,
+      updatedAt: Date.now(),
+      migrationComplete: ledger.migrationComplete === true,
+      rollup: ledger.rollup || profileEmptyRollup(),
+    };
+    if (state.profileLedgerStorage !== "indexeddb") {
+      payload.turns = ledger.turns;
+      payload.usageCalls = Object.values(ledger.usageCalls || {});
+      payload.invocations = Object.values(ledger.invocations || {});
+    }
+    return payload;
+  }
+
+  function saveProfileLedgerSnapshot() {
+    try {
+      localStorage.setItem(PROFILE_LEDGER_SNAPSHOT_KEY, JSON.stringify(profileSnapshotPayload()));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function profileLegacyArchiveTurns(archive) {
+    const turns = [];
+    for (const [date, day] of Object.entries(archive?.days || {})) {
+      for (const [model, item] of Object.entries(day?.models || {})) {
+        const usage = normalizeUsage(item?.usage);
+        if (!usage.exact) continue;
+        turns.push({
+          turnId: `legacy-archive:${date}:${model}`,
+          source: "legacy-local-archive",
+          model,
+          createdAt: `${date}T12:00:00.000Z`,
+          usage,
+          callCount: toCount(item?.calls) || 1,
+          costUsd: Number(item?.storedCostUsd) > 0 ? Number(item.storedCostUsd) : null,
+          durationStatus: "incomplete",
+          persistReason: "legacy-migration",
+        });
+      }
+    }
+    return turns;
+  }
+
+  function profileMigrateLegacyLedger(ledger) {
+    if (ledger.migrationComplete) return false;
+    const legacy = loadJson(LOCAL_USAGE_KEY, null);
+    const candidates = [
+      ...(Array.isArray(legacy?.turns) ? legacy.turns : []),
+      ...profileLegacyArchiveTurns(legacy?.archive),
+    ];
+    const byId = new Map(ledger.turns.map((turn) => [turn.turnId, turn]));
+    for (const raw of candidates) {
+      const imported = normalizeImportedUsageTurn(raw);
+      if (!imported) continue;
+      const migrated = profileNormalizeTurn({ ...imported, persistReason: "legacy-migration", durationStatus: "incomplete" });
+      if (migrated && !byId.has(migrated.turnId)) byId.set(migrated.turnId, migrated);
+    }
+    ledger.turns = Array.from(byId.values());
+    ledger.migrationComplete = true;
+    return true;
+  }
+
+  function profileLedgerRequest(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("profile ledger IndexedDB request failed"));
+    });
+  }
+
+  function mergeProfileTurn(existing, next) {
+    if (!existing) return next;
+    const merged = { ...existing, ...next };
+    if (existing.threadKey && !next.threadKey) {
+      merged.threadKey = existing.threadKey;
+      merged.threadAttributionStatus = existing.threadAttributionStatus;
+    }
+    if (!next.usage && existing.usage) merged.usage = existing.usage;
+    if (!toCount(next.callCount) && toCount(existing.callCount)) merged.callCount = existing.callCount;
+    if (typeof next.fastMode !== "boolean" && typeof existing.fastMode === "boolean") merged.fastMode = existing.fastMode;
+    if (!next.effort && existing.effort) merged.effort = existing.effort;
+    if (profileDurationRank(next.durationStatus) < profileDurationRank(existing.durationStatus)) {
+      merged.durationStatus = existing.durationStatus;
+      merged.completedAt = existing.completedAt;
+      merged.durationMs = existing.durationMs;
+    }
+    return merged;
+  }
+
+  function profileLedgerWriteSnapshot(db) {
+    const ledger = state.profileLedger || profileEmptyLedger();
+    const rollupDays = Object.entries(ledger.rollup?.days || {}).map(([date, value]) => ({ date, ...value }));
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(
+        [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS],
+        "readwrite",
+      );
+      ledger.turns.forEach((turn) => tx.objectStore(PROFILE_LEDGER_STORE_TURNS).put(turn));
+      Object.values(ledger.usageCalls || {}).forEach((call) => tx.objectStore(PROFILE_LEDGER_STORE_USAGE_CALLS).put(call));
+      Object.values(ledger.invocations || {}).forEach((invocation) => tx.objectStore(PROFILE_LEDGER_STORE_INVOCATIONS).put(invocation));
+      rollupDays.forEach((day) => tx.objectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS).put(day));
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error || new Error("profile ledger IndexedDB snapshot write failed"));
+      tx.onabort = () => reject(tx.error || new Error("profile ledger IndexedDB snapshot transaction aborted"));
+    });
+  }
+
+  function openProfileLedgerDatabase() {
+    if (state.profileLedgerStorage !== "indexeddb" || state.profileLedgerDbPromise || !globalThis.indexedDB) return;
+    state.profileLedgerDbPromise = new Promise((resolve, reject) => {
+      const request = globalThis.indexedDB.open(PROFILE_LEDGER_DB_NAME, PROFILE_LEDGER_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_TURNS)) db.createObjectStore(PROFILE_LEDGER_STORE_TURNS, { keyPath: "turnId" });
+        if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_USAGE_CALLS)) db.createObjectStore(PROFILE_LEDGER_STORE_USAGE_CALLS, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_INVOCATIONS)) db.createObjectStore(PROFILE_LEDGER_STORE_INVOCATIONS, { keyPath: "invocationId" });
+        if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_DAILY_ROLLUPS)) db.createObjectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS, { keyPath: "date" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("profile ledger IndexedDB open failed"));
+    })
+      .then(async (db) => {
+        state.profileLedgerDb = db;
+        const tx = db.transaction(
+          [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS],
+          "readonly",
+        );
+        const stored = await Promise.all([
+          profileLedgerRequest(tx.objectStore(PROFILE_LEDGER_STORE_TURNS).getAll()),
+          profileLedgerRequest(tx.objectStore(PROFILE_LEDGER_STORE_USAGE_CALLS).getAll()),
+          profileLedgerRequest(tx.objectStore(PROFILE_LEDGER_STORE_INVOCATIONS).getAll()),
+        ]);
+        const current = state.profileLedger || profileEmptyLedger();
+        const turns = new Map(current.turns.map((turn) => [turn.turnId, turn]));
+        for (const raw of stored[0]) {
+          const turn = profileNormalizeTurn(raw);
+          if (!turn) continue;
+          const previous = turns.get(turn.turnId);
+          if (!previous || String(turn.capturedAt) >= String(previous.capturedAt)) turns.set(turn.turnId, turn);
+        }
+        current.turns = Array.from(turns.values());
+        for (const call of stored[1]) {
+          if (call?.id && !current.usageCalls[call.id]) current.usageCalls[call.id] = call;
+        }
+        for (const invocation of stored[2]) {
+          if (invocation?.invocationId && !current.invocations[invocation.invocationId]) current.invocations[invocation.invocationId] = invocation;
+        }
+        state.profileLedger = current;
+        profileLedgerRebuildRollup();
+        await profileLedgerWriteSnapshot(db);
+        saveProfileLedgerSnapshot();
+        scheduleProfileUsageRefresh(0);
+        scheduleRender();
+        return db;
+      })
+      .catch(() => {
+        state.profileLedgerStorage = "localStorage-fallback";
+        state.profileLedgerDb = null;
+        saveProfileLedgerSnapshot();
+        return null;
+      });
+  }
+
+  function profileLedgerQueueWrite(turn, calls = [], invocations = []) {
+    if (state.profileLedgerStorage !== "indexeddb") return;
+    state.profileLedgerWriteQueue = state.profileLedgerWriteQueue
+      .then(
+        () => (state.profileLedgerDbPromise || state.profileLedgerDb),
+      )
+      .then((db) => {
+        if (!db || state.profileLedgerStorage !== "indexeddb") return null;
+        const rollupDays = Object.entries(state.profileLedger?.rollup?.days || {}).map(([date, value]) => ({ date, ...value }));
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(
+            [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS],
+            "readwrite",
+          );
+          if (turn) tx.objectStore(PROFILE_LEDGER_STORE_TURNS).put(turn);
+          calls.forEach((call) => tx.objectStore(PROFILE_LEDGER_STORE_USAGE_CALLS).put(call));
+          invocations.forEach((invocation) => tx.objectStore(PROFILE_LEDGER_STORE_INVOCATIONS).put(invocation));
+          rollupDays.forEach((day) => tx.objectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS).put(day));
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error || new Error("profile ledger IndexedDB write failed"));
+          tx.onabort = () => reject(tx.error || new Error("profile ledger IndexedDB write transaction aborted"));
+        });
+      })
+      .catch(() => {
+        state.profileLedgerStorage = "localStorage-fallback";
+        state.profileLedgerDb = null;
+        saveProfileLedgerSnapshot();
+      });
+  }
+
+  function profileLedgerQueueSnapshotWrite() {
+    if (state.profileLedgerStorage !== "indexeddb") return;
+    state.profileLedgerWriteQueue = state.profileLedgerWriteQueue
+      .then(() => state.profileLedgerDbPromise || state.profileLedgerDb)
+      .then((db) => {
+        if (!db || state.profileLedgerStorage !== "indexeddb") return null;
+        return profileLedgerWriteSnapshot(db);
+      })
+      .catch(() => {
+        state.profileLedgerStorage = "localStorage-fallback";
+        state.profileLedgerDb = null;
+        saveProfileLedgerSnapshot();
+      });
+  }
+
+  function ensureProfileLedgerLoaded() {
+    if (state.profileLedgerLoaded) return state.profileLedger;
+    state.profileLedgerLoaded = true;
+    const rawSnapshot = loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
+    state.profileLedger = profileNormalizeSnapshot(rawSnapshot);
+    if (!state.profileLedgerMigrationChecked) {
+      profileMigrateLegacyLedger(state.profileLedger);
+      state.profileLedgerMigrationChecked = true;
+    }
+    const hasLedgerDetails =
+      state.profileLedger.turns.length > 0 ||
+      Object.keys(state.profileLedger.usageCalls || {}).length > 0 ||
+      Object.keys(state.profileLedger.invocations || {}).length > 0;
+    const hasSnapshotRollup = rawSnapshot?.version === PROFILE_LEDGER_VERSION && rawSnapshot.rollup && typeof rawSnapshot.rollup === "object";
+    if (hasLedgerDetails || !hasSnapshotRollup) profileLedgerRebuildRollup();
+    saveProfileLedgerSnapshot();
+    openProfileLedgerDatabase();
+    return state.profileLedger;
+  }
+
+  function profileRollupDay(rollup, date) {
+    const day = (rollup.days[date] ||= {
+      date,
+      local: profileEmptyBucket(),
+      ccSwitch: profileEmptyBucket(),
+      tokens: 0,
+      input: 0,
+      output: 0,
+      cached: 0,
+      cost: 0,
+      requests: 0,
+      totalTurns: 0,
+      maxCompletedDurationMs: 0,
+      maxObservedDurationMs: 0,
+      fastModeTokens: 0,
+      totalTokens: 0,
+      fastModeTurns: 0,
+      reasoningEffort: {},
+      invocationCounts: {},
+    });
+    return day;
+  }
+
+  function profileAddBucket(bucket, turn, usage, cost) {
+    bucket.input += toCount(usage.input);
+    bucket.output += toCount(usage.output);
+    bucket.cached += toCount(usage.cached);
+    bucket.total += toCount(usage.total || usage.input + usage.output);
+    bucket.cost += Number(cost) || 0;
+    bucket.requests += toCount(turn.callCount) || 1;
+    bucket.turns += 1;
+  }
+
+  function profileDisplayedBucket(day) {
+    const local = day?.local || profileEmptyBucket();
+    const cc = day?.ccSwitch || profileEmptyBucket();
+    return {
+      date: day?.date || "",
+      tokens: Math.max(toCount(local.total), toCount(cc.total)),
+      input: Math.max(toCount(local.input), toCount(cc.input)),
+      output: Math.max(toCount(local.output), toCount(cc.output)),
+      cached: Math.max(toCount(local.cached), toCount(cc.cached)),
+      requests: Math.max(toCount(local.requests), toCount(cc.requests)),
+      cost: Math.max(Number(local.cost) || 0, Number(cc.cost) || 0),
+    };
+  }
+
+  function profileInvocationOutput(item, count) {
+    const invocation = normalizeProfileInvocation(item);
+    return invocation ? { ...invocation, usage_count: count } : null;
+  }
+
+  function profileLedgerActivity() {
+    const activity = state.profileLedger?.rollup?.activity || profileEmptyRollup().activity;
+    const effortEntries = Object.entries(activity.effortCounts || {})
+      .filter(([effort, count]) => effort && toCount(count) > 0)
+      .sort((left, right) => toCount(right[1]) - toCount(left[1]) || left[0].localeCompare(right[0]));
+    const invocationEntries = Object.entries(activity.invocationCounts || {})
+      .map(([key, item]) => profileInvocationOutput(item.invocation, item.count))
+      .filter(Boolean)
+      .sort((left, right) => right.usage_count - left.usage_count || profileInvocationKey(left).localeCompare(profileInvocationKey(right)));
+    const topEffort = effortEntries[0];
+    const skillItems = invocationEntries.filter((item) => item.type === "skill");
+    const pluginItems = invocationEntries.filter((item) => item.type === "plugin");
+    const totalEffort = effortEntries.reduce((sum, item) => sum + toCount(item[1]), 0);
+    return {
+      fastModePercent: activity.totalTokens ? Math.round((activity.fastModeTokens / activity.totalTokens) * 100) : null,
+      fastModeCount: toCount(activity.fastModeTokens),
+      fastModeTotal: toCount(activity.totalTokens),
+      fastModeTurns: toCount(activity.fastModeTurns),
+      totalTurns: toCount(activity.totalTurns),
+      longestCompletedTurnSec: Math.round(toCount(activity.longestCompletedDurationMs) / 1000),
+      longestObservedTurnSec: Math.round(toCount(activity.longestObservedDurationMs) / 1000),
+      longestRunningTurnSec: Math.round(toCount(activity.longestCompletedDurationMs) / 1000),
+      reasoningEffort: topEffort?.[0] || null,
+      reasoningEffortPercent: totalEffort && topEffort ? Math.round((toCount(topEffort[1]) / totalEffort) * 100) : null,
+      uniqueSkillsUsed: new Set(skillItems.map((item) => item.skill_id || item.skill_name).filter(Boolean)).size,
+      totalSkillsUsed: skillItems.reduce((sum, item) => sum + toCount(item.usage_count), 0),
+      uniquePluginsUsed: new Set(pluginItems.map((item) => item.plugin_id || item.plugin_name).filter(Boolean)).size,
+      totalPluginsUsed: pluginItems.reduce((sum, item) => sum + toCount(item.usage_count), 0),
+      topInvocations: invocationEntries.slice(0, 5),
+      topPlugins: pluginItems.slice(0, 5),
+    };
+  }
+
+  function profileLedgerDailyDays() {
+    ensureProfileLedgerLoaded();
+    return Object.values(state.profileLedger.rollup?.days || {})
+      .map(profileDisplayedBucket)
+      .filter((day) => day.date)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  function profileLedgerRebuildRollup() {
+    const ledger = state.profileLedger || profileEmptyLedger();
+    const rollup = profileEmptyRollup();
+    const threadKeys = new Set();
+    for (const turn of ledger.turns) {
+      const usage = normalizeUsage(turn?.usage);
+      const date = localDateKey(turnTimestampMs(turn));
+      if (!date) continue;
+      const day = profileRollupDay(rollup, date);
+      const durationMs = Math.max(0, toCount(turn.durationMs));
+      if (!isCcSwitchProfileTurn(turn)) {
+        day.maxObservedDurationMs = Math.max(day.maxObservedDurationMs, durationMs);
+        day.maxCompletedDurationMs = Math.max(day.maxCompletedDurationMs, turn.durationStatus === "completed" ? durationMs : 0);
+        if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
+        rollup.activity.longestObservedDurationMs = Math.max(rollup.activity.longestObservedDurationMs, durationMs);
+        if (turn.durationStatus === "completed") rollup.activity.longestCompletedDurationMs = Math.max(rollup.activity.longestCompletedDurationMs, durationMs);
+      }
+      if (!usage.exact || !toCount(usage.total || usage.input + usage.output)) continue;
+      const cost = turnCost(turn, turn.model).value;
+      profileAddBucket(isCcSwitchProfileTurn(turn) ? day.ccSwitch : day.local, turn, usage, cost);
+      if (isCcSwitchProfileTurn(turn)) continue;
+      day.totalTurns += 1;
+      day.totalTokens += toCount(usage.total || usage.input + usage.output);
+      if (turn.fastMode === true) {
+        day.fastModeTokens += toCount(usage.total || usage.input + usage.output);
+        day.fastModeTurns += 1;
+      }
+      const effort = normalizeReasoningEffort(turn.effort);
+      if (effort) day.reasoningEffort[effort] = toCount(day.reasoningEffort[effort]) + 1;
+      if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
+      const invocationIds = Array.isArray(turn.invocationIds) ? turn.invocationIds : [];
+      for (const invocationId of invocationIds) {
+        const invocation = ledger.invocations[invocationId];
+        if (!invocation) continue;
+        const key = profileInvocationKey(invocation);
+        const current = rollup.activity.invocationCounts[key] || { invocation: normalizeProfileInvocation(invocation), count: 0 };
+        current.count += toCount(invocation.occurrence) || 1;
+        rollup.activity.invocationCounts[key] = current;
+        const dayCurrent = day.invocationCounts[key] || { invocation: normalizeProfileInvocation(invocation), count: 0 };
+        dayCurrent.count += toCount(invocation.occurrence) || 1;
+        day.invocationCounts[key] = dayCurrent;
+      }
+      if (effort) rollup.activity.effortCounts[effort] = toCount(rollup.activity.effortCounts[effort]) + 1;
+      rollup.activity.totalTurns += 1;
+      rollup.activity.totalTokens += toCount(usage.total || usage.input + usage.output);
+      if (turn.fastMode === true) {
+        rollup.activity.fastModeTokens += toCount(usage.total || usage.input + usage.output);
+        rollup.activity.fastModeTurns += 1;
+      }
+    }
+    for (const day of Object.values(rollup.days)) {
+      const displayed = profileDisplayedBucket(day);
+      Object.assign(day, displayed);
+    }
+    rollup.threadKeys = Array.from(threadKeys).sort();
+    rollup.updatedAt = Date.now();
+    ledger.rollup = rollup;
+    return rollup;
+  }
+
+  function profileLedgerUpsertTurn(turn, options = {}) {
+    const ledger = ensureProfileLedgerLoaded();
+    const normalized = profileNormalizeTurn(turn);
+    if (!normalized) return null;
+    const index = ledger.turns.findIndex((item) => item.turnId === normalized.turnId);
+    const merged = mergeProfileTurn(index >= 0 ? ledger.turns[index] : null, normalized);
+    merged.invocationIds = Array.from(new Set([...(index >= 0 ? ledger.turns[index].invocationIds || [] : []), ...(normalized.invocationIds || [])]));
+    if (index >= 0) ledger.turns[index] = merged;
+    else ledger.turns.push(merged);
+    if (!options.deferRollup) profileLedgerRebuildRollup();
+    if (!options.deferSnapshot) saveProfileLedgerSnapshot();
+    if (!options.deferWrite) profileLedgerQueueWrite(merged, options.calls, options.invocations);
+    return merged;
+  }
+
+  function profileLedgerObserveLocalTurn(turn, context = {}, options = {}) {
+    if (!turn) return false;
+    const ledger = ensureProfileLedgerLoaded();
+    const now = toTimestampMs(options.observedAt) || Date.now();
+    const metric = localTurnMetric(turn, now);
+    const metricBase = metric || {
+      turnId: turn.id,
+      sessionKey: turn.sessionKey,
+      threadKey: turn.threadKey || turn.sessionKey,
+      source: "codex-live-token-cost",
+      model: modelName(),
+      effort: context.effort || turn.context?.effort || activeModelInfo().effort,
+      fastMode: typeof context.fastMode === "boolean" ? context.fastMode : turn.context?.fastMode,
+      startedAt: new Date(toTimestampMs(turn.startedAt) || now).toISOString(),
+      observedAt: now,
+      usage: null,
+    };
+    const previous = ledger.turns.find((item) => item.turnId === metricBase.turnId);
+    const durationStatus = options.durationStatus === "completed" ? "completed" : options.durationStatus === "recovered" ? "recovered" : "incomplete";
+    const startedAt = toTimestampMs(metricBase.startedAt) || now;
+    const completedAtMs = durationStatus === "completed" ? toTimestampMs(turn.officialTiming?.completedAtMs || options.completedAt) || now : 0;
+    const threadCandidate = normalizeText(options.threadKey || metricBase.threadKey, 240);
+    const profileThreadKey = options.threadAttributionStatus === "reliable" && !isTransientSessionKey(threadCandidate) ? threadCandidate : "";
+    const profileTurn = profileNormalizeTurn({
+      ...metricBase,
+      threadKey: profileThreadKey,
+      threadAttributionStatus: profileThreadKey ? "reliable" : "unknown",
+      startedAt,
+      completedAt: completedAtMs,
+      durationMs: durationStatus === "completed" ? normalizedDurationMs(turn.officialTiming || {}, startedAt, completedAtMs) || Math.max(0, completedAtMs - startedAt) : Math.max(0, now - startedAt),
+      durationStatus,
+      capturedAt: now,
+      persistReason: options.reason || "observed",
+      effort: context.effort || metricBase.effort,
+      fastMode: typeof context.fastMode === "boolean" ? context.fastMode : metricBase.fastMode,
+      usage: metricBase.usage,
+      invocations: [],
+      invocationIds: previous?.invocationIds || [],
+    });
+    if (!profileTurn) return false;
+    const calls = [];
+    const callInputs = Array.isArray(options.calls) ? options.calls : Array.isArray(turn.calls) ? turn.calls : [];
+    for (const call of callInputs) {
+      const usage = normalizeUsage(call?.usage);
+      if (!usage.exact) continue;
+      const id = `${metricBase.turnId}\u0001${usageKey(usage)}`;
+      if (ledger.usageCalls[id]) continue;
+      const record = { id, turnId: metricBase.turnId, usageKey: usageKey(usage), usage, observedAt: now, source: normalizeText(call?.source, 80) || metricBase.source };
+      ledger.usageCalls[id] = record;
+      calls.push(record);
+    }
+    const turnCalls = Object.values(ledger.usageCalls).filter((call) => call.turnId === metricBase.turnId);
+    profileTurn.usage = turnCalls.length
+      ? turnCalls.reduce((sum, call) => addUsage(sum, call.usage), { input: 0, output: 0, cached: 0, total: 0, exact: true })
+      : metricBase.usage;
+    profileTurn.callCount = turnCalls.length || toCount(metricBase.callCount) || (profileTurn.usage ? 1 : 0);
+    const invocations = [];
+    const seenInvocationIds = new Set(profileTurn.invocationIds || []);
+    const invocationInputs = Array.isArray(options.invocations) ? options.invocations : Array.isArray(metricBase.invocations) ? metricBase.invocations : [];
+    invocationInputs.forEach((rawInvocation, index) => {
+      const invocation = normalizeProfileInvocation(rawInvocation);
+      if (!invocation) return;
+      const explicitId = profileInvocationEventId(rawInvocation);
+      const eventId = normalizeText(options.invocationEventId, 180);
+      // ponytail: anonymous observations stay separate; add a transport event ID if duplicate envelopes become observable.
+      const fallbackId = eventId ? `event:${eventId}:${index}` : `observed:${now}:${++state.profileInvocationSeq}:${index}`;
+      const invocationId = `${metricBase.turnId}\u0001${explicitId || fallbackId}`;
+      if (ledger.invocations[invocationId]) {
+        seenInvocationIds.add(invocationId);
+        return;
+      }
+      const record = { ...invocation, invocationId, turnId: metricBase.turnId, occurrence: 1, observedAt: now, source: metricBase.source };
+      ledger.invocations[invocationId] = record;
+      invocations.push(record);
+      seenInvocationIds.add(invocationId);
+    });
+    profileTurn.invocationIds = Array.from(seenInvocationIds);
+    profileTurn.invocations = [];
+    const existingIndex = ledger.turns.findIndex((item) => item.turnId === profileTurn.turnId);
+    const merged = mergeProfileTurn(existingIndex >= 0 ? ledger.turns[existingIndex] : null, profileTurn);
+    merged.invocationIds = Array.from(new Set([...(existingIndex >= 0 ? ledger.turns[existingIndex].invocationIds || [] : []), ...profileTurn.invocationIds]));
+    if (existingIndex >= 0) ledger.turns[existingIndex] = merged;
+    else ledger.turns.push(merged);
+    profileLedgerRebuildRollup();
+    saveProfileLedgerSnapshot();
+    profileLedgerQueueWrite(merged, calls, invocations);
+    return true;
   }
 
   function loadDefaultPrices() {
@@ -1099,6 +1700,14 @@
     const output = toCount(
       u.output ?? u.outputTotalTokens ?? u.output_total_tokens ?? u.outputTokens ?? u.output_tokens ?? u.completion_tokens,
     );
+    const reasoningOutputTokens = toCount(
+      u.reasoningOutputTokens ??
+        u.reasoning_output_tokens ??
+        u.outputTokensDetails?.reasoningTokens ??
+        u.output_tokens_details?.reasoning_tokens ??
+        u.completionTokensDetails?.reasoningTokens ??
+        u.completion_tokens_details?.reasoning_tokens,
+    );
     const cachedTokens = toCount(
       u.cached ??
         u.cachedTokens ??
@@ -1116,7 +1725,9 @@
     const cacheCreationTokens = toCount(u.cacheCreationTokens ?? u.cache_creation_tokens ?? u.cacheCreationInputTokens ?? u.cache_creation_input_tokens);
     const cacheWriteTokens =
       toCount(
-        u.cacheWriteTokens ??
+        u.cacheWriteInputTokens ??
+          u.cache_write_input_tokens ??
+          u.cacheWriteTokens ??
           u.cache_write_tokens ??
           u.inputTokensDetails?.cacheWriteTokens ??
           u.inputTokensDetails?.cache_write_tokens ??
@@ -1141,7 +1752,7 @@
     if (hasSeparateCacheTokens) input = Math.max(inputBase, baseForSeparateCache + cacheReadTokens + cacheCreationTokens);
     const total = explicitTotal || input + output;
     const cached = cachedReadTokens;
-    const hasTokenBreakdown = input > 0 || output > 0 || cached > 0 || cacheCreationTokens > 0 || explicitTotal > 0;
+    const hasTokenBreakdown = input > 0 || output > 0 || cached > 0 || cacheCreationTokens > 0 || reasoningOutputTokens > 0 || explicitTotal > 0;
     const exact = hasTokenBreakdown;
     const normalized = { input, output, cached, total, exact };
     if (rawInput && rawInput !== input) normalized.inputTokens = rawInput;
@@ -1151,6 +1762,7 @@
     if (cachedReadTokens && cachedReadTokens !== cached) normalized.cachedReadTokens = cachedReadTokens;
     if (cacheWriteTokens) normalized.cacheWriteTokens = cacheWriteTokens;
     if (cacheCreationTokens) normalized.cacheCreationTokens = cacheCreationTokens;
+    if (reasoningOutputTokens) normalized.reasoningOutputTokens = reasoningOutputTokens;
     if (explicitTotal && explicitTotal !== total) normalized.requestTotalTokens = explicitTotal;
     if (contextUsed) normalized.contextUsed = contextUsed;
     if (contextLimit) normalized.contextLimit = contextLimit;
@@ -1200,6 +1812,7 @@
     const cachedReadTokens = toCount(a.cachedReadTokens) + toCount(b.cachedReadTokens);
     const cacheWriteTokens = toCount(a.cacheWriteTokens ?? a.cacheCreationTokens) + toCount(b.cacheWriteTokens ?? b.cacheCreationTokens);
     const cacheCreationTokens = toCount(a.cacheCreationTokens) + toCount(b.cacheCreationTokens);
+    const reasoningOutputTokens = toCount(a.reasoningOutputTokens) + toCount(b.reasoningOutputTokens);
     if (inputTokens) result.inputTokens = inputTokens;
     if (inputTotalTokens) result.inputTotalTokens = inputTotalTokens;
     if (cachedTokens) result.cachedTokens = cachedTokens;
@@ -1207,6 +1820,7 @@
     if (cachedReadTokens) result.cachedReadTokens = cachedReadTokens;
     if (cacheWriteTokens) result.cacheWriteTokens = cacheWriteTokens;
     if (cacheCreationTokens) result.cacheCreationTokens = cacheCreationTokens;
+    if (reasoningOutputTokens) result.reasoningOutputTokens = reasoningOutputTokens;
     if (a.exact || b.exact) result.exact = true;
     return result;
   }
@@ -1242,6 +1856,8 @@
       usage.cacheReadTokens || 0,
       usage.cachedReadTokens || 0,
       usage.cacheWriteTokens || usage.cacheCreationTokens || 0,
+      usage.cacheCreationTokens || 0,
+      usage.reasoningOutputTokens || 0,
     ].join(":");
   }
 
@@ -1881,8 +2497,19 @@
         return;
       }
       byId.set(turn.turnId, turn);
+      profileLedgerUpsertTurn({
+        ...turn,
+        durationStatus: "incomplete",
+        persistReason: "import",
+        capturedAt: importedAt,
+      }, { deferRollup: true, deferSnapshot: true, deferWrite: true });
       imported++;
     });
+    if (imported) {
+      profileLedgerRebuildRollup();
+      saveProfileLedgerSnapshot();
+      profileLedgerQueueSnapshotWrite();
+    }
     state.localLedger = Array.from(byId.values()).sort(
       (a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")),
     );
@@ -2429,13 +3056,16 @@
     const timing = officialRuntimeTimingFromPayload(details);
     state.officialThreadRuntimeStates.set(key, { running: Boolean(running), turnId, status, reason, observedAt: Date.now(), ...timing });
     if (running) {
-      applyOfficialTurnTiming(beginLocalTurn({ sessionKey: key, turnId, startedAt: timing.startedAtMs }), { turnId, ...timing });
+      applyOfficialTurnTiming(
+        beginLocalTurn({ sessionKey: key, turnId, startedAt: timing.startedAtMs, profileThreadKey: key, threadAttributionStatus: "reliable" }),
+        { turnId, ...timing },
+      );
       startTurnShimmer({ sessionKey: key });
     } else {
       clearLocalTurnTimer(key);
       if (localCurrentTurn(key)) {
         applyOfficialTurnTiming(localCurrentTurn(key), { turnId, ...timing });
-        persistLocalCurrentTurn("complete", key);
+        persistLocalCurrentTurn("complete", key, { durationStatus: "completed", completedAt: timing.completedAtMs });
         setLocalCurrentTurn(null, key);
       }
       stopTurnShimmer({ finishActive: true, sessionKey: key });
@@ -2503,6 +3133,21 @@
       running.push(key);
     }
     return running.length === 1 ? running[0] : "";
+  }
+
+  function sessionlessTaskCompleteSessionKey(turnId) {
+    const completedTurnId = normalizeText(turnId, 120);
+    if (!completedTurnId) return "";
+    const currentTurns = [];
+    const seenTurns = new Set();
+    for (const [candidateKey, turn] of state.localCurrentTurns.entries()) {
+      if (!turn || seenTurns.has(turn)) continue;
+      seenTurns.add(turn);
+      currentTurns.push({ key: localStateSessionKey(candidateKey), turn });
+    }
+    if (currentTurns.length !== 1) return "";
+    const candidate = currentTurns[0];
+    return normalizeText(candidate.turn.id, 120) === completedTurnId ? candidate.key : "";
   }
 
   function sessionlessUsageRuntimeSessionKey(payload) {
@@ -2878,6 +3523,31 @@
     return null;
   }
 
+  function profileInvocationEventId(value) {
+    return normalizeText(
+      value?.invocationId ||
+        value?.invocation_id ||
+        value?.callId ||
+        value?.call_id ||
+        value?.toolCallId ||
+        value?.tool_call_id ||
+        value?.eventId ||
+        value?.event_id ||
+        value?.requestId ||
+        value?.request_id ||
+        value?.streamId ||
+        value?.stream_id,
+      180,
+    );
+  }
+
+  function normalizeProfileInvocationRecord(value) {
+    const invocation = normalizeProfileInvocation(value);
+    if (!invocation) return null;
+    const invocationId = profileInvocationEventId(value);
+    return invocationId ? { ...invocation, invocationId } : invocation;
+  }
+
   function collectProfileInvocations(value, depth = 0, out = [], seen = new WeakSet()) {
     if (!value || depth > 7) return out;
     if (typeof value === "string") {
@@ -2892,7 +3562,7 @@
     if (typeof value !== "object" || seen.has(value)) return out;
     seen.add(value);
 
-    const invocation = normalizeProfileInvocation(value);
+    const invocation = normalizeProfileInvocationRecord(value);
     if (invocation) out.push(invocation);
     for (const key of ["tool_invocations", "toolInvocations", "tool_calls", "toolCalls", "invocations", "plugins", "skills", "tools", "request", "params", "data", "payload", "message", "result", "body"]) {
       collectProfileInvocations(value[key], depth + 1, out, seen);
@@ -3034,7 +3704,6 @@
     state.helperStatsAt = Date.now();
     setHelperStatus(HELPER_STATUS_CONNECTED, false);
     scheduleRender();
-    if (changed) scheduleProfileUsageRefresh(0);
     return true;
   }
 
@@ -3055,17 +3724,7 @@
   }
 
   function mergeActivityWithHelperStats(activity) {
-    const helper = state.helperStats;
-    if (!helper) return activity;
-    return {
-      ...activity,
-      uniqueSkillsUsed: helper.uniqueSkillsUsed || activity.uniqueSkillsUsed,
-      totalSkillsUsed: helper.totalSkillsUsed || activity.totalSkillsUsed,
-      uniquePluginsUsed: helper.uniquePluginsUsed || activity.uniquePluginsUsed,
-      totalPluginsUsed: helper.totalPluginsUsed || activity.totalPluginsUsed,
-      topInvocations: helper.topInvocations.length ? helper.topInvocations : activity.topInvocations,
-      topPlugins: helper.topPlugins.length ? helper.topPlugins : activity.topPlugins,
-    };
+    return activity;
   }
 
   function observeModelInfo(payload) {
@@ -3230,7 +3889,7 @@
     if (!localCurrentTurn(sessionKey)) return;
     const reason = normalizeText(options.reason || "complete", 40) || "complete";
     void delay;
-    persistLocalCurrentTurn(reason, sessionKey);
+    persistLocalCurrentTurn(reason, sessionKey, { durationStatus: "completed" });
     setLocalCurrentTurn(null, sessionKey);
     stopTurnShimmer({ finishActive: true, sessionKey });
     scheduleRender();
@@ -3255,18 +3914,38 @@
     clearLocalTurnTimer(sessionKey);
     const current = localCurrentTurn(sessionKey);
     if (current) {
+      if (options.threadAttributionStatus === "reliable" && options.profileThreadKey) {
+        current.profileThreadKey = normalizeText(options.profileThreadKey, 240);
+        current.profileThreadAttributionStatus = "reliable";
+      }
       if (!forceNewIfUsed || !current.calls?.length) return current;
       persistLocalCurrentTurn("interrupted", sessionKey);
       setLocalCurrentTurn(null, sessionKey);
     }
+    const profileThreadKey = options.threadAttributionStatus === "reliable" ? normalizeText(options.profileThreadKey || sessionKey, 240) : "";
     const turn = {
       id: normalizeText(options.turnId, 120) || `${Date.now()}-${++state.localTurnSeq}`,
       sessionKey,
+      profileThreadKey,
+      profileThreadAttributionStatus: profileThreadKey ? "reliable" : "unknown",
       startedAt: toTimestampMs(options.startedAtMs ?? options.startedAt) || Date.now(),
       calls: [],
       context: { effort: "", fastMode: null, invocations: [] },
     };
     setLocalCurrentTurn(turn, sessionKey);
+    profileLedgerUpsertTurn({
+      turnId: turn.id,
+      threadKey: profileThreadKey,
+      threadAttributionStatus: turn.profileThreadAttributionStatus,
+      startedAt: turn.startedAt,
+      model: modelName(),
+      effort: activeModelInfo().effort,
+      fastMode: typeof state.detectedFastMode === "boolean" ? state.detectedFastMode : null,
+      source: "codex-live-token-cost",
+      durationStatus: "incomplete",
+      persistReason: "turn-start",
+      capturedAt: Date.now(),
+    });
     startTurnShimmer({ sessionKey });
     return turn;
   }
@@ -3283,7 +3962,7 @@
     return {
       effort: normalizeReasoningEffort(context.effort),
       fastMode: typeof context.fastMode === "boolean" ? context.fastMode : null,
-      invocations: Array.isArray(context.invocations) ? context.invocations.map(normalizeProfileInvocation).filter(Boolean) : [],
+      invocations: Array.isArray(context.invocations) ? context.invocations.map(normalizeProfileInvocationRecord).filter(Boolean) : [],
     };
   }
 
@@ -3295,18 +3974,10 @@
   function mergeProfileContext(base = {}, next = {}) {
     const left = normalizeProfileContext(base);
     const right = normalizeProfileContext(next);
-    const seen = new Set();
-    const invocations = [];
-    for (const invocation of [...left.invocations, ...right.invocations]) {
-      const key = profileInvocationKey(invocation);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      invocations.push(invocation);
-    }
     return {
       effort: right.effort || left.effort,
       fastMode: typeof right.fastMode === "boolean" ? right.fastMode : left.fastMode,
-      invocations,
+      invocations: [...left.invocations, ...right.invocations],
     };
   }
 
@@ -3363,11 +4034,24 @@
     return Number.isFinite(rate) && rate > 0 ? rate.toFixed(2) : "0";
   }
 
-  function persistLocalCurrentTurn(reason = "persist", sessionKey = currentSessionKey()) {
+  function persistLocalCurrentTurn(reason = "persist", sessionKey = currentSessionKey(), options = {}) {
     const key = localStateSessionKey(sessionKey);
-    if (isTransientSessionKey(key)) return false;
-    const metric = localTurnMetric(localCurrentTurn(key));
+    const current = localCurrentTurn(key);
+    const metric = localTurnMetric(current);
+    const profileThreadKey = normalizeText(current.profileThreadKey, 240);
+    const profileThreadAttributionStatus = current.profileThreadAttributionStatus === "reliable" && profileThreadKey ? "reliable" : "unknown";
+    profileLedgerObserveLocalTurn(current, current.context, {
+      reason,
+      durationStatus: options.durationStatus === "completed" ? "completed" : options.durationStatus === "recovered" ? "recovered" : "incomplete",
+      completedAt: options.completedAt,
+      observedAt: Date.now(),
+      threadKey: profileThreadKey,
+      threadAttributionStatus: profileThreadAttributionStatus,
+      calls: [],
+      invocations: [],
+    });
     if (!metric) return false;
+    if (isTransientSessionKey(key)) return false;
     state.localLast = { ...metric, persistReason: reason };
     state.localLedger = state.localLedger.filter((item) => item.turnId !== metric.turnId).concat(state.localLast);
     state.localPersistedUsage.set(usageKey(metric.usage), Date.now());
@@ -3381,24 +4065,30 @@
     const usage = normalizeUsage(rawUsage);
     if (!usage.exact) return false;
     const sessionKey = localStateSessionKey(options.sessionKey || currentSessionKey());
+    const turn = beginLocalTurn({
+      sessionKey,
+      profileThreadKey: options.profileThreadKey,
+      threadAttributionStatus: options.threadAttributionStatus,
+    });
+    if (!turn) return false;
     const now = Date.now();
     const key = usageKey(usage);
+    const dedupeKey = `${turn.id}\u0001${key}`;
     const persist = options.persist ?? shouldPersistUsagePayload(null, source);
-    const previousAt = state.localSeenUsage.get(key) || 0;
+    const previousAt = state.localSeenUsage.get(dedupeKey) || 0;
     if (!persist && now - previousAt < 3000) return false;
-    state.localSeenUsage.set(key, now);
+    state.localSeenUsage.set(dedupeKey, now);
     for (const [seenKey, seenAt] of state.localSeenUsage) {
       if (now - seenAt > 10000) state.localSeenUsage.delete(seenKey);
     }
     if (persist) {
-      const persistedAt = state.localPersistedUsage.get(key) || 0;
+      const persistedAt = state.localPersistedUsage.get(dedupeKey) || 0;
       if (now - persistedAt < 10000) return false;
-      state.localPersistedUsage.set(key, now);
+      state.localPersistedUsage.set(dedupeKey, now);
       for (const [seenKey, seenAt] of state.localPersistedUsage) {
         if (now - seenAt > 30000) state.localPersistedUsage.delete(seenKey);
       }
     }
-    const turn = beginLocalTurn({ sessionKey });
     turn.context = mergeProfileContext(turn.context, context);
     const existing = turn.calls.find((call) => usageKey(call.usage) === key);
     if (existing) {
@@ -3411,6 +4101,16 @@
     if (!(Number(turn.outputStartedAt) > 0) && toCount(aggregateTurnUsage(turn).output)) turn.outputStartedAt = now;
     const metric = localTurnMetric(turn, now);
     if (!metric) return false;
+    profileLedgerObserveLocalTurn(turn, context, {
+      observedAt: now,
+      reason: persist ? "final-observed" : "usage-observed",
+      durationStatus: "incomplete",
+      calls: existing ? [] : [{ usage, source }],
+      invocations: Array.isArray(options.invocations) ? options.invocations : context.invocations,
+      invocationEventId: options.invocationEventId,
+      threadKey: options.profileThreadKey,
+      threadAttributionStatus: options.threadAttributionStatus,
+    });
     scheduleProfileUsageRefresh();
     if (!persist) return true;
     persistLocalCurrentTurn("final", sessionKey);
@@ -3436,6 +4136,7 @@
     const taskCompletePayload = isTaskCompletePayload(payload);
     const fastMode = extractFastMode(payload);
     const invocations = collectProfileInvocations(payload);
+    const invocationEventId = profileInvocationEventId(payload) || normalizeText(identity.requestId || identity.streamId, 180);
     const explicitContext = normalizeProfileContext({
       effort: info.effort,
       fastMode,
@@ -3443,12 +4144,28 @@
     });
     const requestStart = /body/i.test(String(source || "")) && shouldStartTurnFromRequestPayload(payload);
     const canStartRequest = requestStart && !unresolvedSessionIdentity;
-    if (canStartRequest) beginLocalRequestTurn({ sessionKey });
+    const profileAttribution = {
+      profileThreadKey: hasReliableSessionKey ? sessionKey : "",
+      threadAttributionStatus: hasReliableSessionKey ? "reliable" : "unknown",
+    };
+    if (canStartRequest) beginLocalRequestTurn({ sessionKey, ...profileAttribution });
     const canUseSessionlessCurrentTurn = !hasSessionReference && officialRuntimeRunningCount() <= 1;
     const canUseCurrentSessionForUsage = Boolean(hasReliableSessionKey || canStartRequest || (!unresolvedSessionIdentity && canUseSessionlessCurrentTurn && localCurrentTurn(sessionKey)));
     if (hasProfileContext(explicitContext) && /body|websocket/i.test(String(source || ""))) {
-      const turn = localCurrentTurn(sessionKey) || (canStartRequest ? beginLocalRequestTurn({ sessionKey }) : null);
-      if (turn) turn.context = mergeProfileContext(turn.context, explicitContext);
+      const turn = localCurrentTurn(sessionKey) || (canStartRequest ? beginLocalRequestTurn({ sessionKey, ...profileAttribution }) : null);
+      if (turn) {
+        turn.context = mergeProfileContext(turn.context, explicitContext);
+        if (!collectUsages(payload).length) {
+          profileLedgerObserveLocalTurn(turn, explicitContext, {
+            reason: "context-observed",
+            durationStatus: "incomplete",
+            invocations,
+            invocationEventId,
+            threadKey: hasReliableSessionKey ? sessionKey : "",
+            threadAttributionStatus: hasReliableSessionKey ? "reliable" : "unknown",
+          });
+        }
+      }
     }
     const turnContext = localCurrentTurn(sessionKey)?.context || {};
     const context = normalizeProfileContext({
@@ -3460,17 +4177,31 @@
     const persistUsage = shouldPersistUsagePayload(payload, source);
     if (canUseCurrentSessionForUsage) {
       for (const usage of collectUsages(payload)) {
-        changed = rememberLocalUsage(usage, source, context, { persist: persistUsage, sessionKey }) || changed;
+        changed =
+          rememberLocalUsage(usage, source, context, {
+            persist: persistUsage,
+            sessionKey,
+            invocations,
+            invocationEventId,
+            profileThreadKey: hasReliableSessionKey ? sessionKey : "",
+            threadAttributionStatus: hasReliableSessionKey ? "reliable" : "unknown",
+          }) || changed;
       }
     }
     const genericTaskCompleteWithoutSession = !hasSessionReference && isGenericTaskCompletePayload(payload);
-    const taskCompleteSessionKey = payloadSessionKey || "";
+    const sessionlessTaskCompleteKey = genericTaskCompleteWithoutSession ? sessionlessTaskCompleteSessionKey(identity.turnId) : "";
+    const taskCompleteSessionKey = payloadSessionKey || sessionlessTaskCompleteKey;
+    const taskCompleteTiming = taskCompletePayload ? officialRuntimeSignalFromPayload(payload) || officialRuntimeTimingFromPayload(payload) : {};
     const taskCompleteHandled = Boolean(taskCompletePayload && taskCompleteSessionKey && turnCompletionMatchesCurrent(taskCompleteSessionKey, identity.turnId));
     const officialRuntimeChanged = observeOfficialRuntimePayload(payload, source);
     if (taskCompleteHandled) {
       clearLocalTurnTimer(taskCompleteSessionKey);
       if (localCurrentTurn(taskCompleteSessionKey)) {
-        persistLocalCurrentTurn("complete", taskCompleteSessionKey);
+        applyOfficialTurnTiming(localCurrentTurn(taskCompleteSessionKey), { turnId: identity.turnId, ...taskCompleteTiming });
+        persistLocalCurrentTurn("complete", taskCompleteSessionKey, {
+          durationStatus: "completed",
+          completedAt: taskCompleteTiming.completedAtMs,
+        });
         setLocalCurrentTurn(null, taskCompleteSessionKey);
       }
       stopTurnShimmer({ finishActive: true, sessionKey: taskCompleteSessionKey });
@@ -4262,19 +4993,8 @@
   }
 
   function localProfileThreadCount() {
-    ensureLocalLedgerLoaded();
-    const keys = new Set();
-    for (const turn of state.localLedger) {
-      const usage = normalizeUsage(turn?.usage);
-      if (!usage.exact) continue;
-      const source = normalizeText(turn?.source, 80);
-      const importSource = normalizeText(turn?.importSource, 80);
-      if (source === "cc-switch" || importSource === "cc-switch") continue;
-      const key = turnSessionKey(turn);
-      if (!key || key.startsWith("new:")) continue;
-      keys.add(key);
-    }
-    return keys.size;
+    ensureProfileLedgerLoaded();
+    return new Set(state.profileLedger?.rollup?.threadKeys || []).size;
   }
 
   function localProfilePrefs() {
@@ -4611,12 +5331,13 @@
   }
 
   function localProfileResponse() {
-    const days = Array.from(localDailyUsage().values()).sort((a, b) => a.date.localeCompare(b.date));
+    ensureProfileLedgerLoaded();
+    const days = profileLedgerDailyDays();
     const totalTokens = days.reduce((sum, day) => sum + day.tokens, 0);
     const peak = days.reduce((max, day) => Math.max(max, day.tokens), 0);
     const streak = localProfileStreakStats(days);
-    const activity = mergeActivityWithHelperStats(localProfileActivityStats(state.localLedger));
-    const totalThreads = toCount(state.helperStats?.totalThreads) || localProfileThreadCount();
+    const activity = profileLedgerActivity();
+    const totalThreads = localProfileThreadCount();
     const topPlugin = activity.topPlugins?.[0] || null;
     const prefs = localProfilePrefs();
     const fastModePercent = activity.fastModePercent ?? 0;
@@ -4637,6 +5358,7 @@
         current_streak_days: streak.current,
         longest_streak_days: streak.longest,
         longest_running_turn_sec: activity.longestRunningTurnSec || 0,
+        longest_observed_turn_sec: activity.longestObservedTurnSec || 0,
         fast_mode_usage_percentage: fastModePercent,
         top_invocations: activity.topInvocations,
         top_plugins: activity.topPlugins,
@@ -5224,7 +5946,6 @@
   function openSettingsEditor() {
     state.priceEditorOpen = true;
     state.priceEditorModel = modelName();
-    void pollLocalHelperStats();
     render(true);
     const focusModal = () => state.settingsOverlay?.querySelector("[data-action='close-price']")?.focus?.();
     if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(focusModal);
@@ -8272,22 +8993,8 @@
     }
   }
 
-  function helperThreadContentUrl(sessionKey) {
-    return `${HELPER_THREAD_CONTENT_URL}?threadId=${encodeURIComponent(helperThreadContentKey(sessionKey))}`;
-  }
-
-  async function requestHelperThreadContent(sessionKey) {
-    const key = helperThreadContentKey(sessionKey);
-    if (!key || state.helperThreadContentInFlight.has(key)) return false;
-    if (state.helperThreadContent.has(key) && Date.now() - toCount(state.helperThreadContent.get(key)?.observedAt) < 5000) return false;
-    state.helperThreadContentInFlight.add(key);
-    try {
-      return mergeHelperThreadContent(await helperJson(helperThreadContentUrl(key)));
-    } catch {
-      return false;
-    } finally {
-      state.helperThreadContentInFlight.delete(key);
-    }
+  async function requestHelperThreadContent() {
+    return false;
   }
 
   function helperRefreshDelay(options = {}) {
@@ -8310,34 +9017,6 @@
     return payload;
   }
 
-  async function pollLocalHelperStats(options = {}) {
-    if (state.helperPollInFlight) return state.helperPollPromise;
-    if (typeof window.fetch !== "function") {
-      setHelperStatus(HELPER_STATUS_DEGRADED, true);
-      return false;
-    }
-    state.helperPollInFlight = true;
-    state.helperPollPromise = (async () => {
-      try {
-        const payload = await helperJsonUntilReady(
-          options.refresh ? HELPER_STATS_REFRESH_URL : HELPER_STATS_URL,
-          HELPER_STATS_URL,
-          options,
-        );
-        if (payload?.refreshing) return false;
-        return mergeHelperStats(payload);
-      } catch {
-        // Helper is optional. Missing helper must not break Codex.
-        setHelperStatus(HELPER_STATUS_DEGRADED, true);
-        return false;
-      } finally {
-        state.helperPollInFlight = false;
-        state.helperPollPromise = null;
-      }
-    })();
-    return state.helperPollPromise;
-  }
-
   async function syncCcSwitchUsageFromHelper(options = {}) {
     if (state.ccSwitchSyncInFlight) {
       if (!options.refresh) return state.ccSwitchSyncPromise || { ok: false, skipped: true };
@@ -8350,6 +9029,7 @@
       return { ok: false, skipped: true, helperUnavailable: true };
     }
     state.ccSwitchSyncInFlight = true;
+    const generation = state.ccSwitchSyncGeneration;
     state.ccSwitchSyncPromise = (async () => {
       try {
         const payload = await helperJsonUntilReady(
@@ -8358,6 +9038,11 @@
           options,
         );
         if (payload?.refreshing) return { ok: false, skipped: true, refreshing: true };
+        const payloadError = normalizeText(payload?.error, 500);
+        if (payload?.ok !== true || payloadError) {
+          setHelperStatus(HELPER_STATUS_CC_SWITCH_DEGRADED, true);
+          return { ok: false, helperUnavailable: true, error: payloadError || "cc_switch_sync_failed" };
+        }
         const turns = Array.isArray(payload?.turns) ? payload.turns : [];
         const result = importLocalUsageTurns(turns, { replaceSource: "cc-switch" });
         setHelperStatus(HELPER_STATUS_CONNECTED, false);
@@ -8370,8 +9055,10 @@
     try {
       return await state.ccSwitchSyncPromise;
     } finally {
-      state.ccSwitchSyncInFlight = false;
-      state.ccSwitchSyncPromise = null;
+      if (state.ccSwitchSyncGeneration === generation) {
+        state.ccSwitchSyncInFlight = false;
+        state.ccSwitchSyncPromise = null;
+      }
     }
   }
 
@@ -8383,14 +9070,11 @@
     }
     state.profileDataRefreshAttemptAt = Date.now();
     const refreshOptions = { ...options, refresh: true };
-    state.profileDataRefreshPromise = Promise.all([
-      pollLocalHelperStats(refreshOptions),
-      syncCcSwitchUsageFromHelper(refreshOptions),
-    ])
-      .then(([helperStats, ccSwitch]) => {
-        const ok = helperStats === true && ccSwitch?.ok === true && !ccSwitch?.error;
+    state.profileDataRefreshPromise = syncCcSwitchUsageFromHelper(refreshOptions)
+      .then((ccSwitch) => {
+        const ok = ccSwitch?.ok === true && !ccSwitch?.error;
         if (ok) state.profileDataRefreshAt = Date.now();
-        return { ok, helperStats, ccSwitch };
+        return { ok, helperStats: false, ccSwitch };
       })
       .catch((error) => ({ ok: false, error: error?.message || String(error) }))
       .finally(() => {
@@ -8405,8 +9089,7 @@
   }
 
   function refreshLocalHelperStatsOnStart() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof window.fetch !== "function") return;
-    void pollLocalHelperStats();
+    return false;
   }
 
   function startCcSwitchStartupSync() {
@@ -8494,6 +9177,8 @@
     state.profileDataRefreshAttemptAt = 0;
     state.profileDataRefreshAt = 0;
     state.profileDataRefreshPromise = null;
+    state.ccSwitchSyncGeneration += 1;
+    state.ccSwitchSyncInFlight = false;
     state.ccSwitchSyncPromise = null;
     if (state.profileAvatarRenderUrl?.startsWith?.("blob:")) {
       try {
@@ -8603,6 +9288,8 @@
       isTaskCompletePayload,
       officialRuntimeSignalFromPayload,
       observeOfficialRuntimePayload,
+      sessionlessTaskCompleteSessionKey,
+      currentLocalTurnSessionKeys: () => Array.from(state.localCurrentTurns.keys()),
       isOfficialThreadRunning,
       collectUsages,
       hasAssistantResultOutputStarted,
