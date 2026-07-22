@@ -63,6 +63,8 @@ const VERSION = "0.7.7";
     { value: "founder", label: "Founder" },
   ];
   const PROFILE_IMAGE_MAX_LENGTH = 8_000_000;
+  const PROFILE_IMAGE_UPLOAD_TARGET_LENGTH = 220_000;
+  const PROFILE_IMAGE_UPLOAD_MAX_DIMENSION = 512;
   const PROFILE_HEATMAP_BASE_START = "2025-07-13";
   const PROFILE_HEATMAP_MAX_COLUMNS = 52;
   const LOCAL_LEDGER_LIMIT = 2000;
@@ -1147,6 +1149,85 @@ const VERSION = "0.7.7";
     const text = normalizeText(value, PROFILE_IMAGE_MAX_LENGTH);
     if (!text) return null;
     return repairLegacyChunkedProfileImageUrl(text);
+  }
+
+  function isProfileStorageQuotaError(error) {
+    return Boolean(
+      error &&
+        (error.name === "QuotaExceededError" ||
+          error.name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+          error.code === 22 ||
+          error.code === 1014),
+    );
+  }
+
+  function profileStorageQuotaError(error) {
+    const wrapped = new Error("本地 Profile 存储空间不足，请压缩或移除头像后重试");
+    wrapped.name = "QuotaExceededError";
+    try {
+      wrapped.cause = error;
+    } catch {
+      // Error.cause is optional in older Chromium builds.
+    }
+    return wrapped;
+  }
+
+  function loadProfileImageElement(dataUrl) {
+    if (typeof Image !== "function") return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = dataUrl;
+    });
+  }
+
+  function profileImageCanvasDataUrl(image, maxDimension, type, quality) {
+    if (!image || typeof document === "undefined" || typeof document.createElement !== "function") return "";
+    const sourceWidth = Number(image.naturalWidth || image.width || 0);
+    const sourceHeight = Number(image.naturalHeight || image.height || 0);
+    if (!(sourceWidth > 0 && sourceHeight > 0)) return "";
+    const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
+    const canvas = document.createElement("canvas");
+    if (!canvas || typeof canvas.getContext !== "function" || typeof canvas.toDataURL !== "function") return "";
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context || typeof context.drawImage !== "function") return "";
+    try {
+      context.drawImage(image, 0, 0, width, height);
+      const result = canvas.toDataURL(type, quality);
+      return typeof result === "string" && result.startsWith("data:image/") ? result : "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function optimizeProfileImageDataUrl(imageUrl) {
+    const source = normalizeProfileImageUrl(imageUrl);
+    if (!source?.startsWith?.("data:image/") || source.length <= PROFILE_IMAGE_UPLOAD_TARGET_LENGTH) return source;
+    const image = await loadProfileImageElement(source);
+    if (!image) return source;
+    let smallest = source;
+    const dimensions = [PROFILE_IMAGE_UPLOAD_MAX_DIMENSION, 384, 256, 192];
+    const encodings = [
+      ["image/webp", 0.82],
+      ["image/webp", 0.68],
+      ["image/webp", 0.52],
+      ["image/jpeg", 0.78],
+      ["image/jpeg", 0.62],
+    ];
+    for (const dimension of dimensions) {
+      for (const [type, quality] of encodings) {
+        const candidate = profileImageCanvasDataUrl(image, dimension, type, quality);
+        if (!candidate || candidate.length >= smallest.length) continue;
+        smallest = candidate;
+        if (candidate.length <= PROFILE_IMAGE_UPLOAD_TARGET_LENGTH) return candidate;
+      }
+    }
+    return smallest;
   }
 
   function isoDateAddDays(dateIso, days) {
@@ -5078,7 +5159,12 @@ const VERSION = "0.7.7";
       planLabel: plan.planLabel,
       imageUrl: normalizeProfileImageUrl(prefs?.imageUrl),
     };
-    localStorage.setItem(PROFILE_PREFS_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(PROFILE_PREFS_KEY, JSON.stringify(next));
+    } catch (error) {
+      if (isProfileStorageQuotaError(error)) throw profileStorageQuotaError(error);
+      throw error;
+    }
     if (options.profileEditor) saveProfileDefaultEmail(next.email);
     state.profilePrefs = next;
     state.badProfileImageUrl = "";
@@ -5109,9 +5195,13 @@ const VERSION = "0.7.7";
   function applyLocalProfilePhotoUpload(uploadBody) {
     const imageUrl = extractProfilePhotoDataUrl(uploadBody);
     if (!imageUrl) return localProfilePrefs();
-    const prefs = localProfilePrefs();
-    prefs.imageUrl = imageUrl;
-    return saveLocalProfilePrefs(prefs);
+    const persist = (optimizedImageUrl) =>
+      saveLocalProfilePrefs({
+        ...localProfilePrefs(),
+        imageUrl: optimizedImageUrl,
+      });
+    if (imageUrl.length <= PROFILE_IMAGE_UPLOAD_TARGET_LENGTH) return persist(imageUrl);
+    return optimizeProfileImageDataUrl(imageUrl).then(persist);
   }
 
   function normalizeProfilePatchPayload(rawPatch) {
@@ -5130,7 +5220,7 @@ const VERSION = "0.7.7";
 
   function applyLocalProfilePatch(rawPatch) {
     const patch = normalizeProfilePatchPayload(rawPatch);
-    const prefs = localProfilePrefs();
+    const prefs = { ...localProfilePrefs() };
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     if (has("display_name") || has("displayName") || has("name")) {
       prefs.displayName = normalizeText(patch.display_name ?? patch.displayName ?? patch.name, 64) || "Local Usage";
@@ -5463,8 +5553,9 @@ const VERSION = "0.7.7";
     if (isProfileAccountsCheckUrl(url)) return localProfileAccountsCheckResponse();
     if (method === "PATCH") applyLocalProfilePatch(body);
     if (method === "POST") {
-      applyLocalProfilePhotoUpload(body);
-      return { asset_pointer: "local-profile-photo" };
+      const saved = applyLocalProfilePhotoUpload(body);
+      const response = { asset_pointer: "local-profile-photo" };
+      return saved && typeof saved.then === "function" ? saved.then(() => response) : response;
     }
     return localProfileResponse();
   }
@@ -5627,7 +5718,7 @@ const VERSION = "0.7.7";
     const originalPost = client.__codexLiveTokenCostOriginalPost || client.post.bind(client);
     client.post = async function codexLiveTokenCostProfilePhotoPost(url, body, headers, ...args) {
       if (profileUnlockEnabled() && isProfilePhotoUrl(url)) {
-        applyLocalProfilePhotoUpload(body);
+        await applyLocalProfilePhotoUpload(body);
         return { status: 200, body: { asset_pointer: "local-profile-photo" }, headers: { "content-type": "application/json" } };
       }
       return originalPost(url, body, headers, ...args);
@@ -7683,14 +7774,20 @@ const VERSION = "0.7.7";
     const workspaceName = root.querySelector("[data-profile-field='workspaceName']")?.value;
     const selectedPlan = planType === "custom" ? planCustom : planType;
     const plan = normalizeProfilePlan(selectedPlan, planCustom);
-    saveLocalProfilePrefs({
-      ...localProfilePrefs(),
-      email,
-      accountStructure,
-      workspaceName,
-      planType: plan.planType,
-      planLabel: plan.planLabel,
-    }, { profileEditor: true });
+    try {
+      saveLocalProfilePrefs({
+        ...localProfilePrefs(),
+        email,
+        accountStructure,
+        workspaceName,
+        planType: plan.planType,
+        planLabel: plan.planLabel,
+      }, { profileEditor: true });
+    } catch (error) {
+      setProfileSaveStatus(error?.message || "保存失败", "error");
+      syncProfileSaveStatus(options);
+      return false;
+    }
     setProfileSaveStatus("已保存", "success");
     syncProfileSaveStatus(options);
     return true;
@@ -9460,6 +9557,7 @@ const VERSION = "0.7.7";
       patchProfileRequestClient,
       patchProfilePhotoUploadClient,
       extractProfilePhotoDataUrl,
+      optimizeProfileImageDataUrl,
       applyLocalProfilePhotoUpload,
       localProfileResponse,
       isProfileFetchMessage,

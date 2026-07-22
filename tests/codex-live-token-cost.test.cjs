@@ -2805,6 +2805,39 @@ api.applyLocalProfilePatch({ profile_picture_url: `data:image/jpeg;base64,${lega
 assert.equal(api.localProfileResponse().profile.profile_picture_url, longExpected);
 api.applyLocalProfilePhotoUpload(multipartBase64);
 assert.equal(api.localProfileResponse().profile.profile_picture_url, "data:image/png;base64,UE5HREFUQQ==");
+const profileBeforeQuotaFailure = api.localProfileResponse().profile;
+const originalProfileStorageSetItem = context.localStorage.setItem;
+context.localStorage.setItem = function quotaLimitedProfileStorage(key, value) {
+  if (key === "__codexLiveTokenCostProfilePrefsV1") {
+    const error = new Error("quota exceeded");
+    error.name = "QuotaExceededError";
+    throw error;
+  }
+  return originalProfileStorageSetItem.call(this, key, value);
+};
+assert.throws(
+  () => api.applyLocalProfilePatch({ display_name: "Unsaved Quota Name" }),
+  /本地 Profile 存储空间不足/,
+);
+assert.equal(api.localProfileResponse().profile.display_name, profileBeforeQuotaFailure.display_name);
+const quotaMultipart = [
+  `--${boundary}`,
+  `Content-Disposition: form-data; name="file"; filename="quota.png"`,
+  `Content-Type: image/png`,
+  ``,
+  `QUOTA_IMAGE`,
+  `--${boundary}--`,
+  ``,
+].join("\r\n");
+assert.throws(
+  () => api.applyLocalProfilePhotoUpload(Buffer.from(quotaMultipart, "binary").toString("base64")),
+  /本地 Profile 存储空间不足/,
+);
+assert.equal(api.localProfileResponse().profile.profile_picture_url, profileBeforeQuotaFailure.profile_picture_url);
+context.localStorage.setItem = originalProfileStorageSetItem;
+api.applyLocalProfilePatch({ display_name: "Saved After Quota" });
+assert.equal(api.localProfileResponse().profile.display_name, "Saved After Quota");
+api.applyLocalProfilePatch({ display_name: profileBeforeQuotaFailure.display_name });
 const spoofedChatgptPhoto = api.spoofProfileAccountPayload({
   account: { type: "chatgpt", name: "设置", imageUrl: "" },
 });
@@ -3873,6 +3906,39 @@ assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.7");
   });
 
 profileLifecycleTest.then(async () => {
+  const originalProfileImage = context.Image;
+  const originalCreateElement = context.document.createElement;
+  const profileCanvas = {
+    width: 0,
+    height: 0,
+    getContext() {
+      return { drawImage() {} };
+    },
+    toDataURL(type) {
+      return `data:${type};base64,${"B".repeat(8000)}`;
+    },
+  };
+  context.Image = class ProfileImageTestDouble {
+    constructor() {
+      this.naturalWidth = 1024;
+      this.naturalHeight = 512;
+    }
+
+    set src(_value) {
+      queueMicrotask(() => this.onload?.());
+    }
+  };
+  context.document.createElement = (tagName) => (tagName === "canvas" ? profileCanvas : null);
+  const optimizedProfileImage = await api.optimizeProfileImageDataUrl(`data:image/png;base64,${"A".repeat(300000)}`);
+  assert.equal(optimizedProfileImage.startsWith("data:image/webp;base64,"), true);
+  assert.equal(optimizedProfileImage.length < 220000, true);
+  assert.equal(profileCanvas.width, 512);
+  assert.equal(profileCanvas.height, 256);
+  if (originalProfileImage === undefined) delete context.Image;
+  else context.Image = originalProfileImage;
+  if (originalCreateElement === undefined) delete context.document.createElement;
+  else context.document.createElement = originalCreateElement;
+
   api.importLocalUsageTurns([
     {
       turnId: "script:2026-07-05:local-larger",
