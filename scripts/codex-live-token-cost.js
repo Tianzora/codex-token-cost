@@ -3510,6 +3510,10 @@ const VERSION = "0.7.6";
   function normalizeProfileInvocation(value) {
     if (!value || typeof value !== "object") return null;
     const type = normalizeText(String(value.type ?? value.kind ?? ""), 30).toLowerCase();
+    const notificationItem =
+      type === "mcp-notification" && value.method === "item/completed" && value.params?.item?.type === "mcpToolCall" ? value.params.item : null;
+    const mcpServer = normalizeText(notificationItem?.server || (type === "mcp_tool_call_end" ? value.invocation?.server : ""), 120).replace(/^\$+/, "");
+    if (mcpServer) return { type: "plugin", plugin_id: mcpServer, plugin_name: mcpServer };
     const pluginName = normalizeText(value.plugin_name ?? value.pluginName ?? (type === "plugin" ? value.name : ""), 80).replace(/^\$+/, "");
     const skillName = normalizeText(value.skill_name ?? value.skillName ?? (type === "skill" ? value.name : ""), 80);
     const pluginId = normalizeText(value.plugin_id ?? value.pluginId, 120).replace(/^\$+/, "");
@@ -3536,7 +3540,8 @@ const VERSION = "0.7.6";
         value?.requestId ||
         value?.request_id ||
         value?.streamId ||
-        value?.stream_id,
+        value?.stream_id ||
+        value?.params?.item?.id,
       180,
     );
   }
@@ -3546,6 +3551,28 @@ const VERSION = "0.7.6";
     if (!invocation) return null;
     const invocationId = profileInvocationEventId(value);
     return invocationId ? { ...invocation, invocationId } : invocation;
+  }
+
+  function profileSkillInvocationsFromToolCall(value) {
+    const notificationItem =
+      value?.type === "mcp-notification" && value.method === "item/completed" && value.params?.item?.type === "commandExecution" ? value.params.item : null;
+    const legacyToolCall = value?.type === "custom_tool_call" && value.name === "exec" ? value : null;
+    if (!notificationItem && !legacyToolCall) return [];
+    const rawInput = notificationItem?.command ?? legacyToolCall.input;
+    const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput || {});
+    const callId = normalizeText(notificationItem?.id, 180) || profileInvocationEventId(value);
+    const names = new Set();
+    const pattern = /[\\/]skills[\\/]+(?:[^\\/"'\r\n]+[\\/]+)*([^\\/"'\r\n]+)[\\/]+SKILL\.md/gi;
+    for (const match of input.matchAll(pattern)) {
+      const name = normalizeText(match[1], 120);
+      if (name) names.add(name);
+    }
+    return Array.from(names, (name) => ({
+      type: "skill",
+      skill_id: name,
+      skill_name: name,
+      ...(callId ? { invocationId: `${callId}:skill:${name}` } : {}),
+    }));
   }
 
   function collectProfileInvocations(value, depth = 0, out = [], seen = new WeakSet()) {
@@ -3562,6 +3589,7 @@ const VERSION = "0.7.6";
     if (typeof value !== "object" || seen.has(value)) return out;
     seen.add(value);
 
+    out.push(...profileSkillInvocationsFromToolCall(value));
     const invocation = normalizeProfileInvocationRecord(value);
     if (invocation) out.push(invocation);
     for (const key of ["tool_invocations", "toolInvocations", "tool_calls", "toolCalls", "invocations", "plugins", "skills", "tools", "request", "params", "data", "payload", "message", "result", "body"]) {
@@ -4151,7 +4179,7 @@ const VERSION = "0.7.6";
     if (canStartRequest) beginLocalRequestTurn({ sessionKey, ...profileAttribution });
     const canUseSessionlessCurrentTurn = !hasSessionReference && officialRuntimeRunningCount() <= 1;
     const canUseCurrentSessionForUsage = Boolean(hasReliableSessionKey || canStartRequest || (!unresolvedSessionIdentity && canUseSessionlessCurrentTurn && localCurrentTurn(sessionKey)));
-    if (hasProfileContext(explicitContext) && /body|websocket/i.test(String(source || ""))) {
+    if (hasProfileContext(explicitContext) && /body|websocket|message/i.test(String(source || ""))) {
       const turn = localCurrentTurn(sessionKey) || (canStartRequest ? beginLocalRequestTurn({ sessionKey, ...profileAttribution }) : null);
       if (turn) {
         turn.context = mergeProfileContext(turn.context, explicitContext);

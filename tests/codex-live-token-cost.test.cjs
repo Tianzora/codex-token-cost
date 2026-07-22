@@ -2140,7 +2140,43 @@ assert.equal(api.extractFastMode({ serviceTier: null }), false);
 assert.equal(api.extractFastMode({ serviceTier: "standard" }), false);
 assert.equal(api.extractFastMode({ service_tier: "fast" }), true);
 assert.equal(api.extractFastMode({ message: "/fast hello" }), null);
-assert.equal(api.collectProfileInvocations({ type: "mcp_tool_call_end", invocation: { server: "docs", tool: "search" } }).length, 0);
+assert.equal(
+  JSON.stringify(
+    api.collectProfileInvocations({
+      type: "mcp-notification",
+      method: "item/completed",
+      params: {
+        item: { type: "mcpToolCall", id: "mcp-call-1", server: "chrome_devtools", tool: "list_pages", status: "completed" },
+      },
+    }),
+  ),
+  JSON.stringify([{ type: "plugin", plugin_id: "chrome_devtools", plugin_name: "chrome_devtools", invocationId: "mcp-call-1" }]),
+);
+assert.equal(
+  JSON.stringify(
+    api.collectProfileInvocations({
+      type: "mcp-notification",
+      method: "item/completed",
+      params: {
+        item: {
+          type: "commandExecution",
+          id: "skill-call-1",
+          command:
+          'rtk read "C:\\\\Users\\\\ovo\\\\.skills-manager\\\\skills\\\\systematic-debugging\\\\SKILL.md"; rtk read "C:\\\\Users\\\\ovo\\\\.skills-manager\\\\skills\\\\gstack\\\\autoplan\\\\SKILL.md"',
+        },
+      },
+    }),
+  ),
+  JSON.stringify([
+    {
+      type: "skill",
+      skill_id: "systematic-debugging",
+      skill_name: "systematic-debugging",
+      invocationId: "skill-call-1:skill:systematic-debugging",
+    },
+    { type: "skill", skill_id: "autoplan", skill_name: "autoplan", invocationId: "skill-call-1:skill:autoplan" },
+  ]),
+);
 assert.equal(api.collectProfileInvocations(activityPayload).length, 2);
 api.rememberLocalUsage(
   { input_tokens: 2000, output_tokens: 1000, cached_tokens: 0, total_tokens: 3000 },
@@ -3952,6 +3988,61 @@ profileLifecycleTest.then(async () => {
   const noIdSkill = api.localProfileResponse().stats.top_invocations.find((item) => item.skill_id === "skill-no-id");
   assert.ok(noIdSkill);
   assert.equal(noIdSkill.usage_count, 3);
+
+  const messageInvocationSession = "profile-ledger-message-invocation-thread";
+  const messageInvocationTurn = "profile-ledger-message-invocation-turn";
+  api.beginLocalTurn({ sessionKey: messageInvocationSession, turnId: messageInvocationTurn, startedAtMs: currentNow - 30000 });
+  api.inspectLocalPayload(
+    {
+      threadId: messageInvocationSession,
+      turnId: messageInvocationTurn,
+      type: "mcp-notification",
+      method: "item/completed",
+      params: {
+        threadId: messageInvocationSession,
+        turnId: messageInvocationTurn,
+        item: { type: "mcpToolCall", id: "message-mcp-call", server: "chrome_devtools", tool: "list_pages", status: "completed" },
+      },
+    },
+    "message",
+  );
+  api.inspectLocalPayload(
+    {
+      threadId: messageInvocationSession,
+      turnId: messageInvocationTurn,
+      type: "mcp-notification",
+      method: "item/completed",
+      params: {
+        threadId: messageInvocationSession,
+        turnId: messageInvocationTurn,
+        item: {
+          type: "commandExecution",
+          id: "message-skill-call",
+          command: 'rtk read "C:\\\\Users\\\\ovo\\\\.skills-manager\\\\skills\\\\systematic-debugging\\\\SKILL.md"',
+        },
+      },
+    },
+    "message",
+  );
+  const messageTurnInvocations = api.localUsageExport().currentTurn.invocations;
+  assert.equal(messageTurnInvocations.some((item) => item.plugin_id === "chrome_devtools"), true);
+  assert.equal(messageTurnInvocations.some((item) => item.skill_id === "systematic-debugging"), true);
+  api.rememberLocalUsage(
+    { input_tokens: 8, output_tokens: 2, total_tokens: 10 },
+    "message",
+    {},
+    { sessionKey: messageInvocationSession, persist: true },
+  );
+  api.finishLocalTurn(0, { reason: "profile-ledger-message-invocation-complete", force: true, sessionKey: messageInvocationSession });
+  const messageInvocationProfile = api.localProfileResponse();
+  assert.equal(
+    messageInvocationProfile.stats.top_plugins.find((item) => item.plugin_id === "chrome_devtools")?.usage_count,
+    1,
+  );
+  assert.equal(
+    messageInvocationProfile.stats.top_invocations.find((item) => item.skill_id === "systematic-debugging")?.usage_count,
+    1,
+  );
 
   const unknownBefore = api.localProfileResponse();
   const unknownDayBefore = unknownBefore.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-20")?.tokens || 0;
