@@ -85,7 +85,10 @@ assert.equal(code.includes('pushState(history.state, "", "/settings/profile")'),
 assert.equal(code.includes("@run-at       document-start"), true);
 assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
-assert.equal(code.includes('const VERSION = "0.7.7"'), true);
+assert.equal(code.includes('const VERSION = "0.7.8"'), true);
+assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
+assert.equal(code.includes("void installProfileAuthContextPatch();"), false);
+assert.equal(code.includes("profileAuthValuePatches"), false);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
 assert.equal(code.includes("--cltc-calendar-accent: rgb(76, 78, 80)"), true);
 assert.equal(code.includes("#10a37f !important"), false);
@@ -500,7 +503,9 @@ assert.equal(code.includes("function openSettingsEditor() {\n    state.priceEdit
 assert.match(code, /function openSettingsEditor\(\) \{[\s\S]*?render\(true\);\s+const focusModal = \(\) => state\.settingsOverlay\?\.querySelector\("\[data-action='close-price'\]"\)\?\.focus\?\.\(\);[\s\S]*?requestAnimationFrame\(focusModal\);/);
 assert.equal(code.includes("function refreshCcSwitchUsageFromHelper()"), false);
 assert.equal(code.includes('const PROFILE_USAGE_QUERY_KEY = ["profile", "usage"]'), true);
+assert.equal(code.includes('const PROFILE_ACCOUNT_INFO_QUERY_KEY = ["vscode", "account-info"]'), true);
 assert.equal(code.includes('const PROFILE_ACCOUNTS_CHECK_QUERY_KEY = ["accounts", "check"]'), true);
+assert.equal(code.includes("const PROFILE_WORKSPACE_ACCOUNT_ENABLED = false"), true);
 assert.equal(code.includes("void scheduleProfileAccountsCheckRefresh();"), true);
 assert.equal(code.includes("state.helperPollTimer = window.setInterval(() => {\n      void pollLocalHelperStats();"), false);
 assert.equal(code.includes("pollLocalHelperStats({ refresh: true }).then(() => profileFetchBody(method, body))"), false);
@@ -533,6 +538,8 @@ assert.equal(code.includes("listScrollTop"), true);
 assert.equal(code.includes("installProfileRequestClientPatch"), true);
 assert.equal(code.includes("installProfileAuthContextPatch"), true);
 assert.equal(code.includes("installProfilePhotoUploadPatch"), true);
+assert.equal(code.includes("app-initial-"), true);
+assert.equal(code.includes("pendingRequests"), true);
 assert.equal(code.includes("installElectronBridgeHook"), true);
 assert.equal(code.includes("__codexLiveTokenCostProfileLocal"), true);
 assert.equal(code.includes("handleProfileFetchResponseEvent"), true);
@@ -746,6 +753,7 @@ context.__CODEX_LIVE_TOKEN_COST_PRICES__["gpt-test-data-source"] = { input: 9, c
 vm.runInNewContext(code, context, { filename: scriptPath });
 
 const api = context.__codexLiveTokenCostTest;
+assert.equal(context.Promise.prototype.then.__codexLiveTokenCostProfileUnlock, undefined);
 assert.equal(typeof api.spoofProfileAccountPayload, "function");
 assert.equal(typeof api.beginLocalTurn, "function");
 assert.equal(typeof api.persistLocalCurrentTurn, "function");
@@ -756,8 +764,11 @@ assert.equal(typeof api.profileUsernameAllowed, "function");
 assert.equal(typeof api.applyLocalProfilePatch, "function");
 assert.equal(typeof api.patchProfileRequestClient, "function");
 assert.equal(typeof api.patchProfilePhotoUploadClient, "function");
+assert.equal(typeof api.codexAppAssetUrl, "function");
 assert.equal(typeof api.spoofProfileAuthContextValue, "function");
 assert.equal(typeof api.patchProfileReactAuthContext, "function");
+assert.equal(typeof api.profileAuthContextFromFiberNode, "function");
+assert.equal(typeof api.profileAuthContextFromDocument, "function");
 assert.equal(typeof api.installLocalMessageCapture, "function");
 assert.equal(typeof api.localMessageHandler, "function");
 assert.equal(typeof api.localProfileResponse, "function");
@@ -769,6 +780,10 @@ assert.equal(typeof api.inspectLocalPayload, "function");
 assert.equal(typeof api.importLocalUsageTurns, "function");
 assert.equal(typeof api.syncCcSwitchUsageFromHelper, "function");
 assert.equal(typeof api.refreshProfileData, "function");
+assert.equal(typeof api.profileUsageQueryData, "function");
+assert.equal(typeof api.profileAccountInfoQueryData, "function");
+assert.equal(typeof api.syncProfileAccountInfoQueryCache, "function");
+assert.equal(typeof api.syncProfileUsageQueryCache, "function");
 assert.equal(typeof api.extractFastMode, "function");
 assert.equal(typeof api.collectProfileInvocations, "function");
 assert.equal(typeof api.isComposerDraftPayload, "function");
@@ -789,8 +804,6 @@ assert.equal(typeof api.isCodexComposerCompleteDom, "function");
 assert.equal(typeof api.isCodexTaskRunningDom, "function");
 assert.equal(typeof api.rememberPendingInput, "function");
 assert.equal(typeof api.isMainComposerSurfaceTarget, "function");
-assert.equal(typeof api.syncSidebarProfileIdentity, "function");
-assert.equal(typeof api.syncVisibleProfilePhotoIdentity, "function");
 assert.equal(typeof api.isCodexPlusText, "function");
 assert.equal(typeof api.findCodexPlusMenu, "function");
 assert.equal(typeof api.ensureHeaderSettingsButton, "function");
@@ -924,6 +937,7 @@ assert.equal(typeof api.usageAnalyticsHtml, "function");
 assert.equal(typeof api.analyticsChartBuckets, "function");
 assert.equal(typeof api.refreshUsageAnalyticsFromHelper, "function");
 assert.equal(typeof api.localProfileAccountsCheckResponse, "function");
+assert.equal(typeof api.profileUiAuthContextValue, "function");
 const dataSourcePrice = api.priceFor("gpt-test-data-source");
 assert.equal(dataSourcePrice.input, 9);
 assert.equal(dataSourcePrice.cachedInput, 0.9);
@@ -1146,7 +1160,7 @@ const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   ],
 });
 assert.equal(unavailableCacheWriteHtml.includes("写缓存<strong>未提供</strong>"), true);
-assert.equal(context.__codexLiveTokenCost.version, "0.7.7");
+assert.equal(context.__codexLiveTokenCost.version, "0.7.8");
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.extractSessionKeyFromUrl("/thread/thread-1"), "thread-1");
 assert.equal(api.extractSessionKeyFromUrl("/api/conversation?conversationId=thread-1"), "thread-1");
@@ -1279,8 +1293,8 @@ assert.equal(
 );
 const savedProfilePrefs = JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1"));
 assert.equal(savedProfilePrefs.email, "custom@example.com");
-assert.equal(savedProfilePrefs.accountStructure, "workspace");
-assert.equal(savedProfilePrefs.workspaceName, "Tian Workspace");
+assert.equal(savedProfilePrefs.accountStructure, "personal");
+assert.equal(savedProfilePrefs.workspaceName, "Codex Workspace");
 assert.equal(savedProfilePrefs.planType, "Team Enterprise");
 assert.equal(savedProfilePrefs.planLabel, "Team Enterprise");
 assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfileDefaultsV1")).email, "custom@example.com");
@@ -1290,6 +1304,14 @@ assert.match(code, /\.cltc-settings-overlay \.cltc-profile-save-toast \{[\s\S]*?
 assert.equal(api.profileSettingsHtml().includes('data-field="profile-save-status"'), false);
 assert.equal(api.profileSettingsHtml().includes("官方新版本的账号菜单不再显示邮箱"), true);
 assert.equal(api.profileSettingsHtml().includes("这里修改的是本地伪装资料"), true);
+assert.equal(api.profileSettingsHtml().includes('value="custom"'), true);
+assert.equal(api.profileSettingsHtml().includes('data-profile-field="planCustom"'), true);
+assert.match(api.profileSettingsHtml(), /data-profile-field="accountStructure" disabled/);
+assert.match(api.profileSettingsHtml(), /data-profile-field="workspaceName"[^>]* disabled/);
+assert.equal(api.profileSettingsHtml().includes('<option value="workspace"'), true);
+assert.equal(api.profileSettingsHtml().match(/title="新版本不再允许全局伪装账号"/g)?.length, 2);
+assert.equal(code.includes(".cltc-price-field[data-profile-locked]"), true);
+assert.match(code, /\.cltc-profile-select:disabled,[\s\S]*?pointer-events: none;/);
 assert.equal(api.profileSaveToastHtml().includes('class="cltc-profile-save-toast"'), true);
 assert.equal(api.profileSaveToastHtml().includes('role="status"'), true);
 assert.equal(api.profileSaveToastHtml().includes('aria-live="polite"'), true);
@@ -1681,15 +1703,27 @@ assert.equal(api.recentLedgerModel(), "");
 const spoofedProfileAccount = api.spoofProfileAccountPayload({
   account: { id: "acc-personal", type: "chatgpt", structure: "workspace", name: "Workspace" },
 });
-assert.equal(spoofedProfileAccount.account.structure, "personal");
-assert.equal(spoofedProfileAccount.account.plan_type, "pro_20x");
+assert.equal(spoofedProfileAccount.account.type, "chatgpt");
+assert.equal(spoofedProfileAccount.account.structure, "workspace");
+assert.equal(spoofedProfileAccount.account.plan_type, undefined);
 const spoofedAccountsCheck = api.spoofProfileAccountsCheckPayload({
   account_ordering: ["acc-personal"],
   accounts: [{ id: "acc-personal", type: "chatgpt", structure: "workspace", name: "Workspace" }],
 });
 assert.equal(spoofedAccountsCheck.account_ordering[0], "acc-personal");
-assert.equal(spoofedAccountsCheck.accounts[0].structure, "personal");
-assert.equal(spoofedAccountsCheck.accounts[0].plan_type, "pro_20x");
+assert.equal(spoofedAccountsCheck.accounts[0].type, "chatgpt");
+assert.equal(spoofedAccountsCheck.accounts[0].structure, "workspace");
+assert.equal(spoofedAccountsCheck.accounts[0].plan_type, undefined);
+const spoofedApiAccountsCheck = api.spoofProfileAccountsCheckPayload({
+  account_ordering: ["acc-api"],
+  accounts: [{ id: "acc-api", type: "apiKey", structure: "personal", planType: "api", name: "custom", email: "api@example.com" }],
+});
+assert.equal(spoofedApiAccountsCheck.account_ordering[0], "acc-api");
+assert.equal(spoofedApiAccountsCheck.accounts[0].id, "acc-api");
+assert.equal(spoofedApiAccountsCheck.accounts[0].type, "apiKey");
+assert.equal(spoofedApiAccountsCheck.accounts[0].planType, "api");
+assert.equal(spoofedApiAccountsCheck.accounts[0].name, api.localProfileResponse().profile.display_name);
+assert.equal(spoofedApiAccountsCheck.accounts[0].email, api.localProfileResponse().profile.email);
 const localAccountsCheck = api.localProfileAccountsCheckResponse();
 assert.equal(localAccountsCheck.account_ordering.length, 1);
 assert.equal(localAccountsCheck.account_ordering[0], "local-profile-account");
@@ -1702,56 +1736,13 @@ assert.equal(api.saveProfilePrefsFromEditor({
   },
 }), true);
 const workspaceAccountsCheck = api.localProfileAccountsCheckResponse();
-assert.equal(workspaceAccountsCheck.accounts[0].structure, "workspace");
-assert.equal(workspaceAccountsCheck.accounts[0].name, "OpenAI Workspace");
+assert.equal(workspaceAccountsCheck.accounts[0].structure, "personal");
+assert.equal(workspaceAccountsCheck.accounts[0].name, "Local Usage");
 const workspaceProfile = api.localProfileResponse().profile;
 assert.equal(workspaceProfile.display_name, "Local Usage");
 const workspaceAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey" });
-assert.equal(workspaceAuth.authMethod, "chatgpt");
+assert.equal(workspaceAuth.authMethod, "apikey");
 assert.equal(workspaceAuth.email, "sama@openai.com");
-const currentReact = { useContext() {} };
-assert.equal(
-  api.profileReactAssetUrl([
-    "app://-/assets/react-dom-client-test.js",
-    "app://-/assets/react-CELMljbn.js",
-  ]),
-  "app://-/assets/react-CELMljbn.js",
-);
-assert.equal(api.profileReactFromModule({ t: () => currentReact }), currentReact);
-const currentAuthContext = { Provider: {}, Consumer: {}, _currentValue: undefined, _currentValue2: undefined };
-const currentAuthNonceContext = { Provider: {}, Consumer: {}, _currentValue: null, _currentValue2: null };
-assert.equal(api.profileAuthContextFromModule({ c: currentAuthContext, o: currentAuthNonceContext }), currentAuthContext);
-assert.equal(api.profileAuthContextFromModule({ l: currentAuthContext }), currentAuthContext);
-const sidebarProfileName = {
-  className: "min-w-0 flex-1 truncate",
-  textContent: "雪天",
-  querySelector() {
-    return null;
-  },
-};
-const sidebarProfileButton = {
-  innerText: "雪天",
-  textContent: "雪天",
-  getAttribute(name) {
-    return name === "aria-label" ? "打开个人资料菜单" : "";
-  },
-  getBoundingClientRect() {
-    return { top: 704, left: 8, width: 252, height: 29 };
-  },
-  querySelector() {
-    return null;
-  },
-  querySelectorAll(selector) {
-    return selector === "span" ? [sidebarProfileName] : [];
-  },
-};
-assert.equal(api.syncSidebarProfileIdentity({
-  defaultView: { innerHeight: 742 },
-  querySelector(selector) {
-    return selector.includes("打开个人资料菜单") ? sidebarProfileButton : null;
-  },
-}), false);
-assert.equal(sidebarProfileName.textContent, "雪天");
 profileEditorFields["[data-profile-field='accountStructure']"].value = "personal";profileEditorFields["[data-profile-field='accountStructure']"].value = "personal";
 assert.equal(api.saveProfilePrefsFromEditor({
   querySelector(selector) {
@@ -1977,30 +1968,155 @@ assert.equal(profileResponses[0].status, 200);
 assert.equal(profileResponses[0].__codexLiveTokenCostProfileLocal, true);
 
 const spoofed = api.spoofProfileAccountPayload({
-  account: { type: "apiKey", planType: "api" },
+  account: { id: "api-account", type: "apiKey", planType: "api" },
   requiresOpenaiAuth: true,
 });
-assert.equal(spoofed.account.type, "chatgpt");
-assert.equal(spoofed.requiresOpenaiAuth, false);
-assert.equal(spoofed.account.planType, "pro_20x");
+assert.equal(spoofed.account.id, "api-account");
+assert.equal(spoofed.account.type, "apiKey");
+assert.equal(spoofed.requiresOpenaiAuth, true);
+assert.equal(spoofed.account.planType, "api");
 assert.equal(spoofed.account.email, "sama@openai.com");
-const spoofedAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey", isLoading: true, setAuthMethod() {} });
-assert.equal(spoofedAuth.authMethod, "chatgpt");
-assert.equal(spoofedAuth.requiresAuth, true);
-assert.equal(spoofedAuth.accountId, "local-profile-account");
-assert.equal(spoofedAuth.userId, "local-profile-user");
-assert.equal(spoofedAuth.isLoading, false);
-assert.equal(spoofedAuth.planAtLogin, "pro_20x");
-const authContext = { name: "auth" };
+const spoofedAuth = api.spoofProfileAuthContextValue({
+  authMethod: "apikey",
+  openAIAuth: "api_key",
+  requiresAuth: false,
+  accountId: "api-account",
+  userId: "api-user",
+  account: { id: "api-account", type: "apiKey", planType: "api" },
+  isLoading: true,
+  setAuthMethod() {},
+});
+assert.equal(spoofedAuth.authMethod, "apikey");
+assert.equal(spoofedAuth.openAIAuth, "api_key");
+assert.equal(spoofedAuth.requiresAuth, false);
+assert.equal(spoofedAuth.accountId, "api-account");
+assert.equal(spoofedAuth.userId, "api-user");
+assert.equal(spoofedAuth.account.type, "apiKey");
+assert.equal(spoofedAuth.account.planType, "api");
+assert.equal(spoofedAuth.isLoading, true);
+const authContext = {
+  name: "auth",
+  _currentValue: null,
+  _currentValue2: null,
+};
 const otherContext = { name: "other" };
-const react = {
-  useContext(context) {
-    return context === authContext ? { authMethod: "apikey" } : "other-value";
+const rawApiAuth = {
+  authMethod: "apikey",
+  openAIAuth: "apikey",
+  requiresAuth: true,
+  isLoading: false,
+  accountId: null,
+  userId: null,
+};
+authContext._currentValue = rawApiAuth;
+authContext._currentValue2 = rawApiAuth;
+const capturedUseContext = (context) => context._currentValue;
+const authDependency = { context: authContext, memoizedValue: rawApiAuth, next: null };
+const profileButton = {
+  __reactFiber$profile: {
+    dependencies: { firstContext: authDependency },
+    return: null,
+  },
+  getBoundingClientRect() {
+    return { width: 184, height: 29 };
   },
 };
-assert.equal(api.patchProfileReactAuthContext(react, authContext), true);
-assert.equal(react.useContext(authContext).authMethod, "chatgpt");
-assert.equal(react.useContext(otherContext), "other-value");
+assert.equal(api.profileAuthContextFromFiberNode(profileButton), authContext);
+assert.equal(api.profileAuthContextFromDocument({ querySelector: () => profileButton }), authContext);
+assert.deepEqual(
+  api.profileUiComponentNamesFromSource(
+    "function K1l(){const x='codex.profileFooter.settingsFallback'}function I1l({sidebarFooter:e,triggerButton:t}){}",
+  ),
+  ["K1l"],
+);
+assert.equal(api.isProfileUiAuthRead("at K1l (app-initial.js:1:1)", ["K1l"]), true);
+assert.equal(api.isProfileUiAuthRead("at I1l (app-initial.js:1:1)", ["K1l"]), false);
+assert.equal(api.isProfileUiAuthRead("at NotK1lSuffix (app-initial.js:1:1)", ["K1l"]), false);
+assert.equal(api.patchProfileReactAuthContext(authContext, ["ProfileFooterHarness"]), true);
+function ProfileFooterHarness() {
+  return capturedUseContext(authContext);
+}
+const patchedProfileAuth = ProfileFooterHarness();
+assert.notEqual(patchedProfileAuth, rawApiAuth);
+assert.equal(patchedProfileAuth.authMethod, "chatgpt");
+assert.equal(patchedProfileAuth.openAIAuth, "apikey");
+assert.equal(patchedProfileAuth.requiresAuth, false);
+assert.equal(patchedProfileAuth.accountId, "local-profile-account");
+assert.equal(patchedProfileAuth.userId, "local-profile-user");
+assert.equal(patchedProfileAuth.hasChatGptToken, true);
+assert.equal(patchedProfileAuth.displayName, "Local Usage");
+assert.equal(capturedUseContext(authContext), rawApiAuth);
+assert.equal(capturedUseContext(otherContext), undefined);
+assert.equal(typeof api.installProfileUiReadinessCoordinator, "function");
+const delayedProfileInvalidations = [];
+const delayedProfileCacheWrites = [];
+const delayedProfileQueryClient = {
+  getQueryCache() {
+    return { getAll: () => [{ queryKey: ["profile", "usage", "disabled"] }] };
+  },
+  setQueryData(queryKey, data) {
+    delayedProfileCacheWrites.push({ queryKey, data });
+  },
+  invalidateQueries({ queryKey }) {
+    delayedProfileInvalidations.push(queryKey);
+    return Promise.resolve();
+  },
+};
+const delayedRawApiAuth = {
+  authMethod: "apikey",
+  openAIAuth: "apikey",
+  requiresAuth: true,
+  isLoading: false,
+  accountId: null,
+  userId: null,
+};
+const delayedAuthContext = {
+  _currentValue: delayedRawApiAuth,
+  _currentValue2: delayedRawApiAuth,
+};
+let delayedProfileButton = null;
+const delayedProfileDocument = {
+  body: {},
+  querySelector() {
+    return delayedProfileButton;
+  },
+};
+let profileReadinessObserver = null;
+context.MutationObserver = class ProfileReadinessObserver {
+  constructor(callback) {
+    this.callback = callback;
+    this.disconnected = false;
+    profileReadinessObserver = this;
+  }
+  observe() {}
+  disconnect() {
+    this.disconnected = true;
+  }
+};
+assert.equal(api.installProfileUiReadinessCoordinator(["ProfileFooterHarness"], delayedProfileDocument), false);
+assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "waiting");
+assert.ok(profileReadinessObserver);
+delayedProfileButton = {
+  __reactFiber$delayedProfile: {
+    dependencies: {
+      firstContext: { context: delayedAuthContext, memoizedValue: delayedRawApiAuth, next: null },
+    },
+    return: { memoizedProps: { value: delayedProfileQueryClient }, return: null },
+  },
+  getBoundingClientRect() {
+    return { width: 184, height: 29 };
+  },
+};
+profileReadinessObserver.callback([{ addedNodes: [delayedProfileButton] }]);
+assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.8");
+assert.equal(api.profileSyntheticAuth(), true);
+assert.equal(profileReadinessObserver.disconnected, true);
+assert.equal(delayedProfileCacheWrites.length > 0, true);
+assert.deepEqual(delayedProfileCacheWrites[0].queryKey, ["profile", "usage", "disabled"]);
+assert.equal(delayedProfileInvalidations.map((queryKey) => queryKey.join("/")).join(","), "accounts/check,profile/usage");
+assert.equal(delayedAuthContext._currentValue.authMethod, "apikey");
+api.installProfileUiReadinessCoordinator([], delayedProfileDocument);
+assert.equal(api.profileSyntheticAuth(), false);
 assert.equal(typeof api.invalidateProfileQueryWithClient, "function");
 const profileQueryInvalidations = [];
 const profileQueryClient = {
@@ -2053,6 +2169,7 @@ assert.deepEqual(
 assert.equal(api.profileUsernameAllowed("Tian_001"), true);
 assert.equal(api.profileUsernameAllowed("ab"), false);
 assert.equal(api.isProfileFetchMessage({ type: "fetch", method: "PATCH", url: "/wham/profiles/me" }), true);
+assert.equal(api.isProfileFetchMessage({ type: "fetch", method: "GET", url: "/wham/accounts/check" }), false);
 assert.equal(api.isProfileFetchMessage({ type: "fetch", method: "PATCH", url: "/v1/responses" }), false);
 api.applyLocalProfilePatch({ display_name: "Tian", username: "Tian_001" });
 const profile = api.localProfileResponse().profile;
@@ -2081,10 +2198,28 @@ const spoofedChatgptNamed = api.spoofProfileAccountPayload({
 });
 assert.equal(spoofedChatgptNamed.account.name, "Tian Envelope");
 assert.equal(spoofedChatgptNamed.account.displayName, "Tian Envelope");
-assert.equal(spoofedChatgptNamed.requiresOpenaiAuth, false);
-const spoofedNamedAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey" });
+assert.equal(spoofedChatgptNamed.requiresOpenaiAuth, true);
+const spoofedNamedAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey", account: { id: "api-account", type: "apiKey" } });
 assert.equal(spoofedNamedAuth.displayName, "Tian Envelope");
 assert.equal(spoofedNamedAuth.account.displayName, "Tian Envelope");
+const profileUiAuth = api.profileUiAuthContextValue({
+  authMethod: "apikey",
+  openAIAuth: "api_key",
+  requiresAuth: true,
+  accountId: "api-account",
+  userId: "api-user",
+  account: { id: "api-account", type: "apiKey", planType: "api" },
+});
+assert.equal(profileUiAuth.authMethod, "chatgpt");
+assert.equal(profileUiAuth.openAIAuth, "api_key");
+assert.equal(profileUiAuth.requiresAuth, false);
+assert.equal(profileUiAuth.accountId, "local-profile-account");
+assert.equal(profileUiAuth.userId, "local-profile-user");
+assert.equal(profileUiAuth.hasChatGptToken, true);
+assert.equal(profileUiAuth.account.id, "local-profile-account");
+assert.equal(profileUiAuth.account.type, "chatgpt");
+const realChatgptAuth = { authMethod: "chatgpt", accountId: "real-account" };
+assert.equal(api.profileUiAuthContextValue(realChatgptAuth), realChatgptAuth);
 
 const statsProfile = api.localProfileResponse();
 assert.equal(statsProfile.metadata.stats_error, "");
@@ -2901,11 +3036,11 @@ function fakeNode(tagName, textContent, className, rect = { left: 0, top: 0, wid
 const avatarSpan = fakeSpan("设", "flex size-7 shrink-0 items-center justify-center rounded-full", { left: 16, top: 1000, width: 28, height: 28 });
 const sidebarAvatarImage = fakeNode("img", "", "", { left: 16, top: 1000, width: 28, height: 28 });
 avatarSpan.children.push(sidebarAvatarImage);
-const nameSpan = fakeSpan("设置", "truncate text-base leading-5");
+const nameSpan = fakeSpan("custom", "min-w-0 flex-1 truncate text-base leading-5");
 const planSpan = fakeSpan("Plus", "truncate text-xs leading-4 text-token-text-tertiary");
 const sidebarButton = {
-  innerText: "设\n设置\nPlus",
-  textContent: "设\n设置\nPlus",
+  innerText: "设\ncustom\nPlus",
+  textContent: "设\ncustom\nPlus",
   getAttribute(name) {
     return name === "aria-label" ? "打开个人资料菜单" : null;
   },
@@ -2937,16 +3072,244 @@ const sidebarDoc = {
     };
   },
 };
-assert.equal(api.syncSidebarProfileIdentity(sidebarDoc), true);
-assert.equal(nameSpan.textContent, "设置");
+assert.equal(nameSpan.textContent, "custom");
 assert.equal(planSpan.textContent, "Plus");
-assert.equal(sidebarAvatarImage.src, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(sidebarAvatarImage.alt, "T");
+assert.equal(sidebarAvatarImage.src, undefined);
+assert.equal(sidebarAvatarImage.alt, undefined);
 assert.equal(sidebarAvatarImage.style.display, undefined);
 assert.equal(avatarSpan.textContent, "设");
 assert.equal(avatarSpan.style.backgroundImage, undefined);
-assert.equal(api.syncSidebarProfileIdentity(sidebarDoc), true);
 assert.equal(avatarSpan.children.length, 1);
+const officialGear = fakeNode("svg", "", "icon-xs shrink-0");
+const officialLabel = fakeSpan("设置", "min-w-0 flex-1 truncate");
+const officialChildren = [officialGear, officialLabel];
+const officialProfileButton = {
+  id: "profile-trigger",
+  attributes: new Map([
+    ["aria-label", "打开个人资料菜单"],
+    ["aria-controls", "profile-menu"],
+  ]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  getBoundingClientRect() {
+    return { left: 8, top: 1006, width: 184, height: 29 };
+  },
+  querySelector(selector) {
+    if (selector === "[data-cltc-profile-identity-avatar]") {
+      return officialChildren.find((child) => child.attributes?.has("data-cltc-profile-identity-avatar")) || null;
+    }
+    if (selector === "span.min-w-0.flex-1.truncate") return officialLabel;
+    if (selector === "svg") return officialGear;
+    return null;
+  },
+  insertBefore(child, reference) {
+    const index = officialChildren.indexOf(reference);
+    officialChildren.splice(index < 0 ? officialChildren.length : index, 0, child);
+    child.remove = () => {
+      const childIndex = officialChildren.indexOf(child);
+      if (childIndex >= 0) officialChildren.splice(childIndex, 1);
+    };
+    return child;
+  },
+  get firstElementChild() {
+    return officialChildren[0] || null;
+  },
+};
+const officialMenuLabel = fakeSpan("custom", "flex-1 min-w-0 truncate");
+const officialMenuRowChildren = [officialMenuLabel];
+const officialMenuRow = {
+  className: "flex w-full items-center gap-1.5",
+  querySelector(selector) {
+    if (selector === "span.flex-1.min-w-0.truncate") return officialMenuLabel;
+    if (selector === "[data-cltc-profile-menu-identity-avatar]") {
+      return officialMenuRowChildren.find((child) => child.attributes?.has("data-cltc-profile-menu-identity-avatar")) || null;
+    }
+    return null;
+  },
+  insertBefore(child, reference) {
+    const index = officialMenuRowChildren.indexOf(reference);
+    officialMenuRowChildren.splice(index < 0 ? officialMenuRowChildren.length : index, 0, child);
+    child.remove = () => {
+      const childIndex = officialMenuRowChildren.indexOf(child);
+      if (childIndex >= 0) officialMenuRowChildren.splice(childIndex, 1);
+    };
+    return child;
+  },
+};
+const officialAccountMenuListeners = new Map();
+const officialAccountMenuItem = {
+  className:
+    "no-drag text-token-foreground outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm cursor-default opacity-50 opacity-100 flex flex-col",
+  attributes: new Map([
+    ["aria-disabled", "true"],
+    ["data-disabled", ""],
+    ["tabindex", "-1"],
+  ]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  },
+  addEventListener(type, handler) {
+    const handlers = officialAccountMenuListeners.get(type) || [];
+    handlers.push(handler);
+    officialAccountMenuListeners.set(type, handlers);
+  },
+  removeEventListener(type, handler) {
+    officialAccountMenuListeners.set(
+      type,
+      (officialAccountMenuListeners.get(type) || []).filter((candidate) => candidate !== handler),
+    );
+  },
+  get firstElementChild() {
+    return officialMenuRow;
+  },
+};
+let officialSettingsClicks = 0;
+let officialProfileClicks = 0;
+let officialProfileVisible = false;
+const officialInteractiveMenuClass =
+  "no-drag text-token-foreground outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm group hover:bg-token-list-hover-background focus:bg-token-list-hover-background cursor-interaction flex flex-col";
+const officialSettingsMenuItem = {
+  textContent: "设置\nCtrl+,",
+  innerText: "设置\nCtrl+,",
+  className: officialInteractiveMenuClass,
+  click() {
+    officialSettingsClicks += 1;
+    officialProfileVisible = true;
+  },
+};
+const officialPetMenuItem = {
+  textContent: "显示宠物",
+  innerText: "显示宠物",
+  className: officialInteractiveMenuClass,
+  clickCount: 0,
+  click() {
+    this.clickCount += 1;
+  },
+};
+const officialProfileSettingsButton = {
+  textContent: "个人资料",
+  innerText: "个人资料",
+  getAttribute(name) {
+    return name === "aria-label" ? "个人资料" : null;
+  },
+  getBoundingClientRect() {
+    return { left: 100, top: 100, width: 120, height: 32 };
+  },
+  click() {
+    officialProfileClicks += 1;
+  },
+};
+const officialProfileMenu = {
+  id: "profile-menu",
+  getAttribute(name) {
+    if (name === "role") return "menu";
+    if (name === "aria-labelledby") return "profile-trigger";
+    return null;
+  },
+  querySelector(selector) {
+    return selector === "[role='menuitem']" ? officialAccountMenuItem : null;
+  },
+  querySelectorAll(selector) {
+    return selector === "[role='menuitem']" ? [officialAccountMenuItem, officialPetMenuItem, officialSettingsMenuItem] : [];
+  },
+  settingsItem: officialSettingsMenuItem,
+};
+const officialProfileDoc = {
+  querySelector(selector) {
+    return selector.includes("打开个人资料菜单") ? officialProfileButton : null;
+  },
+  getElementById(id) {
+    return id === "profile-menu" ? officialProfileMenu : null;
+  },
+  createElement(tagName) {
+    return fakeNode(tagName, "", "");
+  },
+  querySelectorAll(selector) {
+    return selector === "button,a,[role='tab']" && officialProfileVisible ? [officialProfileSettingsButton] : [];
+  },
+};
+assert.equal(api.syncSidebarProfileIdentity(officialProfileDoc), true);
+assert.equal(officialProfileButton.getAttribute("aria-label"), "打开个人资料菜单");
+assert.equal(officialLabel.textContent, api.localProfileResponse().profile.display_name);
+assert.equal(officialGear.style.display, "none");
+assert.equal(officialChildren[0].tagName, "IMG");
+assert.equal(officialChildren[0].src, api.localProfileResponse().profile.profile_picture_url);
+assert.equal(officialChildren[0].className, "icon-sm shrink-0 rounded-full");
+assert.equal(api.syncSidebarProfileMenuIdentity(officialProfileDoc, officialProfileButton), true);
+assert.equal(officialProfileMenu, officialProfileDoc.getElementById("profile-menu"));
+assert.equal(officialAccountMenuItem, officialProfileMenu.querySelector("[role='menuitem']"));
+assert.equal(officialMenuLabel.textContent, api.localProfileResponse().profile.display_name);
+assert.equal(officialMenuRowChildren.length, 2);
+assert.equal(officialMenuRowChildren[0].tagName, "SPAN");
+assert.equal(
+  officialMenuRowChildren[0].className,
+  "inline-flex items-center justify-center leading-none icon-sm shrink-0 opacity-75 group-focus:opacity-100 group-hover:opacity-100",
+);
+assert.equal(officialMenuRowChildren[0].children[0].tagName, "IMG");
+assert.equal(officialMenuRowChildren[0].children[0].className, "icon-sm rounded-full");
+assert.equal(officialMenuRowChildren[0].children[0].src, api.localProfileResponse().profile.profile_picture_url);
+assert.equal(officialProfileMenu.settingsItem, officialSettingsMenuItem);
+assert.equal(officialProfileMenu.querySelector("[role='menuitem']"), officialAccountMenuItem);
+assert.equal(officialAccountMenuItem.getAttribute("aria-disabled"), null);
+assert.equal(officialAccountMenuItem.hasAttribute("data-disabled"), false);
+assert.equal(officialAccountMenuItem.getAttribute("tabindex"), "0");
+assert.equal(officialAccountMenuItem.className, officialInteractiveMenuClass);
+assert.equal(officialAccountMenuListeners.get("click")?.length, 1);
+assert.equal(officialAccountMenuListeners.get("keydown")?.length, 1);
+assert.equal(api.syncSidebarProfileMenuIdentity(officialProfileDoc, officialProfileButton), true);
+assert.equal(officialMenuRowChildren.length, 2);
+assert.equal(officialAccountMenuListeners.get("click")?.length, 1);
+assert.equal(officialAccountMenuListeners.get("keydown")?.length, 1);
+let accountClickPrevented = 0;
+let accountClickStopped = 0;
+officialAccountMenuListeners.get("click")[0]({
+  preventDefault() {
+    accountClickPrevented += 1;
+  },
+  stopPropagation() {
+    accountClickStopped += 1;
+  },
+});
+assert.equal(accountClickPrevented, 1);
+assert.equal(accountClickStopped, 1);
+assert.equal(officialSettingsClicks, 1);
+assert.equal(officialProfileClicks, 1);
+assert.equal(officialPetMenuItem.clickCount, 0);
+officialAccountMenuListeners.get("keydown")[0]({
+  key: "Enter",
+  preventDefault() {},
+  stopPropagation() {},
+});
+assert.equal(officialSettingsClicks, 2);
+assert.equal(officialProfileClicks, 2);
+assert.equal(typeof api.restoreSidebarProfileMenuIdentity, "function");
+api.restoreSidebarProfileMenuIdentity();
+assert.equal(officialAccountMenuItem.getAttribute("aria-disabled"), "true");
+assert.equal(officialAccountMenuItem.hasAttribute("data-disabled"), true);
+assert.equal(officialAccountMenuItem.getAttribute("tabindex"), "-1");
+assert.match(officialAccountMenuItem.className, /cursor-default/);
+assert.equal(officialAccountMenuListeners.get("click")?.length, 0);
+assert.equal(officialAccountMenuListeners.get("keydown")?.length, 0);
+assert.equal(officialMenuLabel.textContent, "custom");
+assert.equal(officialMenuRowChildren.length, 1);
+assert.equal(
+  code.includes("icon-sm flex shrink-0 items-center justify-center rounded-full bg-token-charts-purple/10 text-[10px] leading-none font-medium text-token-charts-purple"),
+  true,
+);
+assert.equal(code.includes("size-7 shrink-0 rounded-full object-cover"), false);
 const profileAvatarFallback = fakeNode(
   "div",
   "天",
@@ -2970,7 +3333,6 @@ const profilePhotoDoc = {
     return node;
   },
 };
-assert.equal(api.syncVisibleProfilePhotoIdentity(profilePhotoDoc), false);
 assert.equal(profileAvatarFallback.children.length, 0);
 assert.equal(profileAvatarFallback.textContent, "天");
 const settingsSidebarButton = {
@@ -2986,18 +3348,6 @@ const settingsSidebarButton = {
     return selector === "span" ? [fakeSpan("Chat 设置", "truncate text-base leading-5")] : [];
   },
 };
-assert.equal(
-  api.syncSidebarProfileIdentity({
-    defaultView: { innerHeight: 1080 },
-    querySelectorAll(selector) {
-      return selector.includes("aside button") ? [settingsSidebarButton] : [];
-    },
-    createElement(tagName) {
-      return fakeNode(tagName, "", "", { left: 0, top: 0, width: 0, height: 0 });
-    },
-  }),
-  false,
-);
 assert.equal(settingsSidebarButton.textContent, "Chat 设置");
 function headerNode(tagName, textContent = "") {
   return {
@@ -3142,11 +3492,12 @@ assert.equal(businessProfile.plan_type, "business");
 assert.equal(businessProfile.plan_label, "Business");
 const spoofedBusiness = api.spoofProfileAccountPayload({ account: { type: "apiKey", planType: "api" } });
 assert.equal(spoofedBusiness.account.email, "local@example.com");
-assert.equal(spoofedBusiness.account.planType, "business");
+assert.equal(spoofedBusiness.account.planType, "api");
 api.applyLocalProfilePatch({ planType: "Team Enterprise", planLabel: "Team Enterprise" });
 const customPlanProfile = api.localProfileResponse().profile;
 assert.equal(customPlanProfile.plan_type, "Team Enterprise");
 assert.equal(customPlanProfile.plan_label, "Team Enterprise");
+assert.equal(api.profileAccountInfoQueryData().plan, "Team Enterprise");
 api.applyLocalProfilePatch({ requestBody: { profile_asset_pointer: "local-profile-photo" } });
 assert.equal(api.localProfileResponse().profile.profile_picture_url, "data:image/png;base64,UE5HREFUQQ==");
 api.applyLocalProfilePatch({ requestBody: { profile_picture_url: `data:image/png;base64,${"A".repeat(2_100_000)}` } });
@@ -3157,6 +3508,9 @@ const photoClient = {
   },
 };
 assert.equal(api.patchProfilePhotoUploadClient(photoClient), true);
+const functionPhotoClient = function functionPhotoClient() {};
+functionPhotoClient.post = photoClient.post;
+assert.equal(api.patchProfilePhotoUploadClient(functionPhotoClient), true);
 Promise.resolve()
   .then(() => photoClient.post("/wham/profiles/me/photo", multipartBase64, {}))
   .then((uploadResult) => {
@@ -3691,14 +4045,23 @@ api.finishLocalTurn(0, { reason: "recent-live-reload-reset", force: true, sessio
 assert.deepEqual([1, 2, 3].filter((value) => value > 1), [2, 3]);
 assert.equal(/^[a-z0-9._-]+$/.test("UPPER"), true);
 Promise.resolve({ account: { type: "apiKey", planType: "api" }, requiresOpenaiAuth: true }).then((value) => {
-  assert.equal(value.account.type, "chatgpt");
+  assert.equal(value.account.type, "apiKey");
+  assert.equal(value.requiresOpenaiAuth, true);
 });
 Promise.resolve({ plain: true }).then((value) => {
   assert.deepEqual(value, { plain: true });
 });
 
+let profileAccountsCheckUpstreamCalls = 0;
 const profileClient = {
-  async safeGet() {
+  async safeGet(url) {
+    if (String(url).includes("/wham/accounts/check")) {
+      profileAccountsCheckUpstreamCalls += 1;
+      return {
+        account_ordering: ["api-account"],
+        accounts: [{ id: "api-account", type: "apiKey", structure: "personal", planType: "api", name: "custom", email: "api@example.com" }],
+      };
+    }
     throw new Error("Unauthorized");
   },
   async safePatch() {
@@ -3706,6 +4069,45 @@ const profileClient = {
   },
 };
 assert.equal(api.patchProfileRequestClient(profileClient), true);
+api.saveProfileUnlockEnabled(true);
+const syntheticProfileAuth = api.profileUiAuthContextValue({
+  authMethod: "apikey",
+  account: { id: "api-account", type: "apiKey", planType: "api" },
+});
+assert.equal(syntheticProfileAuth.authMethod, "chatgpt");
+const profileQueryData = api.profileUsageQueryData();
+const localProfile = api.localProfileResponse();
+assert.equal(profileQueryData.displayName, localProfile.profile.display_name);
+assert.equal(profileQueryData.username, localProfile.profile.username);
+assert.equal(profileQueryData.planType, localProfile.profile.plan_type);
+assert.equal(profileQueryData.plan_type, localProfile.profile.plan_type);
+assert.equal(profileQueryData.planLabel, localProfile.profile.plan_label);
+assert.equal(profileQueryData.summary.totalTextTokens, localProfile.stats.lifetime_tokens);
+assert.equal(profileQueryData.dailyUsage.at(-1).credits, localProfile.stats.daily_usage_buckets.at(-1).tokens);
+const syncedProfileQueries = [];
+const profileUsageCacheClient = {
+  invalidateQueries() {},
+  getQueryCache() {
+    return {
+      getAll() {
+        return [{ queryKey: ["profile", "usage", "disabled"] }];
+      },
+    };
+  },
+  setQueryData(queryKey, data) {
+    syncedProfileQueries.push({ queryKey, data });
+  },
+};
+assert.equal(api.syncProfileUsageQueryCache(profileUsageCacheClient), true);
+const syncedProfileQuery = syncedProfileQueries.find(({ queryKey }) => queryKey.join("/") === "profile/usage/disabled");
+const syncedAccountInfoQuery = syncedProfileQueries.find(({ queryKey }) => queryKey.join("/") === "vscode/account-info");
+assert.equal(syncedProfileQuery.data.displayName, localProfile.profile.display_name);
+assert.equal(syncedAccountInfoQuery.data.accountId, "local-profile-account");
+assert.equal(syncedAccountInfoQuery.data.userId, "local-profile-user");
+assert.equal(syncedAccountInfoQuery.data.email, localProfile.profile.email);
+assert.equal(syncedAccountInfoQuery.data.plan, localProfile.profile.plan_type);
+assert.equal(syncedAccountInfoQuery.data.hasChatGptToken, false);
+assert.equal(syncedProfileQueries.some(({ queryKey }) => queryKey.join("/") === "accounts/check"), false);
 context.fetch = async function helperStatsFetch(url) {
   helperFetchCalls.push(String(url));
   return {
@@ -3745,7 +4147,60 @@ api.mergeHelperStats({
 });
 assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeDuplicateMerge);
 const profileLifecycleTest = Promise.resolve()
-  .then(() => profileClient.safeGet("/wham/profiles/me"))
+  .then(async () => {
+    const originalScripts = context.document.scripts;
+    const originalQuerySelectorAll = context.document.querySelectorAll;
+    const originalPerformance = context.performance;
+    const originalFetch = context.fetch;
+    try {
+      context.document.scripts = [{ src: "app://-/assets/index-test.js" }];
+      context.document.querySelectorAll = (selector) =>
+        selector === "link[href]" ? [{ href: "app://-/assets/app-initial-test.js" }] : [];
+      context.performance = { getEntriesByType: () => [] };
+      context.fetch = async (url) => ({
+        ok: true,
+        async text() {
+          return String(url).includes("app-initial-test") ? 'const deps = ["./request-test.js"];' : "";
+        },
+      });
+      assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/request-test.js");
+      context.document.scripts = [{ src: "app://-/assets/index-test.js" }];
+      context.document.querySelectorAll = () => [];
+      context.performance = { getEntriesByType: () => [] };
+      context.fetch = async () => ({ ok: true, async text() { return 'const deps = ["./app-initial-test.js"];'; } });
+      assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/app-initial-test.js");
+      context.document.scripts = [{ src: "app://-/assets/request-legacy.js" }];
+      context.fetch = async () => { throw new Error("fetch should not run for direct asset"); };
+      assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/request-legacy.js");
+    } finally {
+      if (originalScripts === undefined) delete context.document.scripts;
+      else context.document.scripts = originalScripts;
+      context.document.querySelectorAll = originalQuerySelectorAll;
+      if (originalPerformance === undefined) delete context.performance;
+      else context.performance = originalPerformance;
+      context.fetch = originalFetch;
+    }
+  })
+  .then(async () => {
+    api.installProfileUiReadinessCoordinator(["ProfileFooterHarness"], delayedProfileDocument);
+    assert.equal(api.profileSyntheticAuth(), true);
+    const patchedAccountsCheck = await profileClient.safeGet("/wham/accounts/check");
+    const expectedIdentity = api.localProfileResponse().profile;
+    assert.equal(patchedAccountsCheck.accounts[0].id, "api-account");
+    assert.equal(patchedAccountsCheck.accounts[0].type, "apiKey");
+    assert.equal(patchedAccountsCheck.accounts[0].planType, "api");
+    assert.equal(patchedAccountsCheck.accounts[0].name, expectedIdentity.display_name);
+    assert.equal(patchedAccountsCheck.accounts[0].email, expectedIdentity.email);
+    assert.equal(profileAccountsCheckUpstreamCalls, 1);
+    api.profileUiAuthContextValue({ authMethod: "chatgpt", accountId: "real-account" });
+    const passthroughAccountsCheck = await profileClient.safeGet("/wham/accounts/check");
+    assert.equal(passthroughAccountsCheck.accounts[0].id, "api-account");
+    assert.equal(passthroughAccountsCheck.accounts[0].type, "apiKey");
+    assert.equal(passthroughAccountsCheck.accounts[0].planType, "api");
+    assert.equal(profileAccountsCheckUpstreamCalls, 2);
+    api.installProfileUiReadinessCoordinator([], delayedProfileDocument);
+    return profileClient.safeGet("/wham/profiles/me");
+  })
   .then((patchedGet) => {
     const helperBridgeUrls = bridgeCalls.map((message) => String(message.url || "")).filter(Boolean);
     assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/stats?refresh=1"), false);
@@ -3786,7 +4241,7 @@ const profileLifecycleTest = Promise.resolve()
     const localMessageHandler = api.localMessageHandler();
     assert.equal(typeof localMessageHandler, "function");
     assert.equal((windowListeners.get("message") || []).length, messageListenersBeforeLocalCapture + 1);
-assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.7");
+assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.8");
     context.document.getElementById = () => null;
     context.__codexLiveTokenCost.destroy();
     assert.equal((windowListeners.get("message") || []).includes(localMessageHandler), false);

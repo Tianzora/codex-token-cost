@@ -1,13 +1,7 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - README.md
-      - docs/images/**
-      - scripts/**
+  workflow_dispatch:
 
 permissions:
   contents: write
