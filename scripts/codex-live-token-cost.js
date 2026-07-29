@@ -5436,7 +5436,13 @@ const VERSION = "0.7.8";
     if (!snapshot && (menuItem?.getAttribute?.("aria-disabled") !== "true" || !menuItem.hasAttribute?.("data-disabled"))) return false;
     const row = menuItem.firstElementChild;
     const label = row?.querySelector?.("span.flex-1.min-w-0.truncate");
-    if (!label || typeof doc.createElement !== "function") return false;
+    if (!label) return false;
+    const staleAvatar = row.querySelector?.("[data-cltc-profile-menu-identity-avatar]");
+    staleAvatar?.remove?.();
+    if (snapshot?.avatar) {
+      snapshot.avatar.remove?.();
+      snapshot.avatar = null;
+    }
     const settingsItem = Array.from(menu.querySelectorAll?.("[role='menuitem']") || []).find((item) => {
       const itemLabel = profileMenuItemLabel(item);
       return item !== menuItem && (itemLabel === "设置" || itemLabel.toLowerCase() === "settings");
@@ -5449,7 +5455,6 @@ const VERSION = "0.7.8";
       snapshot = {
         label,
         labelText: label.textContent,
-        avatar: null,
         ariaDisabled: menuItem.getAttribute?.("aria-disabled"),
         hadDataDisabled: menuItem.hasAttribute?.("data-disabled"),
         tabIndex: menuItem.getAttribute?.("tabindex"),
@@ -5475,33 +5480,6 @@ const VERSION = "0.7.8";
     menuItem.setAttribute?.("tabindex", "0");
     if (settingsItem?.className) menuItem.className = settingsItem.className;
 
-    let avatar = row.querySelector?.("[data-cltc-profile-menu-identity-avatar]");
-    const avatarTag = prefs.imageUrl ? "IMG" : "SPAN";
-    if (avatar && avatar.children?.[0]?.tagName !== avatarTag) {
-      avatar.remove?.();
-      avatar = null;
-    }
-    if (!avatar) {
-      avatar = doc.createElement("span");
-      avatar.setAttribute?.("data-cltc-profile-menu-identity-avatar", "");
-      avatar.className =
-        "inline-flex items-center justify-center leading-none icon-sm shrink-0 opacity-75 group-focus:opacity-100 group-hover:opacity-100";
-      const icon = doc.createElement(prefs.imageUrl ? "img" : "span");
-      icon.className = prefs.imageUrl
-        ? "icon-sm rounded-full"
-        : "icon-sm flex items-center justify-center rounded-full bg-token-charts-purple/10 text-[9px] leading-none text-token-charts-purple";
-      avatar.appendChild?.(icon);
-      row.insertBefore?.(avatar, label);
-    }
-    snapshot.avatar = avatar;
-
-    const icon = avatar.children?.[0];
-    if (prefs.imageUrl) {
-      if (icon && icon.src !== prefs.imageUrl) icon.src = prefs.imageUrl;
-      if (icon) icon.alt = "";
-    } else if (icon && icon.textContent !== displayName.slice(0, 1)) {
-      icon.textContent = displayName.slice(0, 1);
-    }
     if (label.textContent !== displayName) label.textContent = displayName;
     return true;
   }
@@ -6273,6 +6251,7 @@ const VERSION = "0.7.8";
     installElectronBridgeHook();
     void installProfileRequestClientPatch();
     void installProfilePhotoUploadPatch();
+    void installProfileAuthContextPatch();
     installSidebarProfileIdentitySync();
     patchProfileElectronBridge();
     patchProfileStatsigGate();

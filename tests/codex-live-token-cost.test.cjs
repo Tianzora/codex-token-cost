@@ -87,7 +87,7 @@ assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
 assert.equal(code.includes('const VERSION = "0.7.8"'), true);
 assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
-assert.equal(code.includes("void installProfileAuthContextPatch();"), false);
+assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
 assert.equal(code.includes("--cltc-calendar-accent: rgb(76, 78, 80)"), true);
@@ -3120,7 +3120,17 @@ const officialProfileButton = {
   },
 };
 const officialMenuLabel = fakeSpan("custom", "flex-1 min-w-0 truncate");
-const officialMenuRowChildren = [officialMenuLabel];
+const staleMenuAvatar = fakeNode("span", "", "inline-flex items-center justify-center leading-none icon-sm shrink-0");
+staleMenuAvatar.setAttribute("data-cltc-profile-menu-identity-avatar", "");
+const officialMenuAvatar = fakeNode("span", "", "inline-flex items-center justify-center leading-none icon-sm shrink-0");
+const officialMenuAvatarImage = fakeNode("img", "", "icon-sm rounded-full");
+officialMenuAvatarImage.src = "official-avatar";
+officialMenuAvatar.children.push(officialMenuAvatarImage);
+const officialMenuRowChildren = [staleMenuAvatar, officialMenuAvatar, officialMenuLabel];
+staleMenuAvatar.remove = () => {
+  const index = officialMenuRowChildren.indexOf(staleMenuAvatar);
+  if (index >= 0) officialMenuRowChildren.splice(index, 1);
+};
 const officialMenuRow = {
   className: "flex w-full items-center gap-1.5",
   querySelector(selector) {
@@ -3254,13 +3264,8 @@ assert.equal(officialAccountMenuItem, officialProfileMenu.querySelector("[role='
 assert.equal(officialMenuLabel.textContent, api.localProfileResponse().profile.display_name);
 assert.equal(officialMenuRowChildren.length, 2);
 assert.equal(officialMenuRowChildren[0].tagName, "SPAN");
-assert.equal(
-  officialMenuRowChildren[0].className,
-  "inline-flex items-center justify-center leading-none icon-sm shrink-0 opacity-75 group-focus:opacity-100 group-hover:opacity-100",
-);
-assert.equal(officialMenuRowChildren[0].children[0].tagName, "IMG");
-assert.equal(officialMenuRowChildren[0].children[0].className, "icon-sm rounded-full");
-assert.equal(officialMenuRowChildren[0].children[0].src, api.localProfileResponse().profile.profile_picture_url);
+assert.equal(officialMenuRowChildren[0], officialMenuAvatar);
+assert.equal(officialMenuAvatarImage.src, "official-avatar");
 assert.equal(officialProfileMenu.settingsItem, officialSettingsMenuItem);
 assert.equal(officialProfileMenu.querySelector("[role='menuitem']"), officialAccountMenuItem);
 assert.equal(officialAccountMenuItem.getAttribute("aria-disabled"), null);
@@ -3271,6 +3276,9 @@ assert.equal(officialAccountMenuListeners.get("click")?.length, 1);
 assert.equal(officialAccountMenuListeners.get("keydown")?.length, 1);
 assert.equal(api.syncSidebarProfileMenuIdentity(officialProfileDoc, officialProfileButton), true);
 assert.equal(officialMenuRowChildren.length, 2);
+assert.equal(officialMenuRowChildren[0], officialMenuAvatar);
+assert.equal(officialMenuAvatarImage.src, "official-avatar");
+assert.equal(officialMenuRow.querySelector("[data-cltc-profile-menu-identity-avatar]"), null);
 assert.equal(officialAccountMenuListeners.get("click")?.length, 1);
 assert.equal(officialAccountMenuListeners.get("keydown")?.length, 1);
 let accountClickPrevented = 0;
@@ -3304,7 +3312,8 @@ assert.match(officialAccountMenuItem.className, /cursor-default/);
 assert.equal(officialAccountMenuListeners.get("click")?.length, 0);
 assert.equal(officialAccountMenuListeners.get("keydown")?.length, 0);
 assert.equal(officialMenuLabel.textContent, "custom");
-assert.equal(officialMenuRowChildren.length, 1);
+assert.equal(officialMenuRowChildren.length, 2);
+assert.equal(officialMenuRowChildren[0], officialMenuAvatar);
 assert.equal(
   code.includes("icon-sm flex shrink-0 items-center justify-center rounded-full bg-token-charts-purple/10 text-[10px] leading-none font-medium text-token-charts-purple"),
   true,
