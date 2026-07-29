@@ -293,6 +293,9 @@ const VERSION = "0.7.8";
     profileSaveStatusTone: "",
     profileSaveStatusTimer: 0,
     profileQueryClient: null,
+    profileQueryCacheObserverClient: null,
+    profileQueryCacheObserverUnsubscribe: null,
+    profileQueryCacheSyncQueued: false,
     profileSyntheticAuth: false,
     profileUiReadinessObserver: null,
     profileIdentityObserver: null,
@@ -496,22 +499,60 @@ const VERSION = "0.7.8";
     ledger.migrationComplete = raw.migrationComplete === true;
     ledger.turns = (Array.isArray(raw.turns) ? raw.turns : []).map(profileNormalizeTurn).filter(Boolean);
     for (const call of Array.isArray(raw.usageCalls) ? raw.usageCalls : []) {
-      const id = normalizeText(call?.id || call?.usageCallId, 300);
-      const turnId = normalizeText(call?.turnId, 240);
-      const usage = normalizeUsage(call?.usage);
-      if (id && turnId && usage.exact) ledger.usageCalls[id] = { id, turnId, usage, usageKey: normalizeText(call.usageKey, 500) || usageKey(usage), observedAt: toCount(call.observedAt), source: normalizeText(call.source, 80) };
+      const normalized = profileNormalizeUsageCall(call);
+      if (normalized) ledger.usageCalls[normalized.id] = normalized;
     }
     for (const invocation of Array.isArray(raw.invocations) ? raw.invocations : []) {
-      const normalized = normalizeProfileInvocation(invocation);
-      const id = normalizeText(invocation?.invocationId || invocation?.id, 300);
-      if (normalized && id) ledger.invocations[id] = { ...normalized, invocationId: id, turnId: normalizeText(invocation.turnId, 240), occurrence: toCount(invocation.occurrence) || 1, observedAt: toCount(invocation.observedAt), source: normalizeText(invocation.source, 80) };
+      const normalized = profileNormalizeLedgerInvocation(invocation);
+      if (normalized) ledger.invocations[normalized.invocationId] = normalized;
     }
+    profileLinkInvocationsToTurns(ledger);
     ledger.rollup = raw.rollup && typeof raw.rollup === "object" ? raw.rollup : profileEmptyRollup();
     return ledger;
   }
 
-  function profileSnapshotPayload() {
+  function profileNormalizeUsageCall(call) {
+    const turnId = normalizeText(call?.turnId, 240);
+    const usage = normalizeUsage(call?.usage);
+    if (!turnId || !usage.exact) return null;
+    const canonicalUsageKey = usageKey(usage);
+    return {
+      id: `${turnId}\u0001${canonicalUsageKey}`,
+      turnId,
+      usage,
+      usageKey: canonicalUsageKey,
+      observedAt: toCount(call.observedAt),
+      source: normalizeText(call.source, 80),
+    };
+  }
+
+  function profileNormalizeLedgerInvocation(invocation) {
+    const normalized = normalizeProfileInvocation(invocation);
+    const invocationId = normalizeText(invocation?.invocationId || invocation?.id, 300);
+    return normalized && invocationId
+      ? { ...normalized, invocationId, turnId: normalizeText(invocation.turnId, 240), occurrence: toCount(invocation.occurrence) || 1, observedAt: toCount(invocation.observedAt), source: normalizeText(invocation.source, 80) }
+      : null;
+  }
+
+  function profileLinkInvocationsToTurns(ledger) {
+    const turns = new Map((ledger?.turns || []).map((turn) => [turn.turnId, turn]));
+    for (const invocation of Object.values(ledger?.invocations || {})) {
+      const turn = turns.get(invocation.turnId);
+      if (turn) turn.invocationIds = Array.from(new Set([...(turn.invocationIds || []), invocation.invocationId]));
+    }
+  }
+
+  function profileSnapshotPayload(options = {}) {
     const ledger = state.profileLedger || profileEmptyLedger();
+    if (options.hydrationRequired) {
+      return {
+        version: PROFILE_LEDGER_VERSION,
+        storage: "indexeddb",
+        updatedAt: Date.now(),
+        migrationComplete: ledger.migrationComplete === true,
+        hydrationRequired: true,
+      };
+    }
     const payload = {
       version: PROFILE_LEDGER_VERSION,
       storage: state.profileLedgerStorage,
@@ -532,6 +573,17 @@ const VERSION = "0.7.8";
       localStorage.setItem(PROFILE_LEDGER_SNAPSHOT_KEY, JSON.stringify(profileSnapshotPayload()));
       return true;
     } catch {
+      if (state.profileLedgerStorage === "indexeddb") {
+        try {
+          localStorage.setItem(PROFILE_LEDGER_SNAPSHOT_KEY, JSON.stringify(profileSnapshotPayload({ hydrationRequired: true })));
+        } catch {
+          try {
+            localStorage.removeItem(PROFILE_LEDGER_SNAPSHOT_KEY);
+          } catch {
+            // IndexedDB remains authoritative if the compatibility pointer cannot be stored.
+          }
+        }
+      }
       return false;
     }
   }
@@ -611,6 +663,9 @@ const VERSION = "0.7.8";
         [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS],
         "readwrite",
       );
+      [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS].forEach((store) =>
+        tx.objectStore(store).clear(),
+      );
       ledger.turns.forEach((turn) => tx.objectStore(PROFILE_LEDGER_STORE_TURNS).put(turn));
       Object.values(ledger.usageCalls || {}).forEach((call) => tx.objectStore(PROFILE_LEDGER_STORE_USAGE_CALLS).put(call));
       Object.values(ledger.invocations || {}).forEach((invocation) => tx.objectStore(PROFILE_LEDGER_STORE_INVOCATIONS).put(invocation));
@@ -656,11 +711,14 @@ const VERSION = "0.7.8";
         }
         current.turns = Array.from(turns.values());
         for (const call of stored[1]) {
-          if (call?.id && !current.usageCalls[call.id]) current.usageCalls[call.id] = call;
+          const normalized = profileNormalizeUsageCall(call);
+          if (normalized) current.usageCalls[normalized.id] = normalized;
         }
         for (const invocation of stored[2]) {
-          if (invocation?.invocationId && !current.invocations[invocation.invocationId]) current.invocations[invocation.invocationId] = invocation;
+          const normalized = profileNormalizeLedgerInvocation(invocation);
+          if (normalized) current.invocations[normalized.invocationId] = normalized;
         }
+        profileLinkInvocationsToTurns(current);
         state.profileLedger = current;
         profileLedgerRebuildRollup();
         await profileLedgerWriteSnapshot(db);
@@ -775,17 +833,27 @@ const VERSION = "0.7.8";
     bucket.turns += 1;
   }
 
+  function dailyBucketAuthority(local, ccSwitch) {
+    const total = (bucket) => toCount(bucket?.total ?? bucket?.tokens);
+    const compare = (left, right) =>
+      total(left) - total(right) ||
+      (Number(left?.cost) || 0) - (Number(right?.cost) || 0) ||
+      toCount(left?.requests) - toCount(right?.requests);
+    return compare(ccSwitch, local) >= 0 ? ccSwitch : local;
+  }
+
   function profileDisplayedBucket(day) {
     const local = day?.local || profileEmptyBucket();
     const cc = day?.ccSwitch || profileEmptyBucket();
+    const selected = dailyBucketAuthority(local, cc);
     return {
       date: day?.date || "",
-      tokens: Math.max(toCount(local.total), toCount(cc.total)),
-      input: Math.max(toCount(local.input), toCount(cc.input)),
-      output: Math.max(toCount(local.output), toCount(cc.output)),
-      cached: Math.max(toCount(local.cached), toCount(cc.cached)),
-      requests: Math.max(toCount(local.requests), toCount(cc.requests)),
-      cost: Math.max(Number(local.cost) || 0, Number(cc.cost) || 0),
+      tokens: toCount(selected?.total),
+      input: toCount(selected?.input),
+      output: toCount(selected?.output),
+      cached: toCount(selected?.cached),
+      requests: toCount(selected?.requests),
+      cost: Number(selected?.cost) || 0,
     };
   }
 
@@ -1510,8 +1578,59 @@ const VERSION = "0.7.8";
   }
 
   function rememberProfileQueryClient(value) {
-    if (isProfileQueryClient(value)) state.profileQueryClient = value;
+    if (isProfileQueryClient(value)) {
+      state.profileQueryClient = value;
+      installProfileQueryCacheObserver(value);
+    }
     return value;
+  }
+
+  function isProfileUsageQueryKey(queryKey) {
+    return Array.isArray(queryKey) && queryKey[0] === "profile" && queryKey[1] === "usage";
+  }
+
+  function stopProfileQueryCacheObserver() {
+    try {
+      state.profileQueryCacheObserverUnsubscribe?.();
+    } catch {
+      // Query cache teardown is best-effort during userscript reload.
+    }
+    state.profileQueryCacheObserverClient = null;
+    state.profileQueryCacheObserverUnsubscribe = null;
+    state.profileQueryCacheSyncQueued = false;
+  }
+
+  function scheduleProfileQueryCacheSync(queryClient) {
+    if (state.profileQueryCacheSyncQueued || state.profileQueryCacheObserverClient !== queryClient) return;
+    state.profileQueryCacheSyncQueued = true;
+    const flush = () => {
+      state.profileQueryCacheSyncQueued = false;
+      if (state.profileQueryCacheObserverClient === queryClient) syncProfileUsageQueryCache(queryClient);
+    };
+    if (typeof queueMicrotask === "function") queueMicrotask(flush);
+    else if (typeof window.setTimeout === "function") window.setTimeout(flush, 0);
+    else flush();
+  }
+
+  function installProfileQueryCacheObserver(queryClient) {
+    if (!profileUnlockEnabled() || !isProfileQueryClient(queryClient)) return false;
+    const cache = queryClient.getQueryCache?.();
+    if (!cache || typeof cache.subscribe !== "function") return false;
+    if (state.profileQueryCacheObserverClient === queryClient) return true;
+    stopProfileQueryCacheObserver();
+    state.profileQueryCacheObserverClient = queryClient;
+    try {
+      const unsubscribe = cache.subscribe((event) => {
+        if (event?.type !== "added" && event?.type !== "observerAdded") return;
+        if (!isProfileUsageQueryKey(event.query?.queryKey)) return;
+        scheduleProfileQueryCacheSync(queryClient);
+      });
+      state.profileQueryCacheObserverUnsubscribe = typeof unsubscribe === "function" ? unsubscribe : null;
+      return true;
+    } catch {
+      stopProfileQueryCacheObserver();
+      return false;
+    }
   }
 
   function profileQueryClientFromFiberNode(node) {
@@ -1898,7 +2017,7 @@ const VERSION = "0.7.8";
     const contextLimit = toCount(
       u.contextLimit ?? u.context_limit ?? u.modelContextWindow ?? u.model_context_window ?? u.contextWindow ?? u.context_window ?? u.limit,
     );
-    const inputFromTotal = explicitTotal && output && explicitTotal > output ? explicitTotal - output : 0;
+    const inputFromTotal = explicitTotal && explicitTotal >= output ? explicitTotal - output : 0;
     const inputBase = Math.max(explicitInputTotal, rawInput, inputFromTotal);
     const hasSeparateCacheTokens = cacheReadTokens > 0 || cacheCreationTokens > 0;
     const baseForSeparateCache = rawInput || explicitInputTotal || inputFromTotal;
@@ -5106,15 +5225,14 @@ const VERSION = "0.7.8";
   }
 
   function maxDailyBucket(target, source) {
-    const targetHasUsage = toCount(target?.tokens) > 0 || toCount(target?.input) > 0 || toCount(target?.output) > 0 || toCount(target?.cached) > 0;
-    const sourceWins = !targetHasUsage || toCount(source?.tokens) > toCount(target?.tokens) || Number(source?.cost) > Number(target?.cost);
-    target.tokens = Math.max(toCount(target.tokens), toCount(source?.tokens));
-    target.input = Math.max(toCount(target.input), toCount(source?.input));
-    target.output = Math.max(toCount(target.output), toCount(source?.output));
-    target.cached = Math.max(toCount(target.cached), toCount(source?.cached));
-    target.requests = Math.max(toCount(target.requests), toCount(source?.requests));
-    target.cost = Math.max(Number(target.cost) || 0, Number(source?.cost) || 0);
-    target.priced = sourceWins ? source?.priced !== false : target.priced !== false;
+    const selected = dailyBucketAuthority(target, source);
+    target.tokens = toCount(selected?.tokens);
+    target.input = toCount(selected?.input);
+    target.output = toCount(selected?.output);
+    target.cached = toCount(selected?.cached);
+    target.requests = toCount(selected?.requests);
+    target.cost = Number(selected?.cost) || 0;
+    target.priced = selected?.priced !== false;
     return target;
   }
 
@@ -5707,6 +5825,7 @@ const VERSION = "0.7.8";
     const client = queryClient || state.profileQueryClient || profileQueryClientFromDocument();
     if (!isProfileQueryClient(client) || typeof client.setQueryData !== "function") return false;
     state.profileQueryClient = client;
+    installProfileQueryCacheObserver(client);
     let queryKeys = [];
     try {
       queryKeys = (client.getQueryCache().getAll?.() || [])
@@ -6259,6 +6378,7 @@ const VERSION = "0.7.8";
 
   function uninstallOfficialProfileUnlock() {
     stopProfileUiReadinessCoordinator();
+    stopProfileQueryCacheObserver();
     stopSidebarProfileIdentitySync();
     if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
     state.profileUsageRefreshTimer = 0;
@@ -8654,6 +8774,7 @@ const VERSION = "0.7.8";
       closeSettingsEditor();
       return;
     }
+    if (event.key === "Tab" && trapSettingsFocus(event)) return;
     handleAnalyticsKeydown(event);
   }
 
@@ -8669,6 +8790,7 @@ const VERSION = "0.7.8";
     "data-chart-index",
   ];
   const SETTINGS_FOCUS_SELECTOR = SETTINGS_FOCUS_ATTRIBUTES.map((attribute) => `[${attribute}]`).join(",");
+  const SETTINGS_FOCUSABLE_SELECTOR = "a[href],button,input,select,textarea,[tabindex]";
 
   function settingsFocusKey(node, root) {
     if (!node || !root?.contains?.(node)) return null;
@@ -8682,10 +8804,23 @@ const VERSION = "0.7.8";
   }
 
   function isSettingsFocusable(node) {
-    if (!node || node.disabled) return false;
+    if (!node || node.disabled || node.hidden || node.getAttribute?.("aria-hidden") === "true") return false;
     const tabIndex = node.getAttribute?.("tabindex");
     if (tabIndex != null) return Number(tabIndex) >= 0;
     return /^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(String(node.tagName || ""));
+  }
+
+  function trapSettingsFocus(event, overlay = state.settingsOverlay) {
+    const focusable = Array.from(overlay?.querySelectorAll?.(SETTINGS_FOCUSABLE_SELECTOR) || []).filter(isSettingsFocusable);
+    if (!focusable.length) return false;
+    const current = document.activeElement;
+    const index = focusable.indexOf(current);
+    if (event.shiftKey ? index <= 0 : index < 0 || index === focusable.length - 1) {
+      event.preventDefault?.();
+      (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus?.();
+      return true;
+    }
+    return false;
   }
 
   function restoreSettingsFocus(root, key) {
@@ -9577,6 +9712,7 @@ const VERSION = "0.7.8";
     state.taskRunningObserver = null;
     state.hubVisibilityObserver = null;
     state.profileQueryClient = null;
+    stopProfileQueryCacheObserver();
     state.profileAccountsRefreshPromise = null;
     state.profileDataRefreshAttemptAt = 0;
     state.profileDataRefreshAt = 0;
@@ -9669,6 +9805,9 @@ const VERSION = "0.7.8";
   if (window.__CODEX_LIVE_TOKEN_COST_TEST__) {
     window.__codexLiveTokenCostTest = {
       normalizeUsage,
+      profileNormalizeSnapshot,
+      profileDisplayedBucket,
+      saveProfileLedgerSnapshot,
       calcCost,
       costForModelUsage,
       addUsage,
@@ -9797,6 +9936,7 @@ const VERSION = "0.7.8";
       newPriceModelName,
       startNewPriceModel,
       restoreDefaultPrices,
+      trapSettingsFocus,
       deletePriceForModel,
       visiblePrices,
       priceListModels,

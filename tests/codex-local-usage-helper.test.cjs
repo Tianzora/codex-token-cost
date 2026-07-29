@@ -109,7 +109,7 @@ con.close()
     });
     assert.equal(createDb.status, 0, createDb.stderr);
 
-    const ccSwitch = helper.collectCcSwitchTurns({ ccSwitchDbPath: ccSwitchDb });
+    const ccSwitch = await helper.collectCcSwitchTurns({ ccSwitchDbPath: ccSwitchDb });
     assert.equal(ccSwitch.ok, true);
     assert.equal(ccSwitch.imported, 2);
     assert.deepEqual(
@@ -133,11 +133,34 @@ con.close()
     assert.equal(typeof helper.collectStats, "undefined");
     assert.equal(typeof helper.collectThreadContent, "undefined");
 
-    const missing = helper.collectCcSwitchTurns({ ccSwitchDbPath: path.join(root, "missing.db") });
+    const missing = await helper.collectCcSwitchTurns({ ccSwitchDbPath: path.join(root, "missing.db") });
     assert.equal(missing.ok, true);
     assert.equal(missing.error, "missing_db");
     assert.deepEqual(missing.turns, []);
     assert.equal(helper.ccSwitchStatus({ ccSwitchDbPath: ccSwitchDb }).profile_authority, "userscript-profile-ledger");
+    assert.equal(helper.isLoopbackHost("127.0.0.1"), true);
+    assert.equal(helper.isLoopbackHost("::1"), true);
+    assert.equal(helper.isLoopbackHost("localhost"), false);
+    assert.throws(() => helper.startServer({ host: "0.0.0.0" }), /loopback/);
+
+    let eventLoopTicked = false;
+    const timedPython = helper.runPython("import time\ntime.sleep(1)\n", ccSwitchDb, { pythonTimeoutMs: 50 });
+    await new Promise((resolve) => setTimeout(() => {
+      eventLoopTicked = true;
+      resolve();
+    }, 10));
+    assert.equal(eventLoopTicked, true);
+    const timedPythonResult = await timedPython;
+    assert.equal(timedPythonResult.ok, false);
+    assert.equal(timedPythonResult.error, "python_timeout_50ms");
+
+    const oversizedPythonResult = await helper.runPython('print("x" * (17 * 1024 * 1024))', ccSwitchDb);
+    assert.equal(oversizedPythonResult.ok, false);
+    assert.equal(oversizedPythonResult.error, "python_output_too_large");
+
+    const helperSource = fs.readFileSync(path.join(__dirname, "..", "scripts", "codex-local-usage-helper.cjs"), "utf8");
+    assert.match(helperSource, /const PYTHON_TIMEOUT_MS = 30000;/);
+    assert.match(helperSource, /new URL\(req\.url \|\| "\/", "http:\/\/localhost"\)/);
 
     const serverDb = path.join(root, "helper-meta.json");
     const port = await freePort();
@@ -201,6 +224,14 @@ con.close()
     } finally {
       await new Promise((resolve) => missingServer.close(resolve));
     }
+
+    const launcher = fs.readFileSync(path.join(__dirname, "..", "scripts", "start-helper.ps1"), "utf8");
+    assert.match(launcher, /\[ValidateSet\("127\.0\.0\.1", "::1"\)\]/);
+    assert.match(launcher, /\[string\]\$ListenHost = "127\.0\.0\.1"/);
+    assert.equal(/\[string\]\$Host\b/.test(launcher), false);
+    assert.match(launcher, /"--host", \$ListenHost, "--port", \$Port/);
+    assert.match(launcher, /Invoke-RestMethod[\s\S]*\/health/);
+    assert.match(launcher, /\$health\.source -ne "codex-local-usage-helper"/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

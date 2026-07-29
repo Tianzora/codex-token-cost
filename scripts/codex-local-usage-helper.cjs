@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 
 const DEFAULT_PORT = 17888;
 const DEFAULT_HOST = "127.0.0.1";
@@ -14,6 +14,8 @@ const DEFAULT_CC_SWITCH_DB_PATH = path.join(os.homedir(), ".cc-switch", "cc-swit
 const CACHE_TTL_MS = 60000;
 const CC_SWITCH_CACHE_TTL_MS = 60000;
 const CC_SWITCH_ERROR_CACHE_TTL_MS = 5000;
+const PYTHON_TIMEOUT_MS = 30000;
+const PYTHON_MAX_BUFFER = 16 * 1024 * 1024;
 
 function normalizeText(value, max = 120) {
   return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, max);
@@ -49,17 +51,78 @@ function readJson(file, fallback = {}) {
   return value && typeof value === "object" ? value : fallback;
 }
 
-function pythonExecutable() {
-  if (process.env.PYTHON) return process.env.PYTHON;
-  const python = spawnSync("python", ["--version"], {
-    encoding: "utf8",
-    stdio: "ignore",
-    windowsHide: true,
+function runPython(script, dbPath, options = {}, executable = process.env.PYTHON || "python") {
+  const timeoutMs = Math.max(1, Number(options.pythonTimeoutMs || PYTHON_TIMEOUT_MS));
+  return new Promise((resolve) => {
+    let child;
+    let settled = false;
+    let timedOut = false;
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let outputTooLarge = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child?.kill();
+    }, timeoutMs);
+    try {
+      child = spawn(executable, ["-", dbPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (error) {
+      finish({ ok: false, error: error?.message || "python_spawn_failed" });
+      return;
+    }
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += Buffer.byteLength(chunk);
+      if (stdoutBytes > PYTHON_MAX_BUFFER) {
+        outputTooLarge = true;
+        child.kill();
+        return;
+      }
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > PYTHON_MAX_BUFFER) {
+        outputTooLarge = true;
+        child.kill();
+        return;
+      }
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      if (!process.env.PYTHON && executable === "python" && error?.code === "ENOENT") {
+        clearTimeout(timeout);
+        runPython(script, dbPath, options, "python3").then(resolve);
+        settled = true;
+        return;
+      }
+      finish({ ok: false, error: error?.message || "python_spawn_failed" });
+    });
+    child.on("close", (status) => {
+      if (timedOut) {
+        finish({ ok: false, error: `python_timeout_${timeoutMs}ms` });
+        return;
+      }
+      if (outputTooLarge) {
+        finish({ ok: false, error: "python_output_too_large" });
+        return;
+      }
+      finish({ ok: status === 0, status, stdout, stderr });
+    });
+    child.stdin.end(script);
   });
-  return python.error || python.status !== 0 ? "python3" : "python";
 }
 
-function collectCcSwitchTurns(options = {}) {
+async function collectCcSwitchTurns(options = {}) {
   const dbPath = options.ccSwitchDbPath || DEFAULT_CC_SWITCH_DB_PATH;
   if (!fs.existsSync(dbPath)) {
     return { ok: true, source: "cc-switch", db_path: dbPath, turns: [], imported: 0, skipped: 0, error: "missing_db" };
@@ -180,13 +243,8 @@ print(json.dumps({
 }, ensure_ascii=False))
 con.close()
 `;
-  const result = spawnSync(pythonExecutable(), ["-", dbPath], {
-    input: script,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    windowsHide: true,
-  });
-  if (result.status !== 0) {
+  const result = await runPython(script, dbPath, options);
+  if (!result.ok) {
     return {
       ok: false,
       source: "cc-switch",
@@ -194,7 +252,7 @@ con.close()
       turns: [],
       imported: 0,
       skipped: 0,
-      error: normalizeText(result.stderr || result.error?.message || "python_sqlite_failed", 500),
+      error: normalizeText(result.stderr || result.error || "python_sqlite_failed", 500),
     };
   }
   const parsed = safeJsonParse(result.stdout, {});
@@ -210,6 +268,10 @@ con.close()
     metadata,
     updated_at: new Date().toISOString(),
   };
+}
+
+function isLoopbackHost(host) {
+  return host === "127.0.0.1" || host === "::1";
 }
 
 function ccSwitchStatus(options = {}) {
@@ -258,6 +320,7 @@ function sendJson(res, status, body, origin = "") {
 
 function startServer(options = {}) {
   const host = options.host || DEFAULT_HOST;
+  if (!isLoopbackHost(host)) throw new Error("Helper host must be a loopback address: 127.0.0.1 or ::1");
   const port = Number(options.port || DEFAULT_PORT);
   const dbPath = options.dbPath || DEFAULT_DB_PATH;
   let cached = readJson(dbPath, null);
@@ -269,9 +332,9 @@ function startServer(options = {}) {
     if (ccSwitchRefreshing) return;
     ccSwitchRefreshing = true;
     if (typeof options.onCcSwitchRefresh === "function") options.onCcSwitchRefresh();
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
-        ccSwitchCached = collectCcSwitchTurns(options);
+        ccSwitchCached = await collectCcSwitchTurns(options);
         ccSwitchCachedAt = Date.now();
         writeJson(dbPath, { ...ccSwitchStatus(options), cc_switch: ccSwitchCached });
       } catch (error) {
@@ -293,7 +356,7 @@ function startServer(options = {}) {
   };
   const server = http.createServer((req, res) => {
     const origin = req.headers.origin || "";
-    const url = new URL(req.url || "/", `http://${host}:${port}`);
+    const url = new URL(req.url || "/", "http://localhost");
     const protectedPath = url.pathname === "/stats" || url.pathname === "/cc-switch/turns";
     if (protectedPath && !isAllowedOrigin(origin)) {
       sendJson(res, 403, { ok: false, error: "forbidden_origin" }, origin);
@@ -352,6 +415,8 @@ function parseArgs(argv) {
 module.exports = {
   collectCcSwitchTurns,
   ccSwitchStatus,
+  isLoopbackHost,
+  runPython,
   startServer,
 };
 

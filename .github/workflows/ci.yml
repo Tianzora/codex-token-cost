@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          node tests/codex-live-token-cost.test.cjs
+          node tests/codex-local-usage-helper.test.cjs
+          find scripts tests -type f \( -name '*.js' -o -name '*.cjs' \) -print0 | xargs -0 -r -n1 node --check
+          find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+          if [[ -n "$DIFF_BASE" && "$DIFF_BASE" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --check "$DIFF_BASE" "$GITHUB_SHA"
+          else
+            git diff --check "${GITHUB_SHA}^" "$GITHUB_SHA"
+          fi

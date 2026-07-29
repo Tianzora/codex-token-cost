@@ -4,6 +4,7 @@
 !README.md
 !.github/
 !.github/workflows/
+!.github/workflows/ci.yml
 !.github/workflows/release.yml
 !scripts/
 !scripts/codex-live-token-cost.js
