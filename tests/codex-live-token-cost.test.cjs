@@ -795,6 +795,31 @@ assert.equal(typeof api.syncProfileUsageQueryCache, "function");
 assert.equal(typeof api.extractFastMode, "function");
 assert.equal(typeof api.collectProfileInvocations, "function");
 assert.equal(typeof api.isComposerDraftPayload, "function");
+assert.equal(typeof api.profileLedgerUpsertTurn, "function");
+assert.equal(typeof api.profileLedgerObserveLocalTurn, "function");
+
+const hydratedTurnIndex = api.profileLedgerRebuildTurnIndex(
+  api.profileNormalizeSnapshot({
+    version: 2,
+    migrationComplete: true,
+    turns: [
+      { turnId: "hydrated-index-turn", source: "codex-live-token-cost", usage: { input: 1, output: 2, total: 3 } },
+      { turnId: "hydrated-index-other", source: "codex-live-token-cost", usage: { input: 4, output: 5, total: 9 } },
+    ],
+  }),
+);
+assert.equal(hydratedTurnIndex.get("hydrated-index-turn"), 0);
+assert.equal(hydratedTurnIndex.get("hydrated-index-other"), 1);
+api.profileLedgerUpsertTurn({ turnId: "index-upsert-turn", source: "codex-live-token-cost", model: "gpt-5.5" });
+api.profileLedgerUpsertTurn({ turnId: "index-upsert-turn", source: "codex-live-token-cost", fastMode: true });
+api.profileLedgerUpsertTurn({ turnId: "index-upsert-other", source: "codex-live-token-cost", model: "gpt-5.5" });
+const indexedTurns = api.profileLedgerTurns().filter((turn) => turn.turnId.startsWith("index-upsert-"));
+assert.equal(indexedTurns.length, 2);
+assert.equal(indexedTurns.find((turn) => turn.turnId === "index-upsert-turn").fastMode, true);
+assert.equal(
+  api.profileLedgerTurnIndex({ turns: api.profileLedgerTurns() }).get("index-upsert-turn"),
+  api.profileLedgerTurns().findIndex((turn) => turn.turnId === "index-upsert-turn"),
+);
 assert.equal(typeof api.shouldStartTurnFromRequestPayload, "function");
 assert.equal(typeof api.isTokenCountPayload, "function");
 assert.equal(typeof api.isTaskCompletePayload, "function");
@@ -2487,6 +2512,39 @@ assert.equal(
     },
   ]).fastModePercent,
   null,
+);
+const canonicalActivity = api.localProfileActivityStats([
+  {
+    source: "codex-live-token-cost",
+    fastMode: true,
+    effort: "high",
+    usage: { input: 70, output: 30, total: 100 },
+    invocations: [
+      { type: "skill", skill_id: "review", skill_name: "review" },
+      { type: "plugin", plugin_id: "github", plugin_name: "GitHub" },
+    ],
+  },
+  {
+    source: "codex-live-token-cost",
+    fastMode: false,
+    effort: "high",
+    usage: { input: 20, output: 80, total: 100 },
+    invocations: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub" }],
+  },
+]);
+assert.equal(canonicalActivity.fastModePercent, 50);
+assert.equal(canonicalActivity.reasoningEffort, "high");
+assert.equal(canonicalActivity.reasoningEffortPercent, 100);
+assert.equal(canonicalActivity.uniqueSkillsUsed, 1);
+assert.equal(canonicalActivity.totalSkillsUsed, 1);
+assert.equal(canonicalActivity.uniquePluginsUsed, 1);
+assert.equal(canonicalActivity.totalPluginsUsed, 2);
+assert.equal(
+  JSON.stringify(canonicalActivity.topInvocations),
+  JSON.stringify([
+    { type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 2 },
+    { type: "skill", skill_id: "review", skill_name: "review", usage_count: 1 },
+  ]),
 );
 api.mergeHelperStats({
   stats: {
@@ -4913,6 +4971,12 @@ profileLifecycleTest.then(async () => {
   assert.equal(afterIdbHydration.stats.most_used_reasoning_effort, "high");
   assert.equal(afterIdbHydration.stats.unique_skills_used, 1);
   assert.equal(afterIdbHydration.stats.total_skills_used, 1);
+  idbApi.profileLedgerUpsertTurn({
+    turnId: "idb-roundtrip-turn",
+    source: "codex-live-token-cost",
+    usage: { input: 42, output: 0, total: 42 },
+  });
+  assert.equal(idbApi.profileLedgerTurns().filter((turn) => turn.turnId === "idb-roundtrip-turn").length, 1);
   const hydratedDatabase = await new Promise((resolve, reject) => {
     const request = context.indexedDB.open("codex-live-token-cost-profile");
     request.onsuccess = () => resolve(request.result);
@@ -4976,6 +5040,13 @@ profileLifecycleTest.then(async () => {
   assert.equal(legacyHydrationDay.input_tokens, 10);
   assert.equal(legacyHydrationProfile.stats.total_skills_used, 1);
   assert.equal(legacyHydrationProfile.stats.total_plugins_used, 0);
+  const legacyApi = context.__codexLiveTokenCostTest;
+  legacyApi.profileLedgerUpsertTurn({
+    turnId: "hydrated-turn",
+    source: "codex-live-token-cost",
+    usage: { input: 10, output: 0, total: 10 },
+  });
+  assert.equal(legacyApi.profileLedgerTurns().filter((turn) => turn.turnId === "hydrated-turn").length, 1);
 }).catch((error) => {
   setImmediate(() => {
     throw error;
