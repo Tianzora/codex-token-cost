@@ -339,8 +339,7 @@ const VERSION = "0.7.9";
     ccSwitchSyncStatus: "",
     settingsStatusPulseFrame: 0,
     settingsFocusFrame: 0,
-    analyticsRangeSwitchFrame: 0,
-    analyticsRangeSwitchTimer: 0,
+    analyticsSegmentSwitchFrame: 0,
     hubValueCache: new Map(),
     hubSkeletonVersion: "",
     shimmerDelayTimer: 0,
@@ -5044,7 +5043,7 @@ const VERSION = "0.7.9";
           ${model ? `<button type="button" class="cltc-analytics-filter" data-action="clear-analytics-model">${escapeHtml(model)} ×</button>` : ""}
         </div>
         <div class="cltc-analytics-toolbar">
-          <div class="cltc-segmented" role="group" aria-label="统计时间范围">
+          <div class="cltc-segmented" data-cltc-segment-index="${["today", "7d", "30d", "custom"].indexOf(preset)}" role="group" aria-label="统计时间范围">
             <button type="button" data-analytics-preset="today" data-active="${String(preset === "today")}">今日</button>
             <button type="button" data-analytics-preset="7d" data-active="${String(preset === "7d")}">7 天</button>
             <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}">30 天</button>
@@ -5065,7 +5064,7 @@ const VERSION = "0.7.9";
         <div class="cltc-analytics-section">
           <div class="cltc-analytics-section-head">
             <div><h3>趋势</h3><p>${preset === "today" ? "按小时" : Math.ceil((range.endMs - range.startMs) / 86_400_000) + 1 > 90 ? "按周" : "按日"}</p></div>
-            <div class="cltc-segmented cltc-segmented-compact" role="group" aria-label="趋势指标">
+            <div class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="${metric === "cost" ? 1 : 0}" role="group" aria-label="趋势指标">
               <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}">Token</button>
               <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}">花费</button>
             </div>
@@ -7523,12 +7522,56 @@ const VERSION = "0.7.9";
         gap: 14px;
       }
       .cltc-settings-overlay .cltc-segmented {
+        position: relative;
         display: inline-flex;
         align-items: center;
         gap: 2px;
         padding: 3px;
         border-radius: var(--cltc-radius-control);
         background: var(--cltc-surface-secondary);
+        min-width: 236px;
+      }
+      .cltc-settings-overlay .cltc-segmented::before {
+        content: "";
+        position: absolute;
+        z-index: 0;
+        top: 3px;
+        bottom: 3px;
+        left: 3px;
+        width: calc((100% - 12px) / 4);
+        border-radius: var(--cltc-radius-sm);
+        background: var(--cltc-popover);
+        box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
+        pointer-events: none;
+        transform: translateX(0);
+        transition: transform var(--cltc-duration-data) var(--cltc-ease-out);
+      }
+      .cltc-settings-overlay .cltc-segmented-compact::before {
+        width: calc((100% - 8px) / 2);
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="1"]::before {
+        transform: translateX(calc(100% + 2px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="2"]::before {
+        transform: translateX(calc(200% + 4px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="3"]::before {
+        transform: translateX(calc(300% + 6px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="0"]::before {
+        transform: translateX(0);
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="1"]::before {
+        transform: translateX(calc(100% + 2px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="2"]::before {
+        transform: translateX(calc(200% + 4px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="3"]::before {
+        transform: translateX(calc(300% + 6px));
+      }
+      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index]::before {
+        transition: none;
       }
       .cltc-settings-overlay .cltc-segmented button,
       .cltc-settings-overlay .cltc-date-range-trigger,
@@ -7545,28 +7588,39 @@ const VERSION = "0.7.9";
         font: inherit;
       }
       .cltc-settings-overlay .cltc-segmented button {
+        position: relative;
+        z-index: 1;
+        flex: 1 1 0;
+        min-width: 0;
+        white-space: nowrap;
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           opacity var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-segmented button:focus-visible,
-      .cltc-settings-overlay .cltc-segmented button[data-active="true"],
+      .cltc-settings-overlay .cltc-segmented button:focus-visible {
+        background: var(--cltc-hover);
+        color: var(--cltc-text);
+        outline: none;
+        box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
+      }
+      .cltc-settings-overlay .cltc-segmented button[data-active="true"] {
+        background: transparent;
+        color: var(--cltc-text);
+        outline: none;
+        font-weight: 600;
+      }
       .cltc-settings-overlay .cltc-date-range-trigger:focus-visible {
         background: var(--cltc-popover);
         color: var(--cltc-text);
         outline: none;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
       }
-      .cltc-settings-overlay .cltc-segmented button[data-active="true"] {
-        font-weight: 600;
-      }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-range-switching="true"] button[data-active="true"] {
-        opacity: .72;
-        transform: translateY(2px);
-      }
       .cltc-settings-overlay .cltc-segmented-compact button {
         min-width: 52px;
+      }
+      .cltc-settings-overlay .cltc-segmented-compact {
+        min-width: 116px;
       }
       .cltc-settings-overlay .cltc-date-range-trigger {
         border: 1px solid var(--cltc-border);
@@ -7839,7 +7893,7 @@ const VERSION = "0.7.9";
         }
         .cltc-settings-overlay .cltc-segmented button:hover,
         .cltc-settings-overlay .cltc-date-range-trigger:hover {
-          background: var(--cltc-popover);
+          background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
           box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
@@ -7939,10 +7993,8 @@ const VERSION = "0.7.9";
           transition: none;
           opacity: 1;
         }
-        .cltc-settings-overlay .cltc-segmented[data-cltc-range-switching="true"] button[data-active="true"] {
+        .cltc-settings-overlay .cltc-segmented::before {
           transition: none;
-          opacity: 1;
-          transform: none;
         }
         .cltc-settings-overlay .cltc-toggle-field input,
         .cltc-settings-overlay .cltc-toggle-field input:active,
@@ -8043,8 +8095,9 @@ const VERSION = "0.7.9";
     }
     const presetButton = event.target.closest?.("button[data-analytics-preset]");
     if (presetButton) {
+      const previousPresetIndex = ["today", "7d", "30d", "custom"].indexOf(state.analyticsPreset);
       state.analyticsPreset = presetButton.getAttribute("data-analytics-preset") || "today";
-      renderSettingsOverlay(liveSnapshot(), { animate: true, analyticsRange: true });
+      renderSettingsOverlay(liveSnapshot(), { animate: true, analyticsRange: true, analyticsSegmentFrom: previousPresetIndex });
       return;
     }
     if (event.target.closest?.("[data-action='open-analytics-calendar']")) {
@@ -8053,8 +8106,9 @@ const VERSION = "0.7.9";
     }
     const metricButton = event.target.closest?.("[data-analytics-metric]");
     if (metricButton) {
+      const previousMetricIndex = state.analyticsMetric === "cost" ? 1 : 0;
       state.analyticsMetric = metricButton.getAttribute("data-analytics-metric") === "cost" ? "cost" : "tokens";
-      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      renderSettingsOverlay(liveSnapshot(), { animate: true, analyticsMetric: true, analyticsSegmentFrom: previousMetricIndex });
       return;
     }
     const modelButton = event.target.closest?.("[data-analytics-model]");
@@ -8912,14 +8966,10 @@ const VERSION = "0.7.9";
 
   function renderSettingsOverlay(snap, options = {}) {
     const animate = options.animate === true;
-    const animateAnalyticsRange = options.analyticsRange === true;
-    if (state.analyticsRangeSwitchFrame) {
-      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(state.analyticsRangeSwitchFrame);
-      state.analyticsRangeSwitchFrame = 0;
-    }
-    if (state.analyticsRangeSwitchTimer) {
-      window.clearTimeout(state.analyticsRangeSwitchTimer);
-      state.analyticsRangeSwitchTimer = 0;
+    const animateAnalyticsSegment = options.analyticsRange === true || options.analyticsMetric === true;
+    if (state.analyticsSegmentSwitchFrame) {
+      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(state.analyticsSegmentSwitchFrame);
+      state.analyticsSegmentSwitchFrame = 0;
     }
     if (!state.priceEditorOpen) {
       cancelSettingsFocusFrame();
@@ -8998,20 +9048,20 @@ const VERSION = "0.7.9";
       if (typeof window.requestAnimationFrame === "function") state.settingsFocusFrame = window.requestAnimationFrame(restoreFocus);
       else restoreFocus();
     }
-    if (animateAnalyticsRange) {
-      const rangeGroup = state.settingsOverlay.querySelector(".cltc-analytics-toolbar .cltc-segmented");
-      if (rangeGroup) {
-        const settle = () => {
-          state.analyticsRangeSwitchTimer = 0;
-          rangeGroup.removeAttribute("data-cltc-range-switching");
-        };
+    if (animateAnalyticsSegment) {
+      const selector = options.analyticsRange ? ".cltc-analytics-toolbar .cltc-segmented" : ".cltc-analytics-section-head .cltc-segmented-compact";
+      const segmentGroup = state.settingsOverlay.querySelector(selector);
+      const fromIndex = Number(options.analyticsSegmentFrom);
+      const toIndex = Number(segmentGroup?.getAttribute("data-cltc-segment-index"));
+      if (segmentGroup && Number.isInteger(fromIndex) && Number.isInteger(toIndex) && fromIndex >= 0 && fromIndex !== toIndex) {
+        segmentGroup.dataset.cltcSegmentFromIndex = String(fromIndex);
         const activate = () => {
-          state.analyticsRangeSwitchFrame = 0;
-          rangeGroup.dataset.cltcRangeSwitching = "true";
-          void rangeGroup.offsetWidth;
-          state.analyticsRangeSwitchTimer = window.setTimeout(settle, SETTINGS_MODAL_EXIT_MS);
+          state.analyticsSegmentSwitchFrame = 0;
+          if (!segmentGroup.isConnected) return;
+          void segmentGroup.offsetWidth;
+          segmentGroup.removeAttribute("data-cltc-segment-from-index");
         };
-        if (typeof window.requestAnimationFrame === "function") state.analyticsRangeSwitchFrame = window.requestAnimationFrame(activate);
+        if (typeof window.requestAnimationFrame === "function") state.analyticsSegmentSwitchFrame = window.requestAnimationFrame(activate);
         else activate();
       }
     }
@@ -9762,10 +9812,9 @@ const VERSION = "0.7.9";
       window.cancelAnimationFrame(state.settingsStatusPulseFrame);
     }
     cancelSettingsFocusFrame();
-    if (state.analyticsRangeSwitchFrame && typeof window.cancelAnimationFrame === "function") {
-      window.cancelAnimationFrame(state.analyticsRangeSwitchFrame);
+    if (state.analyticsSegmentSwitchFrame && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(state.analyticsSegmentSwitchFrame);
     }
-    if (state.analyticsRangeSwitchTimer) window.clearTimeout(state.analyticsRangeSwitchTimer);
     if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
     if (state.hubVisibilityTimer) window.clearTimeout(state.hubVisibilityTimer);
     state.priceRemoteAbortController?.abort?.();
@@ -9774,8 +9823,7 @@ const VERSION = "0.7.9";
     state.profileSaveStatusTimer = 0;
     state.settingsOverlayCloseTimer = 0;
     state.settingsStatusPulseFrame = 0;
-    state.analyticsRangeSwitchFrame = 0;
-    state.analyticsRangeSwitchTimer = 0;
+    state.analyticsSegmentSwitchFrame = 0;
     stopAnalyticsTimer();
     destroyAnalyticsCalendar();
     state.hubVisibilityObserver?.disconnect?.();

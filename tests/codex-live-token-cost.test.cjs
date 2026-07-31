@@ -317,13 +317,16 @@ assert.match(code, /\.cltc-toggle-field input,[\s\S]*?transition: transform var\
 assert.equal(code.includes("transition: transform var(--cltc-duration-press) var(--cltc-ease-out);"), true);
 assert.equal(code.includes("transition: rotate var(--cltc-duration-press) var(--cltc-ease-in-out);"), true);
 assert.equal(code.includes("transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);"), true);
-assert.equal(code.includes("analyticsRangeSwitchFrame: 0"), true);
-assert.equal(code.includes("analyticsRangeSwitchTimer: 0"), true);
+assert.equal(code.includes("analyticsSegmentSwitchFrame: 0"), true);
 assert.match(code, /\.cltc-settings-overlay \.cltc-segmented button \{[\s\S]*?transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?opacity var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?background var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?color var\(--cltc-duration-press\) var\(--cltc-ease-out\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-range-switching="true"\] button\[data-active="true"\] \{[\s\S]*?opacity: \.72;[\s\S]*?transform: translateY\(2px\);/);
-assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true, analyticsRange: true \}\);/);
-assert.match(code, /const animateAnalyticsRange = options\.analyticsRange === true;[\s\S]*?const activate = \(\) => \{[\s\S]*?rangeGroup\.dataset\.cltcRangeSwitching = "true";\s+void rangeGroup\.offsetWidth;[\s\S]*?setTimeout\(settle, SETTINGS_MODAL_EXIT_MS\);[\s\S]*?requestAnimationFrame\(activate\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-range-switching="true"\] button\[data-active="true"\] \{[\s\S]*?transition: none;[\s\S]*?opacity: 1;[\s\S]*?transform: none;/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-segmented::before \{[\s\S]*?transform: translateX\(0\);[\s\S]*?transition: transform var\(--cltc-duration-data\) var\(--cltc-ease-out\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-segment-index="3"\]::before \{[\s\S]*?transform: translateX\(calc\(300% \+ 6px\)\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-segment-from-index="1"\]::before \{[\s\S]*?transform: translateX\(calc\(100% \+ 2px\)\);/);
+assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true, analyticsRange: true, analyticsSegmentFrom:/);
+assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true, analyticsMetric: true, analyticsSegmentFrom: previousMetricIndex \}\);/);
+assert.match(code, /const animateAnalyticsSegment = options\.analyticsRange === true \|\| options\.analyticsMetric === true;[\s\S]*?data-cltc-segment-from-index[\s\S]*?requestAnimationFrame\(activate\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-segmented::before \{[\s\S]*?transition: none;/);
+assert.equal(code.includes("data-cltc-range-switching"), false);
 assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status \{[\s\S]*?transition: opacity var\(--cltc-duration-tooltip\) var\(--cltc-ease-out\);[\s\S]*?\}/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status\[data-cltc-status-pulse="true"\] \{[\s\S]*?opacity: \.48;/);
 assert.match(code, /function pulseSettingsStatus\(node\) \{[\s\S]*?node\.dataset\.cltcStatusPulse = "true";\s+void node\.offsetWidth;/);
@@ -1233,6 +1236,8 @@ const analyticsHtml = api.usageAnalyticsHtml({
 });
 assert.equal(analyticsHtml.includes("<h2>使用统计</h2>"), true);
 assert.equal(analyticsHtml.includes('data-analytics-preset="today"'), true);
+assert.equal(analyticsHtml.includes('class="cltc-segmented" data-cltc-segment-index="0"'), true);
+assert.equal(analyticsHtml.includes('class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="0"'), true);
 assert.equal(analyticsHtml.includes("总 Token"), true);
 assert.equal(analyticsHtml.includes("总花费"), true);
 assert.equal(analyticsHtml.includes("模型调用"), true);
@@ -1243,6 +1248,15 @@ assert.equal(analyticsHtml.includes('viewBox="0 0 720 230"'), true);
 assert.match(analyticsHtml, /data-chart-index="0"[^>]* y="36"/);
 assert.match(analyticsHtml, /cltc-analytics-tooltip[\s\S]*?<rect[^>]* y="11"/);
 assert.equal(analyticsHtml.includes("Token 构成"), true);
+const costAnalyticsHtml = api.usageAnalyticsHtml({
+  now: localBoundaryTime,
+  preset: "7d",
+  metric: "cost",
+  turns: visibleAnalyticsTurns,
+});
+assert.equal(costAnalyticsHtml.includes('data-analytics-preset="7d"'), true);
+assert.equal(costAnalyticsHtml.includes('class="cltc-segmented" data-cltc-segment-index="1"'), true);
+assert.equal(costAnalyticsHtml.includes('class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="1"'), true);
 assert.equal(analyticsHtml.includes("写缓存"), true);
 assert.equal(analyticsHtml.includes("模型明细"), true);
 const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
