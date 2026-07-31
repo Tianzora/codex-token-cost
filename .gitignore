@@ -8,7 +8,7 @@
 !.github/workflows/release.yml
 !scripts/
 !scripts/codex-live-token-cost.js
-!scripts/codex-live-token-cost-prices.js
+!scripts/prices.json
 !scripts/codex-local-usage-helper.cjs
 !scripts/deploy-userscript.ps1
 !scripts/deploy-userscript.sh

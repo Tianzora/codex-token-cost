@@ -4,9 +4,9 @@ const vm = require("node:vm");
 const assert = require("node:assert/strict");
 
 const scriptPath = path.join(__dirname, "..", "scripts", "codex-live-token-cost.js");
-const priceSourcePath = path.join(__dirname, "..", "scripts", "codex-live-token-cost-prices.js");
+const priceSourcePath = path.join(__dirname, "..", "scripts", "prices.json");
 const code = fs.readFileSync(scriptPath, "utf8").replace(/\r\n/g, "\n");
-const priceSourceCode = fs.readFileSync(priceSourcePath, "utf8").replace(/\r\n/g, "\n");
+const priceTable = JSON.parse(fs.readFileSync(priceSourcePath, "utf8"));
 
 function createIndexedDbTestDouble() {
   const databases = new Map();
@@ -420,8 +420,8 @@ assert.equal(code.includes('"gpt-5.4-pro"'), true);
 assert.equal(code.includes('"gpt-5.6-sol"'), true);
 assert.equal(code.includes('"gpt-5.6-terra"'), true);
 assert.equal(code.includes('"gpt-5.6-luna"'), true);
-assert.equal(priceSourceCode.includes('"gpt-5.6-sol"'), true);
-assert.equal(priceSourceCode.includes('"gpt-5.4-nano"'), true);
+assert.equal(Object.hasOwn(priceTable, "gpt-5.6-sol"), true);
+assert.equal(Object.hasOwn(priceTable, "gpt-5.4-nano"), true);
 assert.equal(code.includes('data-price-field="cacheWrite"'), true);
 assert.equal(code.includes("<span>写缓存</span>"), true);
 assert.equal(code.includes('{ value: "free", label: "Free" }'), true);
@@ -560,6 +560,8 @@ const windowListeners = new Map();
 const storage = new Map();
 const bridgeCalls = [];
 const helperFetchCalls = [];
+const priceFetchCalls = [];
+const priceFetchQueue = [];
 const delayedTimers = [];
 let domComposerState = "none";
 const SEND_ARROW_PATH =
@@ -684,6 +686,7 @@ const context = {
   Reflect,
   WeakSet,
   Response,
+  AbortController,
   JSON,
   Date: FixedDate,
   Math,
@@ -754,9 +757,6 @@ const context = {
 context.window = context;
 context.globalThis = context;
 context.__CODEX_LIVE_TOKEN_COST_TEST__ = true;
-
-vm.runInNewContext(priceSourceCode, context, { filename: priceSourcePath });
-context.__CODEX_LIVE_TOKEN_COST_PRICES__["gpt-test-data-source"] = { input: 9, cachedInput: 0.9, output: 90 };
 
 vm.runInNewContext(code, context, { filename: scriptPath });
 
@@ -979,6 +979,8 @@ assert.equal(typeof api.pricePopoverHtml, "function");
 assert.equal(typeof api.newPriceModelName, "function");
 assert.equal(typeof api.deletePriceForModel, "function");
 assert.equal(typeof api.restoreDefaultPrices, "function");
+assert.equal(typeof api.refreshDefaultPrices, "function");
+assert.equal(typeof api.remotePriceTable, "function");
 assert.equal(typeof api.visiblePrices, "function");
 assert.equal(typeof api.priceFor, "function");
 assert.equal(typeof api.priceModelKey, "function");
@@ -1003,12 +1005,7 @@ assert.equal(typeof api.analyticsChartBuckets, "function");
 assert.equal(typeof api.refreshUsageAnalyticsFromHelper, "function");
 assert.equal(typeof api.localProfileAccountsCheckResponse, "function");
 assert.equal(typeof api.profileUiAuthContextValue, "function");
-const dataSourcePrice = api.priceFor("gpt-test-data-source");
-assert.equal(dataSourcePrice.input, 9);
-assert.equal(dataSourcePrice.cachedInput, 0.9);
-assert.equal(dataSourcePrice.output, 90);
-assert.equal(api.visiblePrices()["gpt-test-data-source"].output, 90);
-assert.equal(api.priceModelKey("GPT-TEST-DATA-SOURCE"), "gpt-test-data-source");
+assert.deepEqual(api.visiblePrices(), api.remotePriceTable(priceTable));
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.currentSessionTurns(api.localUsageExport().turns).length, 0);
 assert.equal(api.liveSnapshot().session.total, 0);
@@ -1835,7 +1832,8 @@ const hiddenNanoCost = api.costForModelUsage({ input: 1, output: 0, cached: 0, t
 assert.equal(hiddenNanoCost.hidden, true);
 assert.equal(hiddenNanoCost.priced, true);
 assert.equal(api.costPricedLabel(hiddenNanoCost, { input: 1, output: 0, cached: 0, total: 1 }), "");
-assert.equal(api.restoreDefaultPrices(), true);
+const firstRestoreDefaultPromise = api.restoreDefaultPrices();
+assert.equal(typeof firstRestoreDefaultPromise?.then, "function");
 assert.equal(api.priceFor("gpt-5.4-nano").input, 0.2);
 const unpricedUsage = { input: 100, output: 20, cached: 10, total: 120 };
 const overridesBeforeUnpricedCost = context.localStorage.getItem("__codexLiveTokenCostPriceOverridesV1");
@@ -1891,7 +1889,8 @@ assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-5.5", { input: 99, 
 assert.equal(api.priceFor("gpt-5.5").input, 99);
 assert.equal(api.deletePriceForModel("gpt-5.3-codex"), true);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.3-codex"), false);
-assert.equal(api.restoreDefaultPrices(), true);
+const secondRestoreDefaultPromise = api.restoreDefaultPrices();
+assert.equal(typeof secondRestoreDefaultPromise?.then, "function");
 assert.equal(api.priceFor("gpt-5.5").input, 5);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.3-codex"), true);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "custom-delete-model"), true);
@@ -2036,8 +2035,6 @@ assert.equal(gpt54FastCost.value, gpt54StandardCost.value * 2);
 const gpt54MiniStandardCost = api.costForModelUsage(baseFastUsage, "gpt-5.4-mini");
 const gpt54MiniFastCost = api.costForModelUsage(baseFastUsage, "gpt-5.4-mini", { fastMode: true });
 assert.equal(gpt54MiniFastCost.value, gpt54MiniStandardCost.value * 2);
-const dataSourceFastCost = api.costForModelUsage(baseFastUsage, "gpt-test-data-source", { fastMode: true });
-assert.equal(dataSourceFastCost.value, api.costForModelUsage(baseFastUsage, "gpt-test-data-source").value);
 assert.equal(api.isCodexPlusText("Codex++"), true);
 assert.equal(api.isCodexPlusText("Codex Token Cost 设置"), false);
 context.electronBridge.sendMessageFromView({ type: "fetch", method: "GET", url: "/wham/profiles/me", requestId: "profile-1" });
@@ -4295,6 +4292,52 @@ api.mergeHelperStats({
 assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeDuplicateMerge);
 const profileLifecycleTest = Promise.resolve()
   .then(async () => {
+    const remotePrices = {
+      ...priceTable,
+      "gpt-5.6-sol": { input: 6, cachedInput: 0.6, cacheWrite: 7.5, output: 36 },
+      "gpt-remote-model": { input: 3, cachedInput: 0.3, output: 18 },
+    };
+    const priceResponse = (payload, status = 200) =>
+      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+    context.fetch = async function priceRemoteFetch(url, options) {
+      priceFetchCalls.push({ url: String(url), options });
+      const next = priceFetchQueue.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    };
+    priceFetchQueue.push(priceResponse(remotePrices));
+    assert.equal(await api.refreshDefaultPrices(), true);
+    assert.equal(priceFetchCalls[0].url, "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/prices.json");
+    assert.equal(priceFetchCalls[0].options.cache, "no-store");
+    assert.equal(priceFetchCalls[0].options.credentials, "omit");
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
+    assert.equal(api.priceFor("gpt-remote-model").output, 18);
+    const cachedRemotePrices = storage.get("__codexLiveTokenCostRemotePricesV1");
+    assert.deepEqual(JSON.parse(cachedRemotePrices).prices, JSON.parse(JSON.stringify(api.remotePriceTable(remotePrices))));
+
+    priceFetchQueue.push(new Error("offline"));
+    assert.equal(await api.refreshDefaultPrices(), false);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
+    assert.equal(storage.get("__codexLiveTokenCostRemotePricesV1"), cachedRemotePrices);
+
+    priceFetchQueue.push(priceResponse({
+      "gpt-only-one": { input: 1, output: 1 },
+      "gpt-only-two": { input: 1, output: 1 },
+    }));
+    assert.equal(await api.refreshDefaultPrices(), false);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
+    assert.equal(storage.get("__codexLiveTokenCostRemotePricesV1"), cachedRemotePrices);
+
+    assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-5.6-sol", { input: 99, output: 99 }), true);
+    assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-remote-model", { input: 99, output: 99 }), true);
+    priceFetchQueue.push(priceResponse(remotePrices));
+    assert.equal(await api.restoreDefaultPrices(), true);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
+    assert.equal(api.priceFor("gpt-remote-model").output, 18);
+    const restoredOverrides = JSON.parse(storage.get("__codexLiveTokenCostPriceOverridesV1"));
+    assert.equal(Object.hasOwn(restoredOverrides, "gpt-5.6-sol"), false);
+    assert.equal(Object.hasOwn(restoredOverrides, "gpt-remote-model"), false);
+
     const observedProfileQueryRows = [];
     const observedProfileCacheListeners = [];
     const observedProfileCacheWrites = [];

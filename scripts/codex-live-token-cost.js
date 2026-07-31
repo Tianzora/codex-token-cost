@@ -19,7 +19,10 @@ const VERSION = "0.7.9";
   const PRICE_OVERRIDES_KEY = "__codexLiveTokenCostPriceOverridesV1";
   const HIDDEN_PRICE_MODELS_KEY = "__codexLiveTokenCostHiddenPriceModelsV1";
   const PRICE_MIGRATION_KEY = "__codexLiveTokenCostPriceMigrationV1";
-  const PRICE_MIGRATION_VERSION = "official-prices-2026-07-10-v2";
+  const PRICE_MIGRATION_VERSION = "official-prices-2026-07-31-v3";
+  const PRICE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/prices.json";
+  const PRICE_REMOTE_CACHE_KEY = "__codexLiveTokenCostRemotePricesV1";
+  const PRICE_REMOTE_TIMEOUT_MS = 5000;
   const DAILY_USAGE_KEY = "__codexLiveTokenCostDailyUsageV1";
   const LOCAL_USAGE_KEY = "__codexLiveTokenCostLocalUsageV1";
   const ANALYTICS_ROLLUP_KEY = "__codexLiveTokenCostAnalyticsRollupV1";
@@ -96,7 +99,6 @@ const VERSION = "0.7.9";
     { pattern: /^gpt-5\.5(?:$|[-_.])/, multiplier: 2.5 },
     { pattern: /^gpt-5\.4(?:$|[-_.])/, multiplier: 2 },
   ];
-  const PRICE_DATA_SOURCE_KEY = "__CODEX_LIVE_TOKEN_COST_PRICES__";
   /*
    * Flatpickr 4.6.13 + zh locale
    * Copyright (c) 2017 Gregory Petrosyan
@@ -199,11 +201,11 @@ const VERSION = "0.7.9";
   }
   const FLATPICKR_CSS_GZIP_BASE64 = "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";
 
-  // Standard short-context USD / 1M tokens, synced from official pricing on 2026-07-10.
+  // Standard short-context USD / 1M tokens, synced from scripts/prices.json on 2026-07-31.
   const FALLBACK_DEFAULT_PRICES = {
     "gpt-5.6-sol": { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 },
-    "gpt-5.6-terra": { input: 2.5, cachedInput: 0.25, cacheWrite: 3.125, output: 15 },
-    "gpt-5.6-luna": { input: 1, cachedInput: 0.1, cacheWrite: 1.25, output: 6 },
+    "gpt-5.6-terra": { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
+    "gpt-5.6-luna": { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
     "gpt-5.3-codex": { input: 1.75, cachedInput: 0.175, output: 14 },
     "gpt-5.4": { input: 2.5, cachedInput: 0.25, output: 15 },
     "gpt-5.4-mini": { input: 0.75, cachedInput: 0.075, output: 4.5 },
@@ -211,8 +213,35 @@ const VERSION = "0.7.9";
     "gpt-5.4-pro": { input: 30, cachedInput: null, output: 180 },
     "gpt-5.5": { input: 5, cachedInput: 0.5, output: 30 },
     "gpt-5.5-pro": { input: 30, cachedInput: null, output: 180 },
+    "gpt-5.2": { input: 1.75, cachedInput: 0.175, output: 14 },
+    "gpt-5.2-pro": { input: 21, cachedInput: null, output: 168 },
+    "gpt-5.1": { input: 1.25, cachedInput: 0.125, output: 10 },
+    "gpt-5": { input: 1.25, cachedInput: 0.125, output: 10 },
+    "gpt-5-mini": { input: 0.25, cachedInput: 0.025, output: 2 },
+    "gpt-5-nano": { input: 0.05, cachedInput: 0.005, output: 0.4 },
+    "gpt-5-pro": { input: 15, cachedInput: null, output: 120 },
+    "gpt-4.1": { input: 2, cachedInput: 0.5, output: 8 },
+    "gpt-4.1-mini": { input: 0.4, cachedInput: 0.1, output: 1.6 },
+    "gpt-4.1-nano": { input: 0.1, cachedInput: 0.025, output: 0.4 },
+    "gpt-4o": { input: 2.5, cachedInput: 1.25, output: 10 },
+    "gpt-4o-2024-05-13": { input: 5, cachedInput: null, output: 15 },
+    "gpt-4o-mini": { input: 0.15, cachedInput: 0.075, output: 0.6 },
+    "o1": { input: 15, cachedInput: 7.5, output: 60 },
+    "o1-pro": { input: 150, cachedInput: null, output: 600 },
+    "o3-pro": { input: 20, cachedInput: null, output: 80 },
+    "o3": { input: 2, cachedInput: 0.5, output: 8 },
+    "o4-mini": { input: 1.1, cachedInput: 0.275, output: 4.4 },
+    "o3-mini": { input: 1.1, cachedInput: 0.55, output: 4.4 },
+    "gpt-4-turbo-2024-04-09": { input: 10, cachedInput: null, output: 30 },
+    "gpt-4-0613": { input: 30, cachedInput: null, output: 60 },
+    "gpt-3.5-turbo": { input: 0.5, cachedInput: null, output: 1.5 },
+    "gpt-3.5-turbo-0125": { input: 0.5, cachedInput: null, output: 1.5 },
+    "gpt-3.5-turbo-1106": { input: 1, cachedInput: null, output: 2 },
+    "gpt-3.5-turbo-instruct": { input: 1.5, cachedInput: null, output: 2 },
+    "davinci-002": { input: 2, cachedInput: null, output: 2 },
+    "babbage-002": { input: 0.4, cachedInput: null, output: 0.4 },
   };
-  const DEFAULT_PRICES = loadDefaultPrices();
+  let DEFAULT_PRICES = loadDefaultPrices();
 
   if (window.__codexLiveTokenCostVersion && window.__codexLiveTokenCostVersion !== VERSION) {
     try {
@@ -276,6 +305,8 @@ const VERSION = "0.7.9";
     detectedModel: "",
     detectedEffort: "",
     detectedFastMode: false,
+    priceRemoteRequest: null,
+    priceRemoteAbortController: null,
     priceEditorOpen: false,
     priceEditorModel: "",
     settingsPanel: "profile",
@@ -1096,7 +1127,9 @@ const VERSION = "0.7.9";
   }
 
   function loadDefaultPrices() {
-    return { ...FALLBACK_DEFAULT_PRICES, ...normalizePriceTable(globalThis?.[PRICE_DATA_SOURCE_KEY]) };
+    const cached = loadJson(PRICE_REMOTE_CACHE_KEY, null);
+    const cachedPrices = normalizePriceTable(cached?.prices || cached);
+    return { ...normalizePriceTable(FALLBACK_DEFAULT_PRICES), ...cachedPrices };
   }
 
   function normalizePriceTable(source) {
@@ -1106,6 +1139,60 @@ const VERSION = "0.7.9";
         .map(([model, price]) => [normalizeText(model, 120), normalizePrice(price)])
         .filter(([model, price]) => model && price),
     );
+  }
+
+  function remotePriceTable(payload) {
+    const table = normalizePriceTable(payload?.prices || payload);
+    const modelCount = Object.keys(table).length;
+    return modelCount >= 3 && modelCount <= 256 ? table : null;
+  }
+
+  function saveRemotePriceTable(table) {
+    try {
+      localStorage.setItem(
+        PRICE_REMOTE_CACHE_KEY,
+        JSON.stringify({ version: 1, fetchedAt: Date.now(), prices: table }),
+      );
+    } catch {
+      // A full localStorage must not invalidate an otherwise valid remote table.
+    }
+  }
+
+  function refreshDefaultPrices() {
+    if (state.priceRemoteRequest) return state.priceRemoteRequest;
+    const fetcher = window.fetch;
+    if (typeof fetcher !== "function") return Promise.resolve(false);
+
+    const request = (async () => {
+      const controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
+      state.priceRemoteAbortController = controller;
+      const timeout = window.setTimeout(() => controller?.abort(), PRICE_REMOTE_TIMEOUT_MS);
+      try {
+        const response = await fetcher(PRICE_REMOTE_URL, {
+          cache: "no-store",
+          credentials: "omit",
+          headers: { Accept: "application/json" },
+          signal: controller?.signal,
+        });
+        if (!response?.ok) return false;
+        const table = remotePriceTable(await response.json());
+        if (!table) return false;
+        DEFAULT_PRICES = table;
+        saveRemotePriceTable(table);
+        if (state.started) render();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        window.clearTimeout(timeout);
+        if (state.priceRemoteAbortController === controller) state.priceRemoteAbortController = null;
+      }
+    })();
+    state.priceRemoteRequest = request;
+    request.finally(() => {
+      if (state.priceRemoteRequest === request) state.priceRemoteRequest = null;
+    });
+    return request;
   }
 
   function hubVisible() {
@@ -8017,8 +8104,7 @@ const VERSION = "0.7.9";
       return;
     }
     if (event.target.closest?.("[data-action='reset-price']")) {
-      restoreDefaultPrices();
-      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      void restoreDefaultPrices().then(() => renderSettingsOverlay(liveSnapshot(), { animate: true }));
       return;
     }
     if (event.target.closest?.("[data-action='new-price']")) {
@@ -8043,7 +8129,7 @@ const VERSION = "0.7.9";
     );
   }
 
-  function restoreDefaultPrices() {
+  function clearDefaultPriceOverrides() {
     const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
     for (const model of Object.keys(DEFAULT_PRICES)) delete overrides[model];
     localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
@@ -8051,6 +8137,13 @@ const VERSION = "0.7.9";
     for (const model of Object.keys(DEFAULT_PRICES)) hidden.delete(model);
     saveHiddenPriceModels(hidden);
     state.priceEditorModel = nextPriceEditorModel(modelName());
+  }
+
+  async function restoreDefaultPrices() {
+    clearDefaultPriceOverrides();
+    await refreshDefaultPrices();
+    clearDefaultPriceOverrides();
+    if (state.started) render();
     return true;
   }
 
@@ -9650,6 +9743,7 @@ const VERSION = "0.7.9";
     refreshLocalHelperStatsOnStart();
     startCcSwitchStartupSync();
     render();
+    void refreshDefaultPrices();
   }
 
   function scheduleStart() {
@@ -9676,6 +9770,9 @@ const VERSION = "0.7.9";
     if (state.analyticsRangeSwitchTimer) window.clearTimeout(state.analyticsRangeSwitchTimer);
     if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
     if (state.hubVisibilityTimer) window.clearTimeout(state.hubVisibilityTimer);
+    state.priceRemoteAbortController?.abort?.();
+    state.priceRemoteRequest = null;
+    state.priceRemoteAbortController = null;
     state.profileSaveStatusTimer = 0;
     state.settingsOverlayCloseTimer = 0;
     state.settingsStatusPulseFrame = 0;
@@ -9923,6 +10020,8 @@ const VERSION = "0.7.9";
       newPriceModelName,
       startNewPriceModel,
       restoreDefaultPrices,
+      refreshDefaultPrices,
+      remotePriceTable,
       trapSettingsFocus,
       deletePriceForModel,
       visiblePrices,
