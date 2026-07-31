@@ -6887,6 +6887,16 @@ const VERSION = "0.7.9";
         --cltc-primary: var(--color-token-text-primary, light-dark(#171717, #f4f4f5));
         --cltc-primary-text: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
         --cltc-danger: light-dark(#b42318, #f97066);
+        --cltc-success: var(--color-token-success, #10a37f);
+        --cltc-warning: var(--color-token-warning, #b45309);
+        --cltc-chart-blue: var(--color-token-charts-blue, #3b82f6);
+        --cltc-chart-purple: var(--color-token-charts-purple, #8b5cf6);
+        --cltc-focus-ring: var(--color-token-focus-ring, color-mix(in srgb, var(--cltc-text) 16%, transparent));
+        --cltc-font-family: var(--font-family-sans, var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif));
+        --cltc-radius-sm: var(--radius-md, 6px);
+        --cltc-radius-control: var(--radius-lg, 8px);
+        --cltc-radius-modal: var(--radius-2xl, 12px);
+        --cltc-radius-popover: var(--radius-2xl, 10px);
         --cltc-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
         --cltc-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
         --cltc-duration-press: 160ms;
@@ -6904,7 +6914,17 @@ const VERSION = "0.7.9";
         background: transparent;
         color: var(--cltc-text);
         color-scheme: light dark;
+        box-sizing: border-box;
+        font-family: var(--cltc-font-family);
+        font-size: 13px;
+        line-height: 1.45;
+        letter-spacing: 0;
         -webkit-app-region: no-drag;
+      }
+      .cltc-settings-overlay *,
+      .cltc-settings-overlay *::before,
+      .cltc-settings-overlay *::after {
+        box-sizing: border-box;
       }
       html.electron-dark .cltc-settings-overlay {
         --cltc-text: #f4f4f5;
@@ -6932,7 +6952,7 @@ const VERSION = "0.7.9";
         overflow: hidden;
         padding: 0;
         border: 1px solid var(--cltc-border);
-        border-radius: 12px;
+        border-radius: var(--cltc-radius-modal);
         background: var(--cltc-popover);
         box-shadow: 0 18px 55px var(--cltc-shadow);
         color: var(--cltc-text);
@@ -7018,7 +7038,7 @@ const VERSION = "0.7.9";
         width: 30px;
         height: 30px;
         border: 0;
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control, 8px);
         background: transparent;
         color: var(--cltc-muted);
         cursor: pointer;
@@ -7027,7 +7047,8 @@ const VERSION = "0.7.9";
       #${ROOT_ID} .cltc-price-head button:focus-visible,
       .cltc-settings-overlay .cltc-price-head button:focus-visible {
         background: var(--cltc-hover);
-        outline: none;
+        outline: 2px solid var(--cltc-focus-ring, currentColor);
+        outline-offset: 2px;
       }
       #${ROOT_ID} .cltc-button,
       #${ROOT_ID} .cltc-price-head button,
@@ -7098,7 +7119,7 @@ const VERSION = "0.7.9";
         min-height: 34px;
         padding: 7px 10px;
         border: 0;
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control);
         background: transparent;
         color: var(--cltc-muted);
         cursor: pointer;
@@ -7110,6 +7131,10 @@ const VERSION = "0.7.9";
         background: var(--cltc-hover);
         color: var(--cltc-text);
         outline: none;
+      }
+      .cltc-settings-overlay .cltc-settings-nav button:focus-visible {
+        outline: 2px solid var(--cltc-focus-ring);
+        outline-offset: 2px;
       }
       .cltc-settings-overlay .cltc-settings-nav button[data-active="true"] {
         font-weight: 600;
@@ -7127,7 +7152,7 @@ const VERSION = "0.7.9";
         max-height: 210px;
         overflow: auto;
         border: 1px solid var(--cltc-border-subtle);
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control, 8px);
         scrollbar-width: thin;
         scrollbar-color: color-mix(in srgb, var(--cltc-muted) 35%, transparent) transparent;
       }
@@ -7182,7 +7207,7 @@ const VERSION = "0.7.9";
       }
       #${ROOT_ID} .cltc-sync-status[data-helper-unavailable="true"],
       .cltc-settings-overlay .cltc-sync-status[data-helper-unavailable="true"] {
-        color: color-mix(in srgb, #b45309 75%, var(--cltc-text));
+        color: color-mix(in srgb, var(--cltc-warning) 75%, var(--cltc-text));
       }
       .cltc-settings-overlay .cltc-sync-status {
         transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
@@ -7199,7 +7224,7 @@ const VERSION = "0.7.9";
         max-width: min(420px, calc(100vw - 32px));
         padding: 10px 14px;
         border: 1px solid var(--cltc-border);
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control);
         background: var(--cltc-popover);
         box-shadow: 0 10px 28px var(--cltc-shadow);
         color: var(--cltc-text);
@@ -7220,8 +7245,8 @@ const VERSION = "0.7.9";
         transition-delay: 0s;
       }
       .cltc-settings-overlay .cltc-profile-save-toast[data-tone="success"] {
-        border-color: color-mix(in srgb, #10a37f 42%, var(--cltc-border));
-        color: color-mix(in srgb, #10a37f 78%, var(--cltc-text));
+        border-color: color-mix(in srgb, var(--cltc-success) 42%, var(--cltc-border));
+        color: color-mix(in srgb, var(--cltc-success) 78%, var(--cltc-text));
       }
       .cltc-settings-overlay .cltc-profile-save-toast[data-tone="error"] {
         border-color: color-mix(in srgb, var(--cltc-danger) 52%, var(--cltc-border));
@@ -7369,7 +7394,7 @@ const VERSION = "0.7.9";
         height: 36px;
         padding: 7px 10px;
         border: 1px solid var(--cltc-border);
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control, 8px);
         background: var(--cltc-input);
         color: var(--cltc-text);
         font: inherit;
@@ -7398,7 +7423,7 @@ const VERSION = "0.7.9";
         margin-top: 5px;
         padding: 5px;
         border: 1px solid var(--cltc-border);
-        border-radius: 10px;
+        border-radius: var(--cltc-radius-popover, 10px);
         background: var(--cltc-popover);
         box-shadow: 0 12px 32px var(--cltc-shadow);
         color: var(--cltc-text);
@@ -7440,7 +7465,7 @@ const VERSION = "0.7.9";
       .cltc-settings-overlay .cltc-price-input:focus,
       .cltc-settings-overlay .cltc-profile-select:focus {
         border-color: color-mix(in srgb, var(--cltc-text) 58%, var(--cltc-border));
-        box-shadow: 0 0 0 2px color-mix(in srgb, var(--cltc-text) 10%, transparent);
+        box-shadow: 0 0 0 2px var(--cltc-focus-ring, color-mix(in srgb, var(--cltc-text) 10%, transparent));
       }
       #${ROOT_ID} .cltc-price-actions,
       .cltc-settings-overlay .cltc-price-actions {
@@ -7464,7 +7489,7 @@ const VERSION = "0.7.9";
         min-height: 32px;
         padding: 6px 10px;
         border: 1px solid var(--cltc-border);
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control, 8px);
         background: transparent;
         color: inherit;
         font: inherit;
@@ -7502,7 +7527,7 @@ const VERSION = "0.7.9";
         align-items: center;
         gap: 2px;
         padding: 3px;
-        border-radius: 8px;
+        border-radius: var(--cltc-radius-control);
         background: var(--cltc-surface-secondary);
       }
       .cltc-settings-overlay .cltc-segmented button,
@@ -7513,7 +7538,7 @@ const VERSION = "0.7.9";
         min-height: 30px;
         padding: 5px 9px;
         border: 0;
-        border-radius: 6px;
+        border-radius: var(--cltc-radius-sm);
         background: transparent;
         color: var(--cltc-muted);
         cursor: pointer;
@@ -7699,9 +7724,9 @@ const VERSION = "0.7.9";
         min-width: 0;
       }
       .cltc-settings-overlay [data-tone="neutral"] { background: #8e8e93; }
-      .cltc-settings-overlay [data-tone="green"] { background: #10a37f; }
-      .cltc-settings-overlay [data-tone="blue"] { background: #3b82f6; }
-      .cltc-settings-overlay [data-tone="purple"] { background: #8b5cf6; }
+      .cltc-settings-overlay [data-tone="green"] { background: var(--cltc-success); }
+      .cltc-settings-overlay [data-tone="blue"] { background: var(--cltc-chart-blue); }
+      .cltc-settings-overlay [data-tone="purple"] { background: var(--cltc-chart-purple); }
       .cltc-settings-overlay .cltc-composition-legend {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
