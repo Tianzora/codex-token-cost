@@ -7,6 +7,35 @@ const scriptPath = path.join(__dirname, "..", "scripts", "codex-live-token-cost.
 const priceSourcePath = path.join(__dirname, "..", "scripts", "prices.json");
 const code = fs.readFileSync(scriptPath, "utf8").replace(/\r\n/g, "\n");
 const priceTable = JSON.parse(fs.readFileSync(priceSourcePath, "utf8"));
+const retiredPriceModels = [
+  "gpt-5.2",
+  "gpt-5.2-pro",
+  "gpt-5.1",
+  "gpt-5",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5-pro",
+  "gpt-4.1",
+  "gpt-4.1-mini",
+  "gpt-4.1-nano",
+  "gpt-4o",
+  "gpt-4o-2024-05-13",
+  "gpt-4o-mini",
+  "o1",
+  "o1-pro",
+  "o3-pro",
+  "o3",
+  "o4-mini",
+  "o3-mini",
+  "gpt-4-turbo-2024-04-09",
+  "gpt-4-0613",
+  "gpt-3.5-turbo",
+  "gpt-3.5-turbo-0125",
+  "gpt-3.5-turbo-1106",
+  "gpt-3.5-turbo-instruct",
+  "davinci-002",
+  "babbage-002",
+];
 
 function createIndexedDbTestDouble() {
   const databases = new Map();
@@ -1005,7 +1034,10 @@ assert.equal(typeof api.analyticsChartBuckets, "function");
 assert.equal(typeof api.refreshUsageAnalyticsFromHelper, "function");
 assert.equal(typeof api.localProfileAccountsCheckResponse, "function");
 assert.equal(typeof api.profileUiAuthContextValue, "function");
+assert.equal(Object.keys(priceTable).length, 10);
+for (const model of retiredPriceModels) assert.equal(Object.hasOwn(priceTable, model), false);
 assert.deepEqual(api.visiblePrices(), api.remotePriceTable(priceTable));
+for (const model of retiredPriceModels) assert.equal(api.priceFor(model), null);
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.currentSessionTurns(api.localUsageExport().turns).length, 0);
 assert.equal(api.liveSnapshot().session.total, 0);
