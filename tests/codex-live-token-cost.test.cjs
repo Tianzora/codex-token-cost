@@ -122,21 +122,17 @@ assert.equal(code.includes('pushState(history.state, "", "/settings/profile")'),
 assert.equal(code.includes("@run-at       document-start"), true);
 assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
-assert.equal(code.includes('const VERSION = "0.7.9"'), true);
+assert.equal(code.includes('const VERSION = "0.7.9-beta1"'), true);
 assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
 assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
-assert.equal(code.includes("--cltc-calendar-accent: rgb(76, 78, 80)"), true);
-assert.equal(code.includes("#10a37f !important"), false);
-assert.equal(code.includes("width: 672px !important"), true);
-assert.equal(code.includes("height: 42px !important"), true);
-assert.match(code, /\.flatpickr-day\.inRange::before,[\s\S]*?top: 5px;[\s\S]*?bottom: 5px;/);
-assert.match(code, /\.flatpickr-day\.selected::after,[\s\S]*?width: 34px;[\s\S]*?background: var\(--cltc-calendar-accent\)/);
-assert.match(code, /\.flatpickr-day:focus-visible::after \{[\s\S]*?var\(--cltc-calendar-accent\)/);
-assert.equal(code.includes("-5px 0 0 color-mix"), false);
+assert.equal(code.includes("data-analytics-start"), true);
+assert.equal(code.includes("data-analytics-end"), true);
 assert.equal(code.includes('if (state.analyticsPreset === "custom") window.setTimeout(() => void openAnalyticsCalendar(), 0);'), false);
 assert.equal(code.includes("cltc-analytics-tooltip"), true);
+assert.equal(code.includes('container.addEventListener("pointerdown", handleEmbeddedControlPointerDown, true)'), true);
+assert.equal(code.includes('button.addEventListener("pointerdown", handleEmbeddedProfileSavePointerDown)'), true);
 assert.match(code, /rect\[data-chart-index\][\s\S]*?stroke: transparent !important;/);
 assert.match(code, /rect\[data-chart-index\]:focus-visible[\s\S]*?stroke: rgb\(76, 78, 80\) !important;/);
 assert.equal(code.includes("@keyframes cltc-analytics-bar-grow"), true);
@@ -162,20 +158,36 @@ assert.equal(code.includes("cltc-settings-content"), true);
 assert.equal(code.includes("cltc-settings-nav"), true);
 assert.equal(code.includes('aria-modal="true"'), true);
 assert.equal(code.includes("justify-content: center"), true);
-assert.equal(code.includes("grid-template-columns: 176px minmax(0, 1fr)"), true);
+assert.equal(code.includes("grid-template-columns: max-content minmax(0, 1fr)"), true);
+assert.equal(code.includes("grid-template-columns: 176px minmax(0, 1fr)"), false);
+const settingsSidebarRule = code.match(/\.cltc-settings-overlay \.cltc-settings-sidebar \{([\s\S]*?)\n      \}/)?.[1] || "";
+const settingsFooterRule = code.match(/\.cltc-settings-overlay \.cltc-settings-footer \{([\s\S]*?)\n      \}/)?.[1] || "";
+assert.equal(settingsSidebarRule.includes("border-right"), false);
+assert.equal(settingsFooterRule.includes("margin-top: auto"), false);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
 assert.equal(code.includes(".cltc-profile-select:open"), true);
 assert.equal(code.includes(".cltc-profile-select option"), true);
-assert.equal(code.includes("appearance: base-select"), true);
+assert.equal(code.includes("appearance: auto"), true);
 assert.equal(code.includes("::picker(select)"), true);
 assert.equal(code.includes("::picker-icon"), true);
-assert.equal(code.includes("border-radius: 8px"), true);
 assert.equal(code.includes("html.electron-dark .cltc-settings-overlay"), true);
 assert.equal(code.includes("background: rgba(0, 0, 0, .28)"), false);
 assert.equal(code.includes("scrollbar-width: thin"), true);
 assert.equal(code.includes("color-scheme: light dark"), true);
 assert.equal(code.includes("--cltc-text: var(--color-token-text-primary, light-dark(#111827, #f4f4f5))"), true);
 assert.equal(code.includes("--cltc-hover: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)))"), true);
+assert.equal(code.includes("--cltc-border: var(--color-token-border-light, light-dark(#d1d5db, #3f3f46))"), true);
+assert.equal(code.includes("--cltc-surface-secondary: var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a))"), true);
+assert.equal(code.includes("--cltc-popover: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)))"), true);
+assert.equal(code.includes("--cltc-input: var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)))"), true);
+assert.equal(code.includes("--cltc-sidebar-surface: var(--cltc-surface-secondary)"), true);
+assert.equal(code.includes("--cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)))"), true);
+assert.equal(code.includes("--cltc-font-family: var(--font-family-sans, var(--font-sans,"), true);
+assert.equal(code.includes("--cltc-radius-control: var(--radius-lg, 8px)"), true);
+assert.equal(code.includes("--cltc-focus-ring: var(--color-token-focus-border,"), true);
+assert.equal(code.includes("--cltc-success: var(--color-token-success, #10a37f)"), true);
+assert.equal(code.includes(".cltc-settings-overlay *::before"), true);
+assert.equal(code.includes("border-radius: var(--cltc-radius-modal)"), true);
 assert.equal(code.includes("--cltc-arc-bg: light-dark(rgb(246, 246, 246), rgba(255, 255, 255, .08))"), true);
 assert.equal(code.includes("--cltc-shimmer-contrast: #fff"), true);
 assert.equal(code.includes("--cltc-shimmer-contrast: #0009"), false);
@@ -198,6 +210,12 @@ assert.equal(code.includes("html.electron-dark #${ROOT_ID}"), true);
 assert.equal(code.includes("color-scheme: dark"), true);
 assert.equal(code.includes("--cltc-surface: #2d2d2d"), true);
 assert.equal(code.includes("--cltc-input: #2d2d2d"), true);
+assert.equal(code.includes("--cltc-surface: rgb(22, 22, 22)"), true);
+assert.equal(code.includes("--cltc-surface-secondary: rgb(30, 30, 30)"), true);
+assert.equal(code.includes("--cltc-popover: rgb(22, 22, 22)"), true);
+assert.equal(code.includes("--cltc-input: rgb(22, 22, 22)"), true);
+assert.equal(code.includes("--cltc-sidebar-surface: rgb(30, 30, 30)"), true);
+assert.equal(code.includes("--cltc-active: rgba(255, 255, 255, .08)"), true);
 assert.equal(code.includes("--cltc-arc-bg: rgb(31, 31, 31)"), true);
 assert.equal(code.includes("--cltc-text: #d4d4d8"), true);
 assert.equal(code.includes("--cltc-muted: rgba(255, 255, 255, .498)"), true);
@@ -205,6 +223,16 @@ assert.equal(code.includes("--cltc-muted: rgba(26, 28, 31, .494)"), true);
 assert.equal(code.includes("--cltc-arc-bg: rgb(246, 246, 246)"), true);
 assert.equal(code.includes("--cltc-arc-bg: rgba(0, 0, 0, 1)"), false);
 assert.equal(code.includes("--cltc-arc-bg: rgba(0, 0, 0, .07)"), false);
+assert.match(code, /\.cltc-settings-modal \{[\s\S]*?background: var\(--cltc-popover\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-settings-sidebar \{[\s\S]*?background: var\(--cltc-sidebar-surface\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-settings-nav button\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
+assert.match(code, /\.cltc-settings-overlay button:focus-visible \{[\s\S]*?outline: 2px solid var\(--cltc-focus-ring\);/);
+assert.match(code, /\.cltc-settings-overlay button:disabled \{[\s\S]*?cursor: not-allowed;[\s\S]*?opacity: \.5;/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-price-row\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
+assert.match(code, /#\$\{ROOT_ID\} \.cltc-toggle-field input,[\s\S]*?background: var\(--cltc-surface-secondary\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-control \{[\s\S]*?background: var\(--cltc-input\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-filter \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-composition-bar \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
 assert.equal(code.includes("function updateRollingValueSlot(slot, key, value)"), true);
 assert.equal(code.includes("if (previous === text) return;"), false);
 assert.equal(code.includes("function isTransientSessionKey(value)"), true);
@@ -247,15 +275,8 @@ for (const declaration of [
   "--cltc-duration-modal: 200ms;",
   "--cltc-duration-data: 160ms;",
 ]) assert.equal(settingsOverlayTokenBlock[1].includes(declaration), true);
-const headerSettingsTokenBlock = code.match(
-  /\.cltc-header-settings \{\n([\s\S]*?)\n      \}\n      \.cltc-header-settings\[data-floating="true"\] \{/,
-);
-assert.ok(headerSettingsTokenBlock);
-for (const declaration of [
-  "--cltc-ease-out: cubic-bezier(0.23, 1, 0.32, 1);",
-  "--cltc-duration-press: 160ms;",
-]) assert.equal(headerSettingsTokenBlock[1].includes(declaration), true);
 assert.match(code, /syncHubVisibility\(root\);\s+if \(!state\.settingsOverlay\?\.isConnected \|\| !state\.priceEditorOpen\) renderSettingsOverlay\(snap\);/);
+assert.match(code, /const SETTINGS_BUTTON_ICON =/);
 const syncCcSwitchSource = code.match(/async function syncCcSwitchFromSettings\(\) \{[\s\S]*?\n  \}\n\n  function ccSwitchSettingsHtml/)?.[0];
 assert.ok(syncCcSwitchSource);
 assert.match(syncCcSwitchSource, /syncCcSwitchUsageFromHelper\(\{ refresh: true \}\)/);
@@ -267,11 +288,7 @@ assert.match(syncCcSwitchUsageSource, /if \(state\.ccSwitchSyncInFlight\) \{\s+i
 assert.doesNotMatch(syncCcSwitchUsageSource, /\.then\(\(\) => syncCcSwitchUsageFromHelper\(options\)\)/);
 assert.match(code, /let entering = false;\s+if \(!state\.settingsOverlay\) \{\s+entering = true;[\s\S]*?state\.settingsOverlay\.dataset\.cltcEntering = "true";/);
 assert.match(code, /if \(entering\) \{\s+const overlay = state\.settingsOverlay;\s+const settle = \(\) => overlay\?\.removeAttribute\("data-cltc-entering"\);\s+if \(typeof window\.requestAnimationFrame === "function"\) window\.requestAnimationFrame\(settle\);\s+else settle\(\);\s+\}/);
-assert.match(code, /if \(!state\.settingsOverlay\.isConnected\)[\s\S]*?if \(entering\) \{[\s\S]*?else settle\(\);\s+\}[\s\S]*?if \(state\.analyticsCalendar\?\.isOpen\) return;/);
-assert.match(
-  code,
-  /#\$\{ROOT_ID\} \.cltc-button,\s+#\$\{ROOT_ID\} \.cltc-price-head button,\s+#\$\{ROOT_ID\} \.cltc-price-actions button,\s+\.cltc-settings-overlay button,\s+\.cltc-header-settings \{\s+transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?border-color var\(--cltc-duration-press\) var\(--cltc-ease-out\);\s+\}\s+#\$\{ROOT_ID\} \.cltc-button:active,/,
-);
+assert.match(code, /if \(!state\.settingsOverlay\.isConnected\)[\s\S]*?if \(entering\) \{[\s\S]*?else settle\(\);\s+\}/);
 assert.match(code, /\.cltc-settings-modal \{[\s\S]*?opacity: 1;[\s\S]*?transform: translateY\(0\) scale\(1\);[\s\S]*?transition: opacity var\(--cltc-duration-modal\) var\(--cltc-ease-out\),\s+transform var\(--cltc-duration-modal\) var\(--cltc-ease-out\);/);
 assert.match(code, /\.cltc-settings-overlay\[data-cltc-entering="true"\] \.cltc-settings-modal \{[\s\S]*?opacity: 0;[\s\S]*?transform: translateY\(4px\) scale\(\.97\);/);
 assert.match(code, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.cltc-settings-modal \{[\s\S]*?transform: none;[\s\S]*?transition: opacity var\(--cltc-duration-press\) var\(--cltc-ease-out\);[\s\S]*?\.cltc-settings-overlay\[data-cltc-entering="true"\] \.cltc-settings-modal \{[\s\S]*?transform: none;/);
@@ -280,17 +297,36 @@ assert.match(code, /\.cltc-settings-overlay\[data-cltc-closing="true"\] \{[\s\S]
 assert.match(code, /\.cltc-settings-overlay\[data-cltc-closing="true"\] \.cltc-settings-modal \{[\s\S]*?opacity: 0;[\s\S]*?transform: translateY\(2px\) scale\(\.98\);[\s\S]*?transition: opacity var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?transform var\(--cltc-duration-press\) var\(--cltc-ease-out\);/);
 assert.match(code, /\.cltc-settings-overlay\[data-cltc-closing="true"\] \.cltc-settings-modal \{[\s\S]*?transform: none;[\s\S]*?transition: opacity var\(--cltc-duration-press\) var\(--cltc-ease-out\);/);
 assert.match(code, /function closeSettingsEditor\(\) \{[\s\S]*?state\.priceEditorOpen = false;[\s\S]*?render\(true\);\s+\}/);
-assert.match(code, /function handleSettingsKeydown\(event\) \{\s+if \(event\.key === "Escape"\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?closeSettingsEditor\(\);/);
+assert.match(code, /function handleSettingsKeydown\(event\) \{\s+if \(event\.key === "Escape"\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?closeEmbeddedSettingsPage\(\);/);
 assert.match(code, /state\.settingsOverlayCloseTimer = window\.setTimeout\(remove, SETTINGS_MODAL_EXIT_MS\);/);
-assert.match(code, /state\.settingsButton\?\.focus\?\.\(\);/);
 assert.match(code, /state\.settingsOverlay\.addEventListener\("keydown", handleSettingsKeydown\);/);
-assert.match(code, /if \(event\.target\?\.classList\?\.contains\("cltc-settings-overlay"\)\) \{\s+closeSettingsEditor\(\);/);
-assert.match(code, /if \(event\.target\.closest\?\.\("\[data-action='close-price'\]"\)\) \{\s+closeSettingsEditor\(\);/);
+assert.match(code, /if \(event\.target\?\.classList\?\.contains\("cltc-settings-overlay"\)\) \{\s+closeEmbeddedSettingsPage\(\);/);
+assert.match(code, /function closeEmbeddedSettingsPage\(\) \{[\s\S]*?state\.embeddedPageContainer = null;[\s\S]*?embeddedPageClose\(\);/);
+assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
+assert.equal(code.includes('data-action="close-price"'), false);
+assert.match(code, /function clearEmbeddedRailActiveAfterNavigation\(event\) \{[\s\S]*?closest\?\.\(\"nav\[data-app-navigation-rail\] button\[aria-label\]\"\)[\s\S]*?clearEmbeddedRailActive\(\);/);
+assert.match(code, /rememberPendingInput\(event\);\s+clearEmbeddedRailActiveAfterNavigation\(event\);/);
+assert.match(code, /function clearEmbeddedRailActive\(\) \{[\s\S]*?nav\[data-app-navigation-rail\] button\[aria-label\][\s\S]*?aria-current'\, 'data-active'\, 'data-selected'[\s\S]*?removeAttribute/);
+assert.match(code, /else closeSettingsEditor\(\);\s+clearEmbeddedRailActive\(\);/);
+assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{[\s\S]*?container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded"\);/);
+assert.match(code, /animateAnalyticsSegments\(container, options\);/);
+assert.match(code, /button\.addEventListener\("pointerdown", handleSettingsNavPointerDown\)/);
+assert.match(code, /function handleSettingsNavPointerDown\(event\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?event\.stopPropagation\?\.\(\);[\s\S]*?selectSettingsPanel/);
+assert.match(code, /container\.addEventListener\("click", handleSettingsClick, true\)/);
+assert.match(code, /container\.addEventListener\("change", handleSettingsChange, true\)/);
+assert.match(code, /function installCodexPlusEmbeddedPage\(\) \{[\s\S]*?typeof window\.codexPlus\?\.registerPage !== "function"/);
+assert.match(code, /state\.embeddedPageDispose = window\.codexPlus\.registerPage\(/);
+assert.match(code, /render: \(\{ container, close \}\) => \{[\s\S]*?embeddedPageClose = typeof close === "function" \? close : null;[\s\S]*?renderEmbeddedSettingsPage\(container\);/);
+assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \{[\s\S]*?position: static;[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
+assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \.cltc-price-head \{[\s\S]*?display: none;/);
+assert.equal(code.includes("--cltc-text: var(--codex-plus-text, var(--color-token-text-primary"), true);
+assert.equal(code.includes("--cltc-surface-secondary: var(--codex-plus-bg-secondary"), true);
 assert.match(code, /const SETTINGS_FOCUS_ATTRIBUTES = \[[\s\S]*?"data-settings-panel"[\s\S]*?"data-chart-index"[\s\S]*?\];/);
 assert.match(code, /function settingsFocusKey\(node, root\) \{[\s\S]*?root\?\.contains\?\.\(node\)[\s\S]*?return \{ attribute, value \};/);
 assert.match(code, /function isSettingsFocusable\(node\) \{[\s\S]*?node\.disabled[\s\S]*?tabIndex[\s\S]*?return \/\^\(A\|BUTTON\|INPUT\|SELECT\|TEXTAREA\)\$\//);
 assert.match(code, /function restoreSettingsFocus\(root, key\) \{[\s\S]*?querySelectorAll\?\.\(SETTINGS_FOCUS_SELECTOR\)[\s\S]*?target\?\.focus\?\.\(\);/);
-assert.match(code, /function renderSettingsOverlay\(snap, options = \{\}\) \{\s+const animate = options\.animate === true;/);
+assert.match(code, /function renderSettingsOverlay\(snap, options = \{\}\) \{\s+if \(state\.embeddedPageContainer\) \{\s+renderEmbeddedSettingsPage\(state\.embeddedPageContainer, options\);\s+return;\s+\}[\s\S]*?if \(state\.priceEditorOpen\) \{[\s\S]*?state\.settingsOverlay\?\.remove\?\.\(\);[\s\S]*?state\.settingsOverlay = null;[\s\S]*?return;\s+\}[\s\S]*?const animate = options\.animate === true;/);
+assert.match(code, /function animateAnalyticsSegments\(root, options = \{\}\) \{[\s\S]*?data-cltc-segment-from-index/);
 assert.match(code, /const focusKey = settingsFocusKey\(document\.activeElement, state\.settingsOverlay\);/);
 assert.equal(code.includes("settingsFocusFrame: 0"), true);
 assert.match(code, /function cancelSettingsFocusFrame\(\) \{[\s\S]*?cancelAnimationFrame\(state\.settingsFocusFrame\)[\s\S]*?state\.settingsFocusFrame = 0;/);
@@ -300,7 +336,6 @@ assert.match(code, /else if \([\s\S]*?state\.settingsFocusFrame[\s\S]*?document\
 assert.match(code, /if \(animate && content\) \{[\s\S]*?content\.dataset\.cltcSwitching = "true";[\s\S]*?requestAnimationFrame\(settle\);/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-settings-content\[data-cltc-switching="true"\] \{[\s\S]*?opacity: \.45;[\s\S]*?transform: translateY\(4px\);/);
 assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true \}\);/);
-assert.match(code, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?#\$\{ROOT_ID\} \.cltc-button:active,[\s\S]*?\.cltc-header-settings:active \{[\s\S]*?transition: none;[\s\S]*?transform: none;/);
 assert.equal(code.includes("transition: transform var(--transition-duration-relaxed, .3s) cubic-bezier(.16, 1, .3, 1)"), false);
 assert.equal(code.includes("transition: transform var(--cltc-duration-data) var(--cltc-ease-out);"), true);
 assert.equal(code.includes("will-change: transform;"), false);
@@ -311,13 +346,23 @@ assert.match(code, /\.cltc-toggle-field input,[\s\S]*?transition: transform var\
 assert.equal(code.includes("transition: transform var(--cltc-duration-press) var(--cltc-ease-out);"), true);
 assert.equal(code.includes("transition: rotate var(--cltc-duration-press) var(--cltc-ease-in-out);"), true);
 assert.equal(code.includes("transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);"), true);
-assert.equal(code.includes("analyticsRangeSwitchFrame: 0"), true);
-assert.equal(code.includes("analyticsRangeSwitchTimer: 0"), true);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented button \{[\s\S]*?transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?opacity var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?background var\(--cltc-duration-press\) var\(--cltc-ease-out\),[\s\S]*?color var\(--cltc-duration-press\) var\(--cltc-ease-out\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-range-switching="true"\] button\[data-active="true"\] \{[\s\S]*?opacity: \.72;[\s\S]*?transform: translateY\(2px\);/);
-assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true, analyticsRange: true \}\);/);
-assert.match(code, /const animateAnalyticsRange = options\.analyticsRange === true;[\s\S]*?const activate = \(\) => \{[\s\S]*?rangeGroup\.dataset\.cltcRangeSwitching = "true";\s+void rangeGroup\.offsetWidth;[\s\S]*?setTimeout\(settle, SETTINGS_MODAL_EXIT_MS\);[\s\S]*?requestAnimationFrame\(activate\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented\[data-cltc-range-switching="true"\] button\[data-active="true"\] \{[\s\S]*?transition: none;[\s\S]*?opacity: 1;[\s\S]*?transform: none;/);
+assert.equal(code.includes("analyticsSegmentSwitchFrame: 0"), true);
+assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-control \{/);
+assert.match(code, /data-cltc-segment-index="/);
+assert.match(code, /data-analytics-preset="today"/);
+assert.match(code, /data-analytics-preset="7d"/);
+assert.match(code, /data-analytics-preset="30d"/);
+assert.match(code, /data-analytics-preset="custom"/);
+assert.match(code, /data-action="open-analytics-calendar"/);
+assert.match(code, /data-analytics-metric="tokens"/);
+assert.match(code, /data-analytics-metric="cost"/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-segmented \{/);
+assert.match(code, /\.cltc-settings-overlay \.cltc-date-range-trigger \{/);
+assert.match(code, /function openAnalyticsCalendar\(\)/);
+assert.match(code, /function destroyAnalyticsCalendar\(\)/);
+assert.match(code, /function ensureFlatpickr\(\)/);
+assert.match(code, /data-cltc-segment-from-index/);
+assert.equal(code.includes("data-cltc-range-switching"), false);
 assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status \{[\s\S]*?transition: opacity var\(--cltc-duration-tooltip\) var\(--cltc-ease-out\);[\s\S]*?\}/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status\[data-cltc-status-pulse="true"\] \{[\s\S]*?opacity: \.48;/);
 assert.match(code, /function pulseSettingsStatus\(node\) \{[\s\S]*?node\.dataset\.cltcStatusPulse = "true";\s+void node\.offsetWidth;/);
@@ -337,11 +382,8 @@ assert.equal(code.includes("transition: all"), false);
 assert.match(code, /\.cltc-settings-overlay \.cltc-settings-nav button,\s+\.cltc-settings-overlay \.cltc-price-row \{[\s\S]*?transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-toggle-field input:active \{\s+transform: scale\(\.97\);/);
 assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings-overlay \.cltc-settings-nav button:hover/);
-assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-header-settings:hover/);
 assert.doesNotMatch(code, /\.cltc-settings-overlay \.cltc-settings-nav button:hover,\s+\.cltc-settings-overlay \.cltc-settings-nav button:focus-visible/);
-assert.doesNotMatch(code, /\.cltc-header-settings:hover,\s+\.cltc-header-settings:focus-visible/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-toggle-field input,[\s\S]*?\.cltc-settings-overlay \.cltc-toggle-field input:active,[\s\S]*?\.cltc-settings-overlay \.cltc-profile-select,[\s\S]*?transition: none;[\s\S]*?transform: none;/);
-assert.match(code, /#\$\{ROOT_ID\} \.cltc-button:active,[\s\S]*?\.cltc-header-settings:active \{[\s\S]*?transform: scale\(\.97\);/);
 assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-bar:focus-within \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
 assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings-overlay \.cltc-analytics-chart rect\[data-chart-index\]:hover \{[\s\S]*?opacity: \.66;[\s\S]*?\.cltc-settings-overlay \.cltc-analytics-bar:hover \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
 assert.equal(code.includes("transition: opacity var(--cltc-duration-press) var(--cltc-ease-out), visibility 0s linear var(--cltc-duration-press);"), true);
@@ -472,7 +514,10 @@ assert.equal(code.includes('grid-template-columns: minmax(0, 2.05fr) repeat(4, m
 assert.equal(code.includes('data-cltc-output-rate-visible="true"'), true);
 assert.equal(code.includes("grid-template-columns: minmax(0, 1fr) auto"), true);
 assert.equal(code.includes("cltc-price-actions-left"), true);
-assert.equal(code.includes('花费 ${valueSlot("session-cost")}${textSlot("session-priced-label")}'), true);
+assert.equal(code.includes('花费 ${valueSlot("session-cost")}'), true);
+assert.equal(code.includes('今日 ${valueSlot("day-cost")}'), true);
+assert.equal(code.includes('花费 ${valueSlot("session-cost")}${textSlot("session-priced-label")}'), false);
+assert.equal(code.includes('今日 ${valueSlot("day-cost")}${textSlot("day-priced-label")}'), false);
 assert.equal(code.includes("总消费 ${fmtMoney(snap.sessionCost.value)}"), false);
 assert.equal(code.includes("const html = rollingValue(key, value);"), false);
 assert.equal(code.includes("updateRollingValueSlot(slot, key, value);"), true);
@@ -536,13 +581,11 @@ assert.equal(code.includes("startCcSwitchStartupSync()"), true);
 assert.equal(code.includes("const HELPER_POLL_MS"), false);
 assert.equal(code.includes("const HELPER_STATS_REFRESH_URL = `${HELPER_STATS_URL}?refresh=1`;"), false);
 assert.equal(code.includes("void refreshProfileData();"), true);
-assert.equal(code.includes("function openSettingsEditor() {\n    state.priceEditorOpen = true;\n    state.priceEditorModel = modelName();\n    render(true);"), true);
-assert.match(code, /function openSettingsEditor\(\) \{[\s\S]*?render\(true\);\s+const focusModal = \(\) => state\.settingsOverlay\?\.querySelector\("\[data-action='close-price'\]"\)\?\.focus\?\.\(\);[\s\S]*?requestAnimationFrame\(focusModal\);/);
 assert.equal(code.includes("function refreshCcSwitchUsageFromHelper()"), false);
 assert.equal(code.includes('const PROFILE_USAGE_QUERY_KEY = ["profile", "usage"]'), true);
 assert.equal(code.includes('const PROFILE_ACCOUNT_INFO_QUERY_KEY = ["vscode", "account-info"]'), true);
 assert.equal(code.includes('const PROFILE_ACCOUNTS_CHECK_QUERY_KEY = ["accounts", "check"]'), true);
-assert.equal(code.includes("const PROFILE_WORKSPACE_ACCOUNT_ENABLED = false"), true);
+assert.equal(code.includes("const PROFILE_WORKSPACE_ACCOUNT_ENABLED = true"), true);
 assert.equal(code.includes("void scheduleProfileAccountsCheckRefresh();"), true);
 assert.equal(code.includes("state.helperPollTimer = window.setInterval(() => {\n      void pollLocalHelperStats();"), false);
 assert.equal(code.includes("pollLocalHelperStats({ refresh: true }).then(() => profileFetchBody(method, body))"), false);
@@ -801,6 +844,8 @@ assert.equal(typeof api.profileUsernameAllowed, "function");
 assert.equal(typeof api.applyLocalProfilePatch, "function");
 assert.equal(typeof api.patchProfileRequestClient, "function");
 assert.equal(typeof api.patchProfilePhotoUploadClient, "function");
+assert.equal(typeof api.profileSyntheticEnabled, "function");
+assert.equal(typeof api.isRealChatgptAccount, "function");
 assert.equal(typeof api.codexAppAssetUrl, "function");
 assert.equal(typeof api.spoofProfileAuthContextValue, "function");
 assert.equal(typeof api.patchProfileReactAuthContext, "function");
@@ -866,9 +911,6 @@ assert.equal(typeof api.isCodexComposerCompleteDom, "function");
 assert.equal(typeof api.isCodexTaskRunningDom, "function");
 assert.equal(typeof api.rememberPendingInput, "function");
 assert.equal(typeof api.isMainComposerSurfaceTarget, "function");
-assert.equal(typeof api.isCodexPlusText, "function");
-assert.equal(typeof api.findCodexPlusMenu, "function");
-assert.equal(typeof api.ensureHeaderSettingsButton, "function");
 assert.equal(typeof api.trapSettingsFocus, "function");
 const originalActiveElement = context.document.activeElement;
 const modalFocuses = [];
@@ -919,6 +961,10 @@ assert.equal(typeof api.migrateLegacyLocationSessionTurns, "function");
 assert.equal(typeof api.currentSessionTurns, "function");
 assert.equal(typeof api.localProfileThreadCount, "function");
 assert.equal(typeof api.localDailyUsage, "function");
+const cachedSessionTurns = [{ sessionKey: "cache-thread", usage: { input: 1, output: 1, total: 2 } }];
+assert.equal(api.currentSessionTurns(cachedSessionTurns, "cache-thread"), api.currentSessionTurns(cachedSessionTurns, "cache-thread"));
+const firstDailyUsage = api.localDailyUsage();
+assert.equal(firstDailyUsage, api.localDailyUsage());
 assert.equal(typeof api.todayUsage, "function");
 assert.equal(typeof api.todayCost, "function");
 assert.equal(typeof api.syncCcSwitchFromSettings, "function");
@@ -979,6 +1025,16 @@ api.updateValueSlot(
   {
     querySelectorAll(selector) {
       assert.equal(selector, "[data-cltc-value-key]");
+      return mirroredValueSlots;
+    },
+  },
+  "current-input",
+  "",
+);
+assert.equal(mirroredValueSlotUpdates, 2);
+api.updateValueSlot(
+  {
+    querySelectorAll() {
       return mirroredValueSlots;
     },
   },
@@ -1227,6 +1283,13 @@ const analyticsHtml = api.usageAnalyticsHtml({
 });
 assert.equal(analyticsHtml.includes("<h2>使用统计</h2>"), true);
 assert.equal(analyticsHtml.includes('data-analytics-preset="today"'), true);
+assert.equal(analyticsHtml.includes('class="cltc-segmented"'), true);
+assert.equal(analyticsHtml.includes('data-analytics-preset="7d"'), true);
+assert.equal(analyticsHtml.includes('data-analytics-preset="30d"'), true);
+assert.equal(analyticsHtml.includes('data-analytics-preset="custom"'), true);
+assert.equal(analyticsHtml.includes('data-action="open-analytics-calendar"'), true);
+assert.equal(analyticsHtml.includes('data-analytics-metric="tokens"'), true);
+assert.equal(analyticsHtml.includes('data-analytics-metric="cost"'), true);
 assert.equal(analyticsHtml.includes("总 Token"), true);
 assert.equal(analyticsHtml.includes("总花费"), true);
 assert.equal(analyticsHtml.includes("模型调用"), true);
@@ -1237,6 +1300,15 @@ assert.equal(analyticsHtml.includes('viewBox="0 0 720 230"'), true);
 assert.match(analyticsHtml, /data-chart-index="0"[^>]* y="36"/);
 assert.match(analyticsHtml, /cltc-analytics-tooltip[\s\S]*?<rect[^>]* y="11"/);
 assert.equal(analyticsHtml.includes("Token 构成"), true);
+const costAnalyticsHtml = api.usageAnalyticsHtml({
+  now: localBoundaryTime,
+  preset: "7d",
+  metric: "cost",
+  turns: visibleAnalyticsTurns,
+});
+assert.equal(costAnalyticsHtml.includes('data-analytics-preset="7d"'), true);
+assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-preset="7d" data-active="true">7 天</button>'), true);
+assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-metric="cost" data-active="true">花费</button>'), true);
 assert.equal(analyticsHtml.includes("写缓存"), true);
 assert.equal(analyticsHtml.includes("模型明细"), true);
 const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
@@ -1254,7 +1326,7 @@ const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   ],
 });
 assert.equal(unavailableCacheWriteHtml.includes("写缓存<strong>未提供</strong>"), true);
-assert.equal(context.__codexLiveTokenCost.version, "0.7.9");
+assert.equal(context.__codexLiveTokenCost.version, "0.7.9-beta1");
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.extractSessionKeyFromUrl("/thread/thread-1"), "thread-1");
 assert.equal(api.extractSessionKeyFromUrl("/api/conversation?conversationId=thread-1"), "thread-1");
@@ -1370,6 +1442,10 @@ assert.equal(
 assert.equal(api.ccSwitchSettingsHtml().includes('data-action="sync-cc-switch"'), true);
 assert.equal(api.ccSwitchSettingsHtml().includes("查看脚本"), true);
 assert.equal(api.ccSwitchSettingsHtml().includes("数据与显示"), true);
+assert.equal(code.includes("handleDocumentSettingsChange"), false);
+assert.equal(code.includes("data-profile-field=\"planCustom\""), true);
+assert.equal(code.includes('data-action="save-profile"'), true);
+assert.doesNotMatch(code, /\.cltc-settings-embedded \[data-profile-field\]/);
 const profileEditorFields = {
   "[data-profile-field='email']": { value: "custom@example.com" },
   "[data-profile-field='accountStructure']": { value: "workspace" },
@@ -1386,54 +1462,42 @@ assert.equal(
   true,
 );
 const savedProfilePrefs = JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1"));
-assert.equal(savedProfilePrefs.email, "custom@example.com");
+assert.equal(savedProfilePrefs.email, "sama@openai.com");
 assert.equal(savedProfilePrefs.accountStructure, "personal");
 assert.equal(savedProfilePrefs.workspaceName, "Codex Workspace");
 assert.equal(savedProfilePrefs.planType, "Team Enterprise");
 assert.equal(savedProfilePrefs.planLabel, "Team Enterprise");
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfileDefaultsV1")).email, "custom@example.com");
+assert.equal(storage.get("__codexLiveTokenCostProfileDefaultsV1"), undefined);
 assert.equal(code.includes("function profileSaveToastHtml()"), true);
 assert.equal(code.includes("PROFILE_SAVE_STATUS_DURATION_MS = 1800"), true);
 assert.match(code, /\.cltc-settings-overlay \.cltc-profile-save-toast \{[\s\S]*?position: fixed;/);
 assert.equal(api.profileSettingsHtml().includes('data-field="profile-save-status"'), false);
-assert.equal(api.profileSettingsHtml().includes("官方新版本的账号菜单不再显示邮箱"), true);
-assert.equal(api.profileSettingsHtml().includes("这里修改的是本地伪装资料"), true);
+assert.equal(api.profileSettingsHtml().includes("data-profile-field=\"email\""), false);
+assert.equal(api.profileSettingsHtml().includes("这里修改的是本地显示资料，不会修改真实订阅权限"), false);
 assert.equal(api.profileSettingsHtml().includes('value="custom"'), true);
 assert.equal(api.profileSettingsHtml().includes('data-profile-field="planCustom"'), true);
-assert.match(api.profileSettingsHtml(), /data-profile-field="accountStructure" disabled/);
-assert.match(api.profileSettingsHtml(), /data-profile-field="workspaceName"[^>]* disabled/);
-assert.equal(api.profileSettingsHtml().includes('<option value="workspace"'), true);
-assert.equal(api.profileSettingsHtml().match(/title="新版本不再允许全局伪装账号"/g)?.length, 2);
-assert.equal(code.includes(".cltc-price-field[data-profile-locked]"), true);
-assert.match(code, /\.cltc-profile-select:disabled,[\s\S]*?pointer-events: none;/);
+assert.doesNotMatch(api.profileSettingsHtml(), /data-profile-field="accountStructure"/);
+assert.doesNotMatch(api.profileSettingsHtml(), /data-profile-field="workspaceName"/);
+assert.equal(api.profileSettingsHtml().includes('<option value="workspace"'), false);
+assert.equal(api.profileSettingsHtml().match(/title="新版本不再允许全局伪装账号"/g)?.length || 0, 0);
 assert.equal(api.profileSaveToastHtml().includes('class="cltc-profile-save-toast"'), true);
 assert.equal(api.profileSaveToastHtml().includes('role="status"'), true);
 assert.equal(api.profileSaveToastHtml().includes('aria-live="polite"'), true);
 assert.equal(api.profileSaveToastHtml().includes('data-visible="true"'), true);
 assert.equal(api.profileSaveToastHtml().includes('data-tone="success"'), true);
-profileEditorFields["[data-profile-field='email']"].value = "";
-assert.equal(
-  api.saveProfilePrefsFromEditor({
-    querySelector(selector) {
-      return profileEditorFields[selector] || null;
-    },
-  }),
-  false,
-);
-assert.equal(api.profileSettingsHtml().includes("邮箱格式无效"), false);
-assert.equal(api.profileSaveToastHtml().includes('data-tone="error"'), true);
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "custom@example.com");
+profileEditorFields["[data-profile-field='planType']"].value = "pro_20x";
+assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "sama@openai.com");
 api.applyLocalProfilePatch({ email: "sama@openai.com" });
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "custom@example.com");
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfileDefaultsV1")).email, "custom@example.com");
+assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "sama@openai.com");
+assert.equal(storage.get("__codexLiveTokenCostProfileDefaultsV1"), undefined);
 api.applyLocalProfilePatch({ email: "sama@openai.com", planType: "pro_20x" });
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "custom@example.com");
+assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "sama@openai.com");
 storage.set(
   "__codexLiveTokenCostProfilePrefsV1",
   JSON.stringify({ ...JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")), email: "sama@openai.com" }),
 );
 api.applyLocalProfilePatch({ planType: "pro_20x" });
-assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "custom@example.com");
+assert.equal(JSON.parse(storage.get("__codexLiveTokenCostProfilePrefsV1")).email, "sama@openai.com");
 profileEditorFields["[data-profile-field='email']"].value = "sama@openai.com";
 profileEditorFields["[data-profile-field='accountStructure']"].value = "personal";
 profileEditorFields["[data-profile-field='workspaceName']"].value = "Tian Workspace";
@@ -1659,6 +1723,9 @@ assert.equal(official55.effort, "high");
 const official56Sol = api.officialModelInfoFromText("5.6 Sol\n极高", "xhigh");
 assert.equal(official56Sol.model, "gpt-5.6-sol");
 assert.equal(official56Sol.effort, "xhigh");
+const official6SolShort = api.officialModelInfoFromText("6 Sol\n高", "high");
+assert.equal(official6SolShort.model, "gpt-6-sol");
+assert.equal(official6SolShort.effort, "high");
 const official56SolUltra = api.officialModelInfoFromText("5.6 Sol\n极高", "ultra");
 assert.equal(official56SolUltra.model, "gpt-5.6-sol");
 assert.equal(official56SolUltra.effort, "ultra");
@@ -1816,12 +1883,12 @@ assert.equal(spoofedApiAccountsCheck.account_ordering[0], "acc-api");
 assert.equal(spoofedApiAccountsCheck.accounts[0].id, "acc-api");
 assert.equal(spoofedApiAccountsCheck.accounts[0].type, "apiKey");
 assert.equal(spoofedApiAccountsCheck.accounts[0].planType, "api");
-assert.equal(spoofedApiAccountsCheck.accounts[0].name, api.localProfileResponse().profile.display_name);
-assert.equal(spoofedApiAccountsCheck.accounts[0].email, api.localProfileResponse().profile.email);
+assert.equal(spoofedApiAccountsCheck.accounts[0].name, "custom");
+assert.equal(spoofedApiAccountsCheck.accounts[0].email, "api@example.com");
 const localAccountsCheck = api.localProfileAccountsCheckResponse();
 assert.equal(localAccountsCheck.account_ordering.length, 1);
 assert.equal(localAccountsCheck.account_ordering[0], "local-profile-account");
-assert.equal(localAccountsCheck.accounts[0].structure, "personal");
+assert.equal(localAccountsCheck.accounts[0].structure, undefined);
 profileEditorFields["[data-profile-field='accountStructure']"].value = "workspace";
 profileEditorFields["[data-profile-field='workspaceName']"].value = "OpenAI Workspace";
 assert.equal(api.saveProfilePrefsFromEditor({
@@ -1830,13 +1897,13 @@ assert.equal(api.saveProfilePrefsFromEditor({
   },
 }), true);
 const workspaceAccountsCheck = api.localProfileAccountsCheckResponse();
-assert.equal(workspaceAccountsCheck.accounts[0].structure, "personal");
-assert.equal(workspaceAccountsCheck.accounts[0].name, "Local Usage");
+assert.equal(workspaceAccountsCheck.accounts[0].structure, undefined);
+assert.equal(workspaceAccountsCheck.accounts[0].name, undefined);
 const workspaceProfile = api.localProfileResponse().profile;
 assert.equal(workspaceProfile.display_name, "Local Usage");
 const workspaceAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey" });
 assert.equal(workspaceAuth.authMethod, "apikey");
-assert.equal(workspaceAuth.email, "sama@openai.com");
+assert.equal(workspaceAuth.email, undefined);
 profileEditorFields["[data-profile-field='accountStructure']"].value = "personal";profileEditorFields["[data-profile-field='accountStructure']"].value = "personal";
 assert.equal(api.saveProfilePrefsFromEditor({
   querySelector(selector) {
@@ -2067,8 +2134,32 @@ assert.equal(gpt54FastCost.value, gpt54StandardCost.value * 2);
 const gpt54MiniStandardCost = api.costForModelUsage(baseFastUsage, "gpt-5.4-mini");
 const gpt54MiniFastCost = api.costForModelUsage(baseFastUsage, "gpt-5.4-mini", { fastMode: true });
 assert.equal(gpt54MiniFastCost.value, gpt54MiniStandardCost.value * 2);
-assert.equal(api.isCodexPlusText("Codex++"), true);
-assert.equal(api.isCodexPlusText("Codex Token Cost 设置"), false);
+const startupApiKeyQueryClient = {
+  getQueryCache() {
+    return {
+      getAll() {
+        return [
+          {
+            queryKey: ["accounts", "check"],
+            state: {
+              data: {
+                account_ordering: ["api-startup"],
+                accounts: [{ id: "api-startup", type: "apiKey", structure: "personal", planType: "api" }],
+              },
+            },
+          },
+        ];
+      },
+    };
+  },
+  invalidateQueries() {
+    return Promise.resolve();
+  },
+};
+assert.equal(api.profileSyntheticEnabled(), false);
+api.rememberProfileQueryClient(startupApiKeyQueryClient);
+api.setProfileUnlockEnabled(true);
+assert.equal(api.profileSyntheticEnabled(), true);
 context.electronBridge.sendMessageFromView({ type: "fetch", method: "GET", url: "/wham/profiles/me", requestId: "profile-1" });
 assert.equal(bridgeCalls.length, 0);
 context.electronBridge.sendMessageFromView({ type: "fetch", method: "GET", url: "/v1/responses", requestId: "other-1" });
@@ -2100,7 +2191,7 @@ assert.equal(spoofed.account.id, "api-account");
 assert.equal(spoofed.account.type, "apiKey");
 assert.equal(spoofed.requiresOpenaiAuth, true);
 assert.equal(spoofed.account.planType, "api");
-assert.equal(spoofed.account.email, "sama@openai.com");
+assert.equal(spoofed.account.email, undefined);
 const spoofedAuth = api.spoofProfileAuthContextValue({
   authMethod: "apikey",
   openAIAuth: "api_key",
@@ -2169,7 +2260,7 @@ assert.equal(patchedProfileAuth.requiresAuth, false);
 assert.equal(patchedProfileAuth.accountId, "local-profile-account");
 assert.equal(patchedProfileAuth.userId, "local-profile-user");
 assert.equal(patchedProfileAuth.hasChatGptToken, true);
-assert.equal(patchedProfileAuth.displayName, "Local Usage");
+assert.equal(patchedProfileAuth.displayName, undefined);
 assert.equal(capturedUseContext(authContext), rawApiAuth);
 assert.equal(capturedUseContext(otherContext), undefined);
 assert.equal(typeof api.installProfileUiReadinessCoordinator, "function");
@@ -2206,6 +2297,335 @@ const delayedProfileDocument = {
     return delayedProfileButton;
   },
 };
+const realChatgptQueryClient = {
+  getQueryCache() {
+    return {
+      getAll() {
+        return [
+          {
+            queryKey: ["accounts", "check"],
+            state: {
+              data: {
+                account_ordering: ["real-chatgpt-account"],
+                accounts: [
+                  {
+                    id: "real-chatgpt-account",
+                    account_user_id: "user-real",
+                    account_owner_id: "user-real",
+                    structure: "personal",
+                    plan_type: "free",
+                  },
+                ],
+              },
+            },
+          },
+        ];
+      },
+    };
+  },
+  invalidateQueries() {
+    return Promise.resolve();
+  },
+};
+const apiKeyQueryClient = {
+  getQueryCache() {
+    return {
+      getAll() {
+        return [
+          {
+            queryKey: ["accounts", "check"],
+            state: {
+              data: {
+                account_ordering: ["api-account"],
+                accounts: [{ id: "api-account", type: "apiKey", structure: "personal", planType: "api" }],
+              },
+            },
+          },
+        ];
+      },
+    };
+  },
+};
+    assert.equal(api.profileSyntheticEnabled(apiKeyQueryClient), true);
+    assert.equal(api.profileSyntheticEnabled(realChatgptQueryClient), false);
+    assert.equal(api.profileDataOverrideEnabledFor(realChatgptQueryClient), true);
+    api.applyLocalProfilePatch({ display_name: "Tian Envelope", username: "Tian_003", planType: "pro_20x" });
+    const realChatgptProfileData = {
+      displayName: "Tian",
+      username: "tianzora",
+      imageUrl: "https://example.com/avatar.png",
+      summary: {
+        currentStreakDays: 0,
+        longestStreakDays: 13,
+        longestTaskDurationMs: 40934000,
+        peakTokens: 98274845,
+        totalTextTokens: 690833040,
+      },
+      dailyUsage: [{ credits: 98274845, date: "2026-04-15" }],
+      activityInsights: {
+        fastModePercent: 16.7,
+        reasoningEffort: "high",
+        reasoningEffortPercent: 52.7,
+        skillsExplored: 1,
+        totalSkillsUsed: 1,
+        totalThreads: 339,
+      },
+    };
+    const overriddenProfileData = api.applyProfileDataOverride(realChatgptProfileData);
+    assert.equal(overriddenProfileData.displayName, "Tian");
+    assert.equal(overriddenProfileData.username, "tianzora");
+    assert.equal(overriddenProfileData.imageUrl, "https://example.com/avatar.png");
+    assert.equal(overriddenProfileData.planType, "pro_20x");
+    assert.equal(overriddenProfileData.planLabel, "Pro 20x");
+    assert.equal(overriddenProfileData.summary.totalTextTokens, api.localProfileResponse().stats.lifetime_tokens);
+    assert.equal(overriddenProfileData.dailyUsage.at(-1).credits, api.localProfileResponse().stats.daily_usage_buckets.at(-1).tokens);
+    assert.equal(overriddenProfileData.activityInsights.totalThreads, api.localProfileResponse().stats.total_threads);
+    const realChatgptPageData = {
+      profile_details: { username: "tianzora", display_name: "Tian" },
+      page: {
+        stats: { current_streak_days: 0, longest_streak_days: 13, agentic: { lifetime_tokens: 690833040, peak_daily_tokens: 98274845 } },
+        activity_graph: { daily_usage_buckets: [{ start_date: "2026-04-15", tokens: 98274845 }] },
+        insights: { total_skills_used: 1, agentic: { total_threads: 339 } },
+        top_plugins: [{ plugin_name: "official", usage_count: 8 }],
+      },
+    };
+    const overriddenPageData = api.profilePageDataOverride(realChatgptPageData);
+    assert.equal(overriddenPageData.profile_details.username, "tianzora");
+    assert.equal(overriddenPageData.profile_details.display_name, "Tian");
+    assert.equal(overriddenPageData.profile_details.plan_type, "pro_20x");
+    assert.equal(overriddenPageData.profile_details.plan_label, "Pro 20x");
+    assert.equal(overriddenPageData.page.stats.agentic.lifetime_tokens, api.localProfileResponse().stats.lifetime_tokens);
+    assert.equal(overriddenPageData.page.stats.agentic.peak_daily_tokens, api.localProfileResponse().stats.peak_daily_tokens);
+    assert.equal(overriddenPageData.page.activity_graph.daily_usage_buckets.at(-1).tokens, api.localProfileResponse().stats.daily_usage_buckets.at(-1).tokens);
+    assert.equal(overriddenPageData.page.insights.agentic.total_threads, api.localProfileResponse().stats.total_threads);
+    assert.equal(overriddenPageData.page.top_plugins[0].plugin_name, "official");
+    const realChatgptOverrideWrites = [];
+    const realChatgptOverrideQueryClient = {
+      invalidateQueries() {},
+      getQueryCache() {
+        return {
+          getAll() {
+            return [
+              {
+                queryKey: ["accounts", "check"],
+                state: {
+                  data: {
+                    accounts: [{ id: "real-chatgpt-account", account_user_id: "user-real" }],
+                  },
+                },
+              },
+              {
+                queryKey: ["vscode", "account-info"],
+                state: {
+                  data: {
+                    accountId: "real-chatgpt-account",
+                    userId: "user-real",
+                    authMethod: "chatgpt",
+                    hasChatGptToken: true,
+                    plan: "free",
+                  },
+                },
+              },
+              {
+                queryKey: ["profile", "usage", "user-real", "real-chatgpt-account"],
+                state: { data: realChatgptProfileData },
+              },
+              {
+                queryKey: ["profile", "page", "user-real", "real-chatgpt-account", "tianzora"],
+                state: { data: realChatgptPageData },
+              },
+            ];
+          },
+        };
+      },
+      setQueryData(queryKey, data) {
+        realChatgptOverrideWrites.push({ queryKey, data });
+      },
+    };
+    assert.equal(api.syncProfileUsageQueryCache(realChatgptOverrideQueryClient), true);
+    const realChatgptSettingsContainer = {
+      classList: { add() {} },
+      dataset: {},
+      innerHTML: "",
+      querySelectorAll() { return []; },
+      addEventListener() {},
+    };
+    api.setProfileUnlockEnabled(true);
+    api.rememberProfileQueryClient(realChatgptOverrideQueryClient);
+    api.renderEmbeddedSettingsPage(realChatgptSettingsContainer);
+    assert.equal(realChatgptSettingsContainer.innerHTML.includes('data-settings-panel="profile"'), true);
+    assert.equal(realChatgptSettingsContainer.innerHTML.includes('data-profile-field="planType"'), true);
+    assert.equal(realChatgptSettingsContainer.innerHTML.includes('value="custom"'), true);
+    const realChatgptSynced = realChatgptOverrideWrites.find(({ queryKey }) => queryKey.join("/") === "profile/usage/user-real/real-chatgpt-account");
+    assert.ok(realChatgptSynced);
+    assert.equal(realChatgptSynced.data.displayName, "Tian");
+    assert.equal(realChatgptSynced.data.username, "tianzora");
+    assert.equal(realChatgptSynced.data.imageUrl, "https://example.com/avatar.png");
+    assert.equal(realChatgptSynced.data.planType, "pro_20x");
+    assert.equal(realChatgptSynced.data.planLabel, "Pro 20x");
+    assert.equal(realChatgptSynced.data.summary.totalTextTokens, api.localProfileResponse().stats.lifetime_tokens);
+    assert.equal(realChatgptSynced.data.dailyUsage.at(-1).credits, api.localProfileResponse().stats.daily_usage_buckets.at(-1).tokens);
+    assert.equal(realChatgptSynced.data.activityInsights.totalThreads, api.localProfileResponse().stats.total_threads);
+    const realChatgptPageSynced = realChatgptOverrideWrites.find(({ queryKey }) => queryKey.join("/") === "profile/page/user-real/real-chatgpt-account/tianzora");
+    assert.ok(realChatgptPageSynced);
+    assert.equal(realChatgptPageSynced.data.page.stats.agentic.lifetime_tokens, api.localProfileResponse().stats.lifetime_tokens);
+    const realChatgptAccountInfoBeforeSave = realChatgptOverrideWrites.find(({ queryKey }) => queryKey.join("/") === "vscode/account-info");
+    assert.equal(realChatgptAccountInfoBeforeSave, undefined);
+    const realChatgptProfileEditorFields = {
+      "[data-profile-field='email']": { value: "sama@openai.com" },
+      "[data-profile-field='accountStructure']": { value: "personal" },
+      "[data-profile-field='workspaceName']": { value: "" },
+      "[data-profile-field='planType']": { value: "pro_20x" },
+      "[data-profile-field='planCustom']": { value: "" },
+    };
+    realChatgptOverrideWrites.length = 0;
+    assert.equal(
+      api.saveProfilePrefsFromEditor({
+        querySelector(selector) {
+          return realChatgptProfileEditorFields[selector] || null;
+        },
+      }),
+      true,
+    );
+    const realChatgptAccountInfoAfterSave = realChatgptOverrideWrites.find(({ queryKey }) => queryKey.join("/") === "vscode/account-info");
+    assert.ok(realChatgptAccountInfoAfterSave);
+    assert.equal(realChatgptAccountInfoAfterSave.data.plan, "pro_20x");
+    assert.equal(realChatgptAccountInfoAfterSave.data.accountId, "real-chatgpt-account");
+    assert.equal(realChatgptAccountInfoAfterSave.data.userId, "user-real");
+    assert.equal(realChatgptAccountInfoAfterSave.data.authMethod, "chatgpt");
+    assert.equal(realChatgptAccountInfoAfterSave.data.hasChatGptToken, true);
+    const realChatgptAuthWithIdentity = {
+      authMethod: "chatgpt",
+      accountId: "real-chatgpt-account",
+      userId: "user-real",
+      hasChatGptToken: true,
+      account: {
+        id: "real-chatgpt-account",
+        type: "chatgpt",
+        planType: "free",
+        plan_type: "free",
+      },
+    };
+    const realChatgptAuthWithPlan = api.profileUiAuthContextValue(realChatgptAuthWithIdentity);
+    assert.equal(realChatgptAuthWithPlan.accountId, "real-chatgpt-account");
+    assert.equal(realChatgptAuthWithPlan.userId, "user-real");
+    assert.equal(realChatgptAuthWithPlan.planAtLogin, "pro_20x");
+    assert.equal(realChatgptAuthWithPlan.account.planType, "pro_20x");
+    assert.equal(realChatgptAuthWithPlan.account.plan_type, "pro_20x");
+    const realChatgptAuthStable = api.profileUiAuthContextValue(realChatgptAuthWithIdentity);
+    assert.equal(realChatgptAuthStable, realChatgptAuthWithPlan, "real-account data-override auth must keep a stable reference while plan is unchanged");
+    api.applyLocalProfilePatch({ planType: "plus" });
+    const realChatgptAuthAfterPlan = api.profileUiAuthContextValue(realChatgptAuthWithIdentity);
+    assert.notEqual(realChatgptAuthAfterPlan, realChatgptAuthStable);
+    assert.equal(realChatgptAuthAfterPlan.planAtLogin, "plus");
+    assert.equal(realChatgptAuthAfterPlan.account.planType, "plus");
+    api.applyLocalProfilePatch({ planType: "pro_20x" });
+    const realChatgptAuthContext = {
+      name: "auth",
+      _currentValue: {
+        authMethod: "chatgpt",
+        openAIAuth: null,
+        requiresAuth: false,
+        isLoading: false,
+        accountId: "real-chatgpt-account",
+        userId: "user-real",
+        hasChatGptToken: true,
+        account: {
+          id: "real-chatgpt-account",
+          type: "chatgpt",
+          planType: "free",
+          plan_type: "free",
+        },
+      },
+      _currentValue2: null,
+    };
+    const realChatgptReadinessButton = {
+      __reactFiber$real: {
+        dependencies: {
+          firstContext: {
+            context: realChatgptAuthContext,
+            memoizedValue: realChatgptAuthContext._currentValue,
+            next: null,
+          },
+        },
+        return: { memoizedProps: { value: realChatgptOverrideQueryClient }, return: null },
+      },
+      getBoundingClientRect() {
+        return { width: 184, height: 29 };
+      },
+    };
+    const realChatgptDocument = {
+      body: {},
+      querySelector(selector) {
+        return selector.includes("个人资料") ? realChatgptReadinessButton : null;
+      },
+    };
+    assert.equal(api.installProfileUiReadinessCoordinator(["ProfileFooterHarness"], realChatgptDocument), true);
+    assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.9-beta1");
+    assert.equal(api.profileSyntheticAuth(), true);
+    const realChatgptPatchedAuth = api.profileUiAuthContextValue(realChatgptAuthContext._currentValue);
+    assert.equal(realChatgptPatchedAuth.accountId, "real-chatgpt-account");
+    assert.equal(realChatgptPatchedAuth.userId, "user-real");
+    assert.equal(realChatgptPatchedAuth.authMethod, "chatgpt");
+    assert.equal(realChatgptPatchedAuth.hasChatGptToken, true);
+    assert.equal(realChatgptPatchedAuth.planAtLogin, "pro_20x");
+    assert.equal(realChatgptPatchedAuth.account.planType, "pro_20x");
+    assert.equal(realChatgptPatchedAuth.account.plan_type, "pro_20x");
+    const realChatgptEmptyWrites = [];
+    const realChatgptEmptyQueryClient = {
+      invalidateQueries() {},
+      getQueryCache() {
+        return {
+          getAll() {
+            return [
+              {
+                queryKey: ["accounts", "check"],
+                state: { data: { accounts: [{ id: "real-chatgpt-account", account_user_id: "user-real" }] } },
+              },
+              {
+                queryKey: ["profile", "usage", "user-real", "real-chatgpt-account"],
+                state: { status: "pending", data: undefined },
+              },
+            ];
+          },
+        };
+      },
+      setQueryData(queryKey, data) {
+        realChatgptEmptyWrites.push({ queryKey, data });
+      },
+    };
+    assert.equal(api.syncProfileUsageQueryCache(realChatgptEmptyQueryClient), true);
+    const realChatgptEmptySynced = realChatgptEmptyWrites.find(({ queryKey }) => queryKey.join("/") === "profile/usage/user-real/real-chatgpt-account");
+    assert.ok(realChatgptEmptySynced);
+    assert.equal(realChatgptEmptySynced.data.summary.totalTextTokens, api.localProfileResponse().stats.lifetime_tokens);
+    assert.equal(realChatgptEmptySynced.data.dailyUsage.at(-1).credits, api.localProfileResponse().stats.daily_usage_buckets.at(-1).tokens);
+    assert.equal(realChatgptEmptyWrites.some(({ queryKey }) => queryKey.join("/") === "vscode/account-info"), false);
+    api.rememberProfileQueryClient(startupApiKeyQueryClient);
+    api.refreshProfileRealChatgptCache(startupApiKeyQueryClient);
+    assert.equal(api.isRealChatgptAccount({ id: "real-account", account_user_id: "user-real" }), true);
+assert.equal(api.isRealChatgptAccount({ id: "api-account", type: "apiKey", plan_type: "api" }), false);
+assert.equal(api.isRealChatgptAccount({ id: "local-profile-account", account_user_id: "user-local" }), false);
+let realChatgptCacheScans = 0;
+const cacheCountingQueryClient = {
+  getQueryCache() {
+    return {
+      getAll() {
+        realChatgptCacheScans += 1;
+        return [];
+      },
+    };
+  },
+  invalidateQueries() {
+    return Promise.resolve();
+  },
+};
+assert.equal(api.profileRealChatgptCached(cacheCountingQueryClient), false);
+assert.equal(api.profileRealChatgptCached(cacheCountingQueryClient), false);
+assert.equal(realChatgptCacheScans, 1);
+api.refreshProfileRealChatgptCache(cacheCountingQueryClient);
+assert.equal(realChatgptCacheScans, 2);
+assert.equal(api.profileRealChatgptCached(cacheCountingQueryClient), false);
+assert.equal(realChatgptCacheScans, 2);
 let profileReadinessObserver = null;
 context.MutationObserver = class ProfileReadinessObserver {
   constructor(callback) {
@@ -2233,7 +2653,7 @@ delayedProfileButton = {
   },
 };
 profileReadinessObserver.callback([{ addedNodes: [delayedProfileButton] }]);
-assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.9");
+assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.9-beta1");
 assert.equal(api.profileSyntheticAuth(), true);
 assert.equal(profileReadinessObserver.disconnected, true);
 assert.equal(delayedProfileCacheWrites.length > 0, true);
@@ -2264,6 +2684,30 @@ assert.equal(typeof api.profileQueryClientFromFiberNode, "function");
 const profileQueryClientFiberNode = {};
 profileQueryClientFiberNode.__reactFiber$test = { memoizedProps: { value: profileQueryClient }, return: null };
 assert.equal(api.profileQueryClientFromFiberNode(profileQueryClientFiberNode), profileQueryClient);
+const contextProfileQueryClientFiberNode = {};
+contextProfileQueryClientFiberNode.__reactFiber$context = {
+  dependencies: {
+    firstContext: { memoizedValue: profileQueryClient, next: null },
+  },
+  return: null,
+};
+assert.equal(api.profileQueryClientFromFiberNode(contextProfileQueryClientFiberNode), profileQueryClient);
+
+const newProfilePanelClient = {
+  invalidateQueries() {},
+  getQueryCache() {
+    return { getAll: () => [] };
+  },
+};
+const newProfilePanelNode = {};
+newProfilePanelNode.__reactFiber$newProfile = { memoizedProps: { value: newProfilePanelClient }, return: null };
+const newProfilePanelDoc = {
+  querySelector(selector) {
+    if (selector === "[data-settings-panel-slug='profile'], [aria-label='个人资料'], [aria-label='Profile']") return newProfilePanelNode;
+    return null;
+  },
+};
+assert.equal(api.profileQueryClientFromDocument(newProfilePanelDoc), newProfilePanelClient);
 assert.equal(typeof api.chainProfileQueryRefresh, "function");
 const profileRefreshOrder = [];
 let releaseProfileRefresh;
@@ -2315,18 +2759,18 @@ const spoofedNamed = api.spoofProfileAccountPayload({
   account: { type: "apiKey", planType: "api" },
   requiresOpenaiAuth: true,
 });
-assert.equal(spoofedNamed.account.name, "Tian Envelope");
-assert.equal(spoofedNamed.account.displayName, "Tian Envelope");
+assert.equal(spoofedNamed.account.name, undefined);
+assert.equal(spoofedNamed.account.displayName, undefined);
 const spoofedChatgptNamed = api.spoofProfileAccountPayload({
   account: { type: "chatgpt", name: "设置", displayName: "设置", imageUrl: "" },
   requiresOpenaiAuth: true,
 });
-assert.equal(spoofedChatgptNamed.account.name, "Tian Envelope");
-assert.equal(spoofedChatgptNamed.account.displayName, "Tian Envelope");
+assert.equal(spoofedChatgptNamed.account.name, "设置");
+assert.equal(spoofedChatgptNamed.account.displayName, "设置");
 assert.equal(spoofedChatgptNamed.requiresOpenaiAuth, true);
 const spoofedNamedAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey", account: { id: "api-account", type: "apiKey" } });
-assert.equal(spoofedNamedAuth.displayName, "Tian Envelope");
-assert.equal(spoofedNamedAuth.account.displayName, "Tian Envelope");
+assert.equal(spoofedNamedAuth.displayName, undefined);
+assert.equal(spoofedNamedAuth.account.displayName, undefined);
 const profileUiAuth = api.profileUiAuthContextValue({
   authMethod: "apikey",
   openAIAuth: "api_key",
@@ -2344,7 +2788,7 @@ assert.equal(profileUiAuth.hasChatGptToken, true);
 assert.equal(profileUiAuth.account.id, "local-profile-account");
 assert.equal(profileUiAuth.account.type, "chatgpt");
 const realChatgptAuth = { authMethod: "chatgpt", accountId: "real-account" };
-assert.equal(api.profileUiAuthContextValue(realChatgptAuth), realChatgptAuth);
+assert.equal(api.profileUiAuthContextValue(realChatgptAuth).accountId, "real-account");
 
 const statsProfile = api.localProfileResponse();
 assert.equal(statsProfile.metadata.stats_error, "");
@@ -3143,17 +3587,18 @@ api.applyLocalProfilePatch({ display_name: profileBeforeQuotaFailure.display_nam
 const spoofedChatgptPhoto = api.spoofProfileAccountPayload({
   account: { type: "chatgpt", name: "设置", imageUrl: "" },
 });
-assert.equal(spoofedChatgptPhoto.account.imageUrl, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.image, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.avatar, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.profileImageUrl, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.profilePictureUrl, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.profilePhotoUrl, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.photoUrl, "data:image/png;base64,UE5HREFUQQ==");
-assert.equal(spoofedChatgptPhoto.account.profile_picture_url, "data:image/png;base64,UE5HREFUQQ==");
+assert.equal(spoofedChatgptPhoto.account.imageUrl, "");
+assert.equal(spoofedChatgptPhoto.account.image, undefined);
+assert.equal(spoofedChatgptPhoto.account.avatar, undefined);
+assert.equal(spoofedChatgptPhoto.account.profileImageUrl, undefined);
+assert.equal(spoofedChatgptPhoto.account.profilePictureUrl, undefined);
+assert.equal(spoofedChatgptPhoto.account.profilePhotoUrl, undefined);
+assert.equal(spoofedChatgptPhoto.account.photoUrl, undefined);
+assert.equal(spoofedChatgptPhoto.account.profile_picture_url, undefined);
 function fakeSpan(textContent, className, rect = { left: 0, top: 0, width: 80, height: 20 }) {
   return {
     textContent,
+
     className,
     style: {},
     children: [],
@@ -3191,6 +3636,9 @@ function fakeNode(tagName, textContent, className, rect = { left: 0, top: 0, wid
     querySelector(selector) {
       if (selector === "img[data-cltc-profile-avatar]" || selector === "img") {
         return this.children.find((child) => child.tagName === "IMG") || null;
+      }
+      if (selector === "span[class*='avatar']") {
+        return this.children.find((child) => String(child.className || "").includes("avatar")) || null;
       }
       return null;
     },
@@ -3287,6 +3735,7 @@ const officialProfileButton = {
   },
 };
 const officialMenuLabel = fakeSpan("custom", "flex-1 min-w-0 truncate");
+const officialPlanLabel = fakeSpan("Free\ncustom", "min-w-0 text-xs leading-dense text-tertiary whitespace-normal");
 const staleMenuAvatar = fakeNode("span", "", "inline-flex items-center justify-center leading-none icon-sm shrink-0");
 staleMenuAvatar.setAttribute("data-cltc-profile-menu-identity-avatar", "");
 const officialMenuAvatar = fakeNode("span", "", "inline-flex items-center justify-center leading-none icon-sm shrink-0");
@@ -3301,6 +3750,7 @@ staleMenuAvatar.remove = () => {
 const officialMenuRow = {
   className: "flex w-full items-center gap-1.5",
   querySelector(selector) {
+    if (selector === "span.flex-1.min-w-0.truncate, span.min-w-0.truncate") return officialMenuLabel;
     if (selector === "span.flex-1.min-w-0.truncate") return officialMenuLabel;
     if (selector === "[data-cltc-profile-menu-identity-avatar]") {
       return officialMenuRowChildren.find((child) => child.attributes?.has("data-cltc-profile-menu-identity-avatar")) || null;
@@ -3397,9 +3847,11 @@ const officialProfileMenu = {
     return null;
   },
   querySelector(selector) {
+    if (selector === "span.min-w-0.text-xs.leading-dense.text-tertiary.whitespace-normal") return officialPlanLabel;
     return selector === "[role='menuitem']" ? officialAccountMenuItem : null;
   },
   querySelectorAll(selector) {
+    if (selector === "*") return [officialPlanLabel];
     return selector === "[role='menuitem']" ? [officialAccountMenuItem, officialPetMenuItem, officialSettingsMenuItem] : [];
   },
   settingsItem: officialSettingsMenuItem,
@@ -3418,6 +3870,63 @@ const officialProfileDoc = {
     return selector === "button,a,[role='tab']" && officialProfileVisible ? [officialProfileSettingsButton] : [];
   },
 };
+const compactAvatar = {
+  tagName: "SPAN",
+  textContent: "6",
+  className: "flex shrink-0 items-center justify-center font-normal text-avatar-foreground select-none rounded-full bg-avatar-yellow size-6 text-xs",
+  innerHTML: "6",
+  style: {},
+  attributes: new Map(),
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  replaceWith(replacement) {
+    this.replacement = replacement;
+    if (this.button) this.button.replacement = replacement;
+    this.textContent = "";
+  },
+};
+const compactProfileButton = {
+  replacement: null,
+  attributes: new Map([["aria-label", "打开个人资料菜单"]]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  },
+  getBoundingClientRect() {
+    return { left: 8, top: 1006, width: 36, height: 36 };
+  },
+  querySelector(selector) {
+    if (selector === "span.min-w-0.flex-1.truncate") return null;
+    if (selector === "svg") return null;
+    if (selector === "span[class*='avatar']") return compactAvatar;
+    if (selector === "[data-cltc-profile-identity-avatar]") {
+      return this.replacement || (compactAvatar.attributes.has("data-cltc-profile-identity-avatar") ? compactAvatar : null);
+    }
+    return null;
+  },
+};
+compactAvatar.button = compactProfileButton;
+const compactProfileDoc = {
+  querySelector(selector) {
+    return selector.includes("打开个人资料菜单") ? compactProfileButton : null;
+  },
+  createElement(tagName) {
+    const node = fakeNode(tagName, "", "");
+    node.replaceWith = (replacement) => {
+      node.replacement = replacement;
+      node.textContent = "";
+    };
+    node.setAttribute("data-cltc-profile-identity-avatar", "");
+    return node;
+  },
+  querySelectorAll() {
+    return [];
+  },
+};
+api.applyLocalProfilePatch({ planType: "plus" });
 assert.equal(api.syncSidebarProfileIdentity(officialProfileDoc), true);
 assert.equal(officialProfileButton.getAttribute("aria-label"), "打开个人资料菜单");
 assert.equal(officialLabel.textContent, api.localProfileResponse().profile.display_name);
@@ -3425,10 +3934,26 @@ assert.equal(officialGear.style.display, "none");
 assert.equal(officialChildren[0].tagName, "IMG");
 assert.equal(officialChildren[0].src, api.localProfileResponse().profile.profile_picture_url);
 assert.equal(officialChildren[0].className, "icon-sm shrink-0 rounded-full");
+api.rememberProfileQueryClient(realChatgptQueryClient);
+assert.equal(api.profileDataOverrideEnabledFor(), true);
+assert.equal(api.syncSidebarProfileIdentity(officialProfileDoc), true);
+assert.equal(officialChildren[0].tagName, "IMG");
+assert.equal(officialChildren[0].src, api.localProfileResponse().profile.profile_picture_url);
+assert.equal(officialLabel.textContent, api.localProfileResponse().profile.display_name);
+api.rememberProfileQueryClient(realChatgptQueryClient);
+assert.equal(api.profileDataOverrideEnabledFor(), true);
+assert.equal(api.syncSidebarProfileIdentity(compactProfileDoc), true);
+assert.ok(compactProfileButton.replacement);
+assert.equal(compactProfileButton.replacement.tagName, "IMG");
+assert.equal(compactProfileButton.replacement.src, api.localProfileResponse().profile.profile_picture_url);
+assert.equal(compactProfileButton.replacement.alt, api.localProfileResponse().profile.display_name.slice(0, 1));
+api.rememberProfileQueryClient(startupApiKeyQueryClient);
 assert.equal(api.syncSidebarProfileMenuIdentity(officialProfileDoc, officialProfileButton), true);
 assert.equal(officialProfileMenu, officialProfileDoc.getElementById("profile-menu"));
 assert.equal(officialAccountMenuItem, officialProfileMenu.querySelector("[role='menuitem']"));
 assert.equal(officialMenuLabel.textContent, api.localProfileResponse().profile.display_name);
+assert.equal(officialPlanLabel.textContent, "Plus");
+assert.equal(officialPlanLabel.textContent, "Plus");
 assert.equal(officialMenuRowChildren.length, 2);
 assert.equal(officialMenuRowChildren[0].tagName, "SPAN");
 assert.equal(officialMenuRowChildren[0], officialMenuAvatar);
@@ -3479,6 +4004,7 @@ assert.match(officialAccountMenuItem.className, /cursor-default/);
 assert.equal(officialAccountMenuListeners.get("click")?.length, 0);
 assert.equal(officialAccountMenuListeners.get("keydown")?.length, 0);
 assert.equal(officialMenuLabel.textContent, "custom");
+assert.equal(officialPlanLabel.textContent, "Free\ncustom");
 assert.equal(officialMenuRowChildren.length, 2);
 assert.equal(officialMenuRowChildren[0], officialMenuAvatar);
 assert.equal(
@@ -3525,149 +4051,13 @@ const settingsSidebarButton = {
   },
 };
 assert.equal(settingsSidebarButton.textContent, "Chat 设置");
-function headerNode(tagName, textContent = "") {
-  return {
-    tagName: tagName.toUpperCase(),
-    textContent,
-    children: [],
-    parentElement: null,
-    attributes: new Map(),
-    style: {},
-    get nextSibling() {
-      if (!this.parentElement) return null;
-      const index = this.parentElement.children.indexOf(this);
-      return this.parentElement.children[index + 1] || null;
-    },
-    get previousSibling() {
-      if (!this.parentElement) return null;
-      const index = this.parentElement.children.indexOf(this);
-      return this.parentElement.children[index - 1] || null;
-    },
-    getAttribute(name) {
-      return this.attributes.get(name) ?? null;
-    },
-    setAttribute(name, value) {
-      this.attributes.set(name, String(value));
-    },
-    addEventListener(type, handler) {
-      this[`on${type}`] = handler;
-    },
-    getBoundingClientRect() {
-      return { left: 0, top: 0, width: 96, height: 30, right: 96, bottom: 30 };
-    },
-    appendChild(child) {
-      if (child.parentElement) {
-        const oldIndex = child.parentElement.children.indexOf(child);
-        if (oldIndex >= 0) child.parentElement.children.splice(oldIndex, 1);
-      }
-      this.children.push(child);
-      child.parentElement = this;
-      return child;
-    },
-    remove() {
-      if (!this.parentElement) return;
-      const index = this.parentElement.children.indexOf(this);
-      if (index >= 0) this.parentElement.children.splice(index, 1);
-      this.parentElement = null;
-    },
-  };
-}
-const headerParent = headerNode("div");
-const plusMenu = headerNode("button", "Codex++");
-plusMenu.id = "codex-plus-menu";
-headerParent.children.push(plusMenu);
-plusMenu.parentElement = headerParent;
-headerParent.insertBefore = function insertBefore(child, reference) {
-  if (child.parentElement) {
-    const oldIndex = child.parentElement.children.indexOf(child);
-    if (oldIndex >= 0) child.parentElement.children.splice(oldIndex, 1);
-  }
-  const index = reference ? this.children.indexOf(reference) : -1;
-  const insertAt = index >= 0 ? index : this.children.length;
-  this.children.splice(insertAt, 0, child);
-  child.parentElement = this;
-  return child;
-};
-const headerDoc = {
-  getElementById(id) {
-    return id === "codex-plus-menu" ? plusMenu : null;
-  },
-  querySelectorAll() {
-    return [];
-  },
-  createElement(tagName) {
-    return headerNode(tagName);
-  },
-};
-assert.equal(api.findCodexPlusMenu(headerDoc), plusMenu);
-const settingsButton = api.ensureHeaderSettingsButton(headerDoc);
-assert.equal(settingsButton.id, "codex-live-token-cost-settings");
-assert.equal(String(settingsButton.className).includes("no-drag"), true);
-assert.equal(String(settingsButton.className).includes("cursor-interaction"), true);
-assert.equal(settingsButton.previousSibling, plusMenu);
-assert.equal(settingsButton.textContent.startsWith("今日 "), true);
-assert.equal(settingsButton.textContent.includes("$"), false);
-assert.equal(settingsButton.getAttribute("aria-label"), "打开 Codex Token Cost 设置");
-assert.equal(api.ensureHeaderSettingsButton(headerDoc), settingsButton);
-assert.equal(headerParent.children.filter((child) => child.id === "codex-live-token-cost-settings").length, 1);
-const noIdHeaderParent = headerNode("div");
-const noIdPlusMenu = headerNode("button", "Codex++");
-noIdHeaderParent.children.push(noIdPlusMenu);
-noIdPlusMenu.parentElement = noIdHeaderParent;
-noIdHeaderParent.insertBefore = headerParent.insertBefore;
-const noIdHeaderDoc = {
-  getElementById() {
-    return null;
-  },
-  querySelectorAll() {
-    return [noIdPlusMenu];
-  },
-  createElement(tagName) {
-    return headerNode(tagName);
-  },
-};
-assert.equal(api.findCodexPlusMenu(noIdHeaderDoc), noIdPlusMenu);
-assert.equal(api.ensureHeaderSettingsButton(noIdHeaderDoc), settingsButton);
-assert.equal(settingsButton.previousSibling, noIdPlusMenu);
-assert.equal(noIdHeaderParent.children.filter((child) => child.id === "codex-live-token-cost-settings").length, 1);
-noIdPlusMenu.remove();
-assert.equal(api.ensureHeaderSettingsButton(noIdHeaderDoc), settingsButton);
-assert.equal(settingsButton.parentElement, noIdHeaderParent);
-assert.equal(noIdHeaderParent.children.includes(settingsButton), true);
-const floatingHtml = headerNode("html");
-const floatingBody = headerNode("body");
-const floatingMenu = headerNode("div", "Codex++ 1.2.32");
-floatingMenu.id = "codex-plus-menu";
-floatingMenu.className = "codex-plus-menu-floating";
-floatingMenu.getBoundingClientRect = () => ({ left: 1644, top: 0, width: 138, height: 36, right: 1782, bottom: 36 });
-floatingHtml.children.push(floatingMenu);
-floatingMenu.parentElement = floatingHtml;
-const floatingDoc = {
-  body: floatingBody,
-  documentElement: floatingHtml,
-  defaultView: { innerWidth: 1922 },
-  getElementById(id) {
-    return id === "codex-plus-menu" ? floatingMenu : null;
-  },
-  querySelectorAll() {
-    return [];
-  },
-  createElement(tagName) {
-    return headerNode(tagName);
-  },
-};
-assert.equal(api.ensureHeaderSettingsButton(floatingDoc), settingsButton);
-assert.equal(settingsButton.parentElement, floatingBody);
-assert.equal(settingsButton.getAttribute("data-floating"), "true");
-assert.equal(settingsButton.style.left, "1544px");
-assert.equal(settingsButton.style.top, "3px");
 api.applyLocalProfilePatch({ email: "local@example.com", planType: "business" });
 const businessProfile = api.localProfileResponse().profile;
 assert.equal(businessProfile.email, "local@example.com");
 assert.equal(businessProfile.plan_type, "business");
 assert.equal(businessProfile.plan_label, "Business");
 const spoofedBusiness = api.spoofProfileAccountPayload({ account: { type: "apiKey", planType: "api" } });
-assert.equal(spoofedBusiness.account.email, "local@example.com");
+assert.equal(spoofedBusiness.account.email, undefined);
 assert.equal(spoofedBusiness.account.planType, "api");
 api.applyLocalProfilePatch({ planType: "Team Enterprise", planLabel: "Team Enterprise" });
 const customPlanProfile = api.localProfileResponse().profile;
@@ -4400,6 +4790,69 @@ const profileLifecycleTest = Promise.resolve()
     observedProfileCacheListeners[0]({ type: "added", query: { queryKey: ["profile", "usage", "disabled"] } });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(observedProfileCacheWrites.length > writesBeforeProfileQueryAdded, true);
+    const writesBeforeProfileQueryUpdated = observedProfileCacheWrites.length;
+    observedProfileCacheListeners[0]({
+      type: "updated",
+      query: { queryKey: ["profile", "usage", "disabled"] },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(observedProfileCacheWrites.length, writesBeforeProfileQueryUpdated);
+
+    const lateRealAccountRows = [
+      {
+        queryKey: ["profile", "usage", "disabled"],
+        state: { data: realChatgptProfileData },
+      },
+    ];
+    const lateRealAccountListeners = [];
+    const lateRealAccountWrites = [];
+    const lateRealAccountClient = {
+      invalidateQueries() {},
+      getQueryCache() {
+        return {
+          getAll() {
+            return lateRealAccountRows;
+          },
+          subscribe(listener) {
+            lateRealAccountListeners.push(listener);
+            return () => {
+              const index = lateRealAccountListeners.indexOf(listener);
+              if (index >= 0) lateRealAccountListeners.splice(index, 1);
+            };
+          },
+        };
+      },
+      setQueryData(queryKey, data) {
+        lateRealAccountWrites.push({ queryKey, data });
+      },
+    };
+    assert.equal(api.syncProfileUsageQueryCache(lateRealAccountClient), true);
+    assert.equal(lateRealAccountListeners.length, 1);
+    const lateRealAccountWritesBeforeAuth = lateRealAccountWrites.length;
+    assert.ok(lateRealAccountWritesBeforeAuth > 0);
+    lateRealAccountRows.unshift({
+      queryKey: ["accounts", "check"],
+      state: {
+        data: {
+          account_ordering: ["real-chatgpt-account"],
+          accounts: [{ id: "real-chatgpt-account", account_user_id: "user-real", structure: "personal", plan_type: "free" }],
+        },
+      },
+    });
+    lateRealAccountListeners[0]({
+      type: "updated",
+      query: { queryKey: ["accounts", "check"] },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(lateRealAccountWrites.length > lateRealAccountWritesBeforeAuth, true);
+    const lateRealAccountWrite = lateRealAccountWrites
+      .filter(({ queryKey }) => queryKey.join("/") === "profile/usage/disabled")
+      .at(-1);
+    assert.ok(lateRealAccountWrite);
+    assert.equal(lateRealAccountWrite.data.displayName, "Tian");
+    assert.equal(lateRealAccountWrite.data.summary.totalTextTokens, api.localProfileResponse().stats.lifetime_tokens);
+    api.rememberProfileQueryClient(startupApiKeyQueryClient);
+    assert.equal(api.profileSyntheticEnabled(), true);
     const originalScripts = context.document.scripts;
     const originalQuerySelectorAll = context.document.querySelectorAll;
     const originalPerformance = context.performance;
@@ -4441,8 +4894,8 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(patchedAccountsCheck.accounts[0].id, "api-account");
     assert.equal(patchedAccountsCheck.accounts[0].type, "apiKey");
     assert.equal(patchedAccountsCheck.accounts[0].planType, "api");
-    assert.equal(patchedAccountsCheck.accounts[0].name, expectedIdentity.display_name);
-    assert.equal(patchedAccountsCheck.accounts[0].email, expectedIdentity.email);
+    assert.equal(patchedAccountsCheck.accounts[0].name, "custom");
+    assert.equal(patchedAccountsCheck.accounts[0].email, "api@example.com");
     assert.equal(profileAccountsCheckUpstreamCalls, 1);
     api.profileUiAuthContextValue({ authMethod: "chatgpt", accountId: "real-account" });
     const passthroughAccountsCheck = await profileClient.safeGet("/wham/accounts/check");
@@ -4493,7 +4946,7 @@ const profileLifecycleTest = Promise.resolve()
     const localMessageHandler = api.localMessageHandler();
     assert.equal(typeof localMessageHandler, "function");
     assert.equal((windowListeners.get("message") || []).length, messageListenersBeforeLocalCapture + 1);
-assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.9");
+assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.9-beta1");
     context.document.getElementById = () => null;
     context.__codexLiveTokenCost.destroy();
     assert.equal((windowListeners.get("message") || []).includes(localMessageHandler), false);
@@ -5122,8 +5575,79 @@ profileLifecycleTest.then(async () => {
     usage: { input: 10, output: 0, total: 10 },
   });
   assert.equal(legacyApi.profileLedgerTurns().filter((turn) => turn.turnId === "hydrated-turn").length, 1);
-}).catch((error) => {
+})
+  .then(async () => {
+    const cleanups = [];
+    context.codexPlus = {
+      script: { key: "user:market-codex-live-token-cost.js" },
+      registerPage(definition, options) {
+        registerPageCalls.push({ definition, options });
+        return () => {};
+      },
+      onCleanup(cleanup) {
+        cleanups.push(cleanup);
+        return () => {};
+      },
+    };
+    vm.runInNewContext(code, context, { filename: scriptPath });
+    assert.equal(cleanups.length, 1);
+    assert.equal(typeof cleanups[0], "function");
+    assert.equal(typeof context.__codexLiveTokenCost.destroy, "function");
+    assert.equal(typeof context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled, "function");
+    assert.equal(typeof context.__codexLiveTokenCostTest.renderEmbeddedSettingsPage, "function");
+    assert.equal(typeof context.__codexLiveTokenCostTest.installCodexPlusEmbeddedPage, "function");
+    assert.equal(registerPageCalls.length, 1);
+    assert.equal(registerPageCalls[0].definition.title, "Codex Token Cost");
+    assert.match(String(registerPageCalls[0].options.icon), /^<svg viewBox="0 0 24 24"/);
+    assert.match(String(registerPageCalls[0].options.icon), /<path d="M12 17V7">/);
+    assert.equal(typeof registerPageCalls[0].options.navLabel, "string");
+
+    let embeddedInnerHtmlWrites = 0;
+    const embeddedContainer = {
+      classList: { add() {} },
+      get innerHTML() {
+        return embeddedInnerHtmlValue;
+      },
+      set innerHTML(value) {
+        embeddedInnerHtmlValue = value;
+        embeddedInnerHtmlWrites += 1;
+      },
+      addEventListener() {},
+      querySelectorAll() {
+        return [];
+      },
+    };
+    let embeddedInnerHtmlValue = "";
+    context.__codexLiveTokenCostTest.renderEmbeddedSettingsPage(embeddedContainer);
+    assert.equal(embeddedContainer.innerHTML.includes("cltc-settings-modal"), true);
+    assert.equal(embeddedContainer.innerHTML.includes("Codex Token Cost"), true);
+    assert.equal(embeddedInnerHtmlWrites, 1, "first embedded render must rebuild content");
+    const firstHtml = embeddedContainer.innerHTML;
+    context.__codexLiveTokenCostTest.renderEmbeddedSettingsPage(embeddedContainer);
+    assert.equal(embeddedInnerHtmlWrites, 1, "unchanged embedded render must not rebuild content");
+    assert.equal(embeddedContainer.innerHTML, firstHtml);
+
+    const cleanupResult = cleanups[0]();
+    assert.equal(cleanupResult, undefined, "cleanup must stay synchronous so Codex++ can hot reload in place");
+    assert.equal(context.__codexLiveTokenCost, undefined);
+    assert.equal(context.__codexLiveTokenCostActiveBridge, undefined);
+    assert.equal(context.__codexLiveTokenCostVersion, undefined);
+
+    cleanups[0]();
+
+    vm.runInNewContext(code, context, { filename: scriptPath });
+    assert.equal(cleanups.length, 2);
+    assert.equal(typeof context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled, "function");
+    assert.equal(context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled(), false);
+    assert.equal(context.__codexLiveTokenCostVersion, "0.7.9-beta1");
+
+    assert.equal(cleanups[1](), undefined);
+    assert.equal(context.__codexLiveTokenCostActiveBridge, undefined);
+    delete context.codexPlus;
+  })
+  .catch((error) => {
   setImmediate(() => {
     throw error;
   });
+
 });
