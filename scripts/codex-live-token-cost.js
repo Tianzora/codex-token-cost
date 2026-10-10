@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.9
+// @version      0.7.9-beta1
 // @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,11 +10,16 @@
 (() => {
   "use strict";
 
-const VERSION = "0.7.9";
+const VERSION = "0.7.9-beta1";
   const ROOT_ID = "codex-live-token-cost";
-  const SETTINGS_BUTTON_ID = "codex-live-token-cost-settings";
   const STYLE_ID = "codex-live-token-cost-style";
-  const CODEX_PLUS_MENU_ID = "codex-plus-menu";
+  // Matches Codex++'s own rail icons: 24 viewBox, 1.8 stroke, currentColor, 19px rendered by CSS.
+  const SETTINGS_BUTTON_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M12 17V7"></path>' +
+    '<path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"></path>' +
+    '<path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"></path>' +
+    "</svg>";
   const OFFICIAL_MODEL_TRIGGER_SELECTOR = "[data-codex-intelligence-trigger='true']";
   const PRICE_OVERRIDES_KEY = "__codexLiveTokenCostPriceOverridesV1";
   const HIDDEN_PRICE_MODELS_KEY = "__codexLiveTokenCostHiddenPriceModelsV1";
@@ -50,7 +55,7 @@ const VERSION = "0.7.9";
   const PROFILE_USAGE_QUERY_KEY = ["profile", "usage"];
   const PROFILE_ACCOUNT_INFO_QUERY_KEY = ["vscode", "account-info"];
   const PROFILE_ACCOUNTS_CHECK_QUERY_KEY = ["accounts", "check"];
-  const PROFILE_WORKSPACE_ACCOUNT_ENABLED = false;
+  const PROFILE_WORKSPACE_ACCOUNT_ENABLED = true;
   const LOCAL_PROFILE_ACCOUNT_ID = "local-profile-account";
   const LOCAL_PROFILE_USER_ID = "local-profile-user";
   const LOCAL_PROFILE_PLAN = "pro_20x";
@@ -228,10 +233,13 @@ const VERSION = "0.7.9";
 
   const state = {
     root: null,
-    settingsButton: null,
     settingsOverlay: null,
     settingsOverlayCloseTimer: 0,
+    embeddedPageDispose: null,
+    embeddedPageContainer: null,
+    embeddedHtmlSignature: null,
     started: false,
+    destroyed: false,
     startedAt: Date.now(),
     renderTimer: 0,
     outputRateTimer: 0,
@@ -251,6 +259,9 @@ const VERSION = "0.7.9";
     startupSessionKey: `new:startup:${Date.now().toString(36)}`,
     localLedger: [],
     localUsageArchive: { version: 1, updatedAt: 0, days: {} },
+    localLedgerRevision: 0,
+    localDailyUsageCache: null,
+    currentSessionTurnsCache: new WeakMap(),
     localLedgerLoaded: false,
     localLast: null,
     localCurrentTurn: null,
@@ -276,7 +287,9 @@ const VERSION = "0.7.9";
     profileRequestIds: new Map(),
     codexModulePromises: new Map(),
     detectedModel: "",
+    detectedModelLabel: "",
     detectedEffort: "",
+    detectedEffortLabel: "",
     detectedFastMode: false,
     priceRemoteRequest: null,
     priceRemoteAbortController: null,
@@ -299,16 +312,23 @@ const VERSION = "0.7.9";
     profileSaveStatusTone: "",
     profileSaveStatusTimer: 0,
     profileQueryClient: null,
+    profileQueryClientDiscoveryTimer: 0,
+    profileQueryClientDiscoveryObserver: null,
+    profileRealChatgptCached: false,
+    profileRealChatgptCacheClient: null,
     profileQueryCacheObserverClient: null,
     profileQueryCacheObserverUnsubscribe: null,
     profileQueryCacheSyncQueued: false,
     profileSyntheticAuth: false,
+    profileUiAuthCacheKey: "",
+    profileUiAuthCache: null,
     profileUiReadinessObserver: null,
     profileIdentityObserver: null,
     profileIdentitySyncTimer: 0,
     profileNavigationTimer: 0,
     profileIdentityButtons: new Set(),
     profileIdentityMenuItems: new Set(),
+    profileIdentityMenus: new Set(),
     profileAccountsRefreshPromise: null,
     profileUsageRefreshTimer: 0,
     profileUsageRefreshRequests: 0,
@@ -743,7 +763,8 @@ const VERSION = "0.7.9";
         profileLedgerRebuildRollup();
         await profileLedgerWriteSnapshot(db);
         saveProfileLedgerSnapshot();
-        scheduleProfileUsageRefresh(0);
+        if (profileDataOverrideEnabledFor()) syncProfileUsageQueryCache();
+        else scheduleProfileUsageRefresh(0);
         scheduleRender();
         return db;
       })
@@ -1212,6 +1233,122 @@ const VERSION = "0.7.9";
     }
   }
 
+  function applyProfileDataOverride(source) {
+    if (!source || typeof source !== "object" || !profileUnlockEnabled()) return source;
+    const local = profileUsageQueryData();
+    const next = { ...source };
+    const prefs = localProfilePrefs();
+    Object.assign(next, {
+      planType: prefs.planType,
+      plan_type: prefs.planType,
+      planLabel: localProfilePlanLabel(prefs),
+    });
+    if (Array.isArray(local.dailyUsage)) next.dailyUsage = local.dailyUsage;
+    if (local.activityInsights && typeof local.activityInsights === "object") next.activityInsights = local.activityInsights;
+    if (local.summary && typeof local.summary === "object") {
+      next.summary = { ...(source.summary && typeof source.summary === "object" ? source.summary : {}), ...local.summary };
+    }
+    return next;
+  }
+
+  function isRealChatgptAccount(account) {
+    if (!account || typeof account !== "object") return false;
+    const type = account.type || account.account_type;
+    if (type === "apiKey" || type === "amazonBedrock") return false;
+    const id = account.id || account.account_id;
+    return Boolean(
+      id &&
+        id !== LOCAL_PROFILE_ACCOUNT_ID &&
+        (account.account_user_id || account.account_owner_id || account.plan_type || account.structure || account.email || account.account_residency_region),
+    );
+  }
+
+  function profileRealChatgptDetected(queryClient) {
+    const client = queryClient || state.profileQueryClient || profileQueryClientFromDocument();
+    if (!client || typeof client.getQueryCache !== "function") return false;
+    try {
+      const queries = client.getQueryCache()?.getAll?.() || [];
+      for (const query of queries) {
+        const queryKey = query?.queryKey;
+        if (!Array.isArray(queryKey)) continue;
+        if (queryKey[0] === "accounts" && queryKey[1] === "check") {
+          const accounts = query.state?.data?.accounts;
+          if (Array.isArray(accounts) && accounts.some(isRealChatgptAccount)) return true;
+        }
+        if (queryKey[0] === "rate-limit-status") {
+          const data = query.state?.data;
+          if (
+            data &&
+            typeof data === "object" &&
+            data.account_id &&
+            data.account_id !== LOCAL_PROFILE_ACCOUNT_ID &&
+            data.user_id &&
+            data.user_id !== LOCAL_PROFILE_USER_ID
+          ) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // Query cache reads are best-effort; fall back to the stored unlock setting.
+    }
+    return false;
+  }
+
+  function profileRealChatgptCached(queryClient) {
+    const client = queryClient || state.profileQueryClient;
+    if (state.profileRealChatgptCacheClient === client) return state.profileRealChatgptCached;
+    if (!client) return false;
+    const detected = profileRealChatgptDetected(client);
+    state.profileRealChatgptCached = detected;
+    state.profileRealChatgptCacheClient = client;
+    return detected;
+  }
+
+  function refreshProfileRealChatgptCache(queryClient) {
+    const client = queryClient || state.profileQueryClient;
+    if (!client || typeof client.getQueryCache !== "function") return false;
+    const detected = profileRealChatgptDetected(client);
+    state.profileRealChatgptCached = detected;
+    state.profileRealChatgptCacheClient = client;
+    return detected;
+  }
+
+  function profileSyntheticEnabled(queryClient) {
+    const client = queryClient || state.profileQueryClient;
+    if (!client) return false;
+    return profileUnlockEnabled() && !profileRealChatgptCached(client);
+  }
+
+  // Patches installed on long-lived objects (Codex app modules, Statsig clients, React auth
+  // context) outlive destroy() and cannot be safely unpatched. They must therefore consult the
+  // live instance instead of capturing this one, or an in-place Codex++ hot reload would leave
+  // them reading a dead instance's ledger and prefs.
+  function stickyBridge() {
+    const bridge = window.__codexLiveTokenCostActiveBridge;
+    return bridge && typeof bridge.profileSyntheticEnabled === "function" ? bridge : null;
+  }
+
+  function reportFailure(error) {
+    try {
+      window.codexPlus?.fail?.(error);
+    } catch {
+      // Diagnostics must never break the script.
+    }
+  }
+
+  function safeInstallOfficialProfileUnlock() {
+    try {
+      installOfficialProfileUnlock();
+    } catch (error) {
+      reportFailure(error);
+    }
+  }
+
+  function profileDataOverrideEnabledFor(queryClient) {
+    return profileUnlockEnabled() && profileRealChatgptCached(queryClient);
+  }
+
   function saveProfileUnlockEnabled(value) {
     profileUnlockEnabledRuntime = Boolean(value);
     try {
@@ -1223,7 +1360,12 @@ const VERSION = "0.7.9";
   }
 
   function hasCodexProjectContextRow(doc = document) {
-    return Boolean(doc?.querySelector?.(PROJECT_CONTEXT_ROW_SELECTOR));
+    const node = doc?.querySelector?.(PROJECT_CONTEXT_ROW_SELECTOR);
+    if (!node) return false;
+    const rect = node.getBoundingClientRect?.();
+    if (rect && (rect.width <= 0 || rect.height <= 0)) return false;
+    const view = typeof getComputedStyle === "function" ? getComputedStyle(node) : null;
+    return view?.display !== "none" && view?.visibility !== "hidden" && view?.opacity !== "0";
   }
 
   function syncHubVisibility(root = state.root, doc = document) {
@@ -1231,9 +1373,9 @@ const VERSION = "0.7.9";
     const visible = hubVisible() && !projectContextRow;
     const target = root?.style ? root : state.root;
     if (!target?.style) return visible;
-    target.dataset.cltcHubVisible = String(visible);
-    target.dataset.cltcProjectContextRow = String(projectContextRow);
-    target.setAttribute?.("aria-hidden", String(!visible));
+    if (target.dataset.cltcHubVisible !== String(visible)) target.dataset.cltcHubVisible = String(visible);
+    if (target.dataset.cltcProjectContextRow !== String(projectContextRow)) target.dataset.cltcProjectContextRow = String(projectContextRow);
+    setButtonAttribute(target, "aria-hidden", String(!visible));
     if (visible) {
       if (target.style.removeProperty) target.style.removeProperty("display");
       else target.style.display = "";
@@ -1258,7 +1400,10 @@ const VERSION = "0.7.9";
     if (state.hubVisibilityObserver || window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof MutationObserver !== "function") return;
     const target = document.body || document.documentElement;
     if (!target) return;
-    state.hubVisibilityObserver = new MutationObserver(() => scheduleHubVisibilitySync());
+    state.hubVisibilityObserver = new MutationObserver(() => {
+      if (!state.root?.isConnected) scheduleRender(0);
+      scheduleHubVisibilitySync();
+    });
     state.hubVisibilityObserver.observe(target, { childList: true, subtree: true });
   }
 
@@ -1526,16 +1671,38 @@ const VERSION = "0.7.9";
   }
 
   function localProfileIdentityFields(source = {}) {
+    return {
+      email: source.email,
+      name: source.name,
+      accountName: source.accountName,
+      displayName: source.displayName,
+      display_name: source.display_name,
+      username: source.username,
+      image: source.image,
+      imageUrl: source.imageUrl,
+      avatar: source.avatar,
+      profilePictureUrl: source.profilePictureUrl,
+      profileImageUrl: source.profileImageUrl,
+      profilePhotoUrl: source.profilePhotoUrl,
+      photoUrl: source.photoUrl,
+      profile_picture_url: source.profile_picture_url,
+      avatarUrl: source.avatarUrl,
+      avatar_url: source.avatar_url,
+      picture: source.picture,
+    };
+  }
+
+  function localSyntheticIdentityFields(source = {}) {
     const prefs = localProfilePrefs();
     const displayName = prefs.displayName || prefs.username || "Local Usage";
-    const imageUrl = prefs.imageUrl || source.imageUrl || source.profilePictureUrl || source.profile_picture_url || source.avatarUrl || source.avatar_url || null;
+    const imageUrl = prefs.imageUrl || null;
     return {
       email: prefs.email,
       name: displayName,
       accountName: displayName,
       displayName,
       display_name: displayName,
-      username: prefs.username || source.username,
+      username: prefs.username,
       image: imageUrl,
       imageUrl,
       avatar: imageUrl,
@@ -1549,22 +1716,15 @@ const VERSION = "0.7.9";
       picture: imageUrl,
     };
   }
-
   function localProfileAccount(source = {}, options = {}) {
     const prefs = localProfilePrefs();
     const preserveAuth = options.preserveAuth === true;
-    const structure = normalizeProfileAccountStructure(prefs.accountStructure ?? source.structure);
-    const workspaceName = structure === "workspace" ? normalizeProfileWorkspaceName(prefs.workspaceName ?? source.name) : null;
     return {
       ...source,
-      ...localProfileIdentityFields(source),
       ...(preserveAuth ? {} : { id: source.id || LOCAL_PROFILE_ACCOUNT_ID }),
-      ...(!preserveAuth && workspaceName ? { name: workspaceName, accountName: workspaceName } : {}),
-      ...(!preserveAuth ? { type: "chatgpt", structure, planType: prefs.planType, plan_type: prefs.planType } : {}),
+      ...(!preserveAuth ? { type: "chatgpt", planType: prefs.planType, plan_type: prefs.planType } : {}),
     };
-  }
-
-  function spoofProfileAccountPayload(value) {
+  }  function spoofProfileAccountPayload(value) {
     if (!value || typeof value !== "object" || !value.account || typeof value.account !== "object") return value;
     const type = value.account.type;
     if (type !== "apiKey" && type !== "amazonBedrock" && type !== "chatgpt") return value;
@@ -1616,8 +1776,21 @@ const VERSION = "0.7.9";
   }
 
   function profileUiAuthContextValue(value) {
-    const isApiAuth = Boolean(value && typeof value === "object" && (value.authMethod === "apikey" || value.authMethod === "api_key"));
-    if (!isApiAuth) return value;
+    if (!value || typeof value !== "object") return value;
+    const dataOverride = profileDataOverrideEnabledFor();
+    const isApiAuth = value.authMethod === "apikey" || value.authMethod === "api_key";
+    if (!isApiAuth && !dataOverride) return value;
+    if (!isApiAuth) {
+      const cacheKey = `${value.authMethod || ""}|${value.accountId || ""}|${value.userId || ""}|${localProfilePrefs().planType}`;
+      if (state.profileUiAuthCacheKey === cacheKey && state.profileUiAuthCache) return state.profileUiAuthCache;
+      const planType = localProfilePrefs().planType;
+      const account = value.account && typeof value.account === "object"
+        ? { ...value.account, planType, plan_type: planType }
+        : value.account;
+      state.profileUiAuthCacheKey = cacheKey;
+      state.profileUiAuthCache = { ...value, planAtLogin: planType, ...(account ? { account } : {}) };
+      return state.profileUiAuthCache;
+    }
     const source = spoofProfileAuthContextValue(value);
     const account = {
       ...localProfileAccount(source.account && typeof source.account === "object" ? source.account : {}),
@@ -1637,7 +1810,6 @@ const VERSION = "0.7.9";
       profileIdentity: localProfileIdentityFields(source),
     };
   }
-
   function profileUiComponentNamesFromSource(source) {
     const text = String(source || "");
     const names = [];
@@ -1666,6 +1838,7 @@ const VERSION = "0.7.9";
 
   function rememberProfileQueryClient(value) {
     if (isProfileQueryClient(value)) {
+      if (state.profileQueryClient !== value) refreshProfileRealChatgptCache(value);
       state.profileQueryClient = value;
       installProfileQueryCacheObserver(value);
     }
@@ -1674,6 +1847,78 @@ const VERSION = "0.7.9";
 
   function isProfileUsageQueryKey(queryKey) {
     return Array.isArray(queryKey) && queryKey[0] === "profile" && queryKey[1] === "usage";
+  }
+
+  function isProfilePageQueryKey(queryKey) {
+    return Array.isArray(queryKey) && queryKey[0] === "profile" && queryKey[1] === "page";
+  }
+
+  function profilePageDataNeedsOverride(source) {
+    const local = localProfileResponse().stats || {};
+    return source?.page?.stats?.agentic?.lifetime_tokens !== (local.lifetime_tokens ?? 0)
+      || source?.page?.stats?.agentic?.peak_daily_tokens !== (local.peak_daily_tokens ?? 0);
+  }
+
+  function profilePageDataOverride(source) {
+    if (!source || typeof source !== "object") return source;
+    const stats = localProfileResponse().stats || {};
+    const profile = localProfileResponse().profile || {};
+    const page = source.page && typeof source.page === "object" ? source.page : {};
+    const daily = Array.isArray(stats.daily_usage_buckets) ? stats.daily_usage_buckets : [];
+    const weeklyMap = new Map();
+    const dailyUsage = daily.map((bucket) => {
+      const next = { ...bucket, chat_turns: 0 };
+      const week = isoWeekStartUtc(bucket.start_date);
+      weeklyMap.set(week, (weeklyMap.get(week) || 0) + toCount(bucket.tokens));
+      return next;
+    });
+    const weeklyUsage = Array.from(weeklyMap, ([start_date, tokens]) => ({ start_date, tokens, chat_turns: 0 }));
+    let cumulative = 0;
+    const cumulativeUsage = dailyUsage.map((bucket) => {
+      cumulative += toCount(bucket.tokens);
+      return { ...bucket, tokens: cumulative };
+    });
+    return {
+      ...source,
+      profile_details: {
+        ...(source.profile_details && typeof source.profile_details === "object" ? source.profile_details : {}),
+        plan_type: profile.plan_type,
+        plan_label: profile.plan_label,
+      },
+      page: {
+        ...page,
+        stats: {
+          ...(page.stats && typeof page.stats === "object" ? page.stats : {}),
+          current_streak_days: stats.current_streak_days ?? 0,
+          longest_streak_days: stats.longest_streak_days ?? 0,
+          agentic: {
+            ...(page.stats?.agentic && typeof page.stats.agentic === "object" ? page.stats.agentic : {}),
+            lifetime_tokens: stats.lifetime_tokens ?? 0,
+            peak_daily_tokens: stats.peak_daily_tokens ?? 0,
+            longest_running_turn_sec: stats.longest_running_turn_sec ?? 0,
+          },
+        },
+        activity_graph: {
+          ...(page.activity_graph && typeof page.activity_graph === "object" ? page.activity_graph : {}),
+          daily_usage_buckets: dailyUsage,
+          weekly_usage_buckets: weeklyUsage,
+          cumulative_daily_usage_buckets: cumulativeUsage,
+        },
+        insights: {
+          ...(page.insights && typeof page.insights === "object" ? page.insights : {}),
+          total_skills_used: stats.total_skills_used ?? 0,
+          unique_skills_used: stats.unique_skills_used ?? 0,
+          agentic: {
+            ...(page.insights?.agentic && typeof page.insights.agentic === "object" ? page.insights.agentic : {}),
+            total_threads: stats.total_threads ?? 0,
+            fast_mode_usage_percentage: stats.fast_mode_usage_percentage ?? 0,
+            most_used_reasoning_effort: stats.most_used_reasoning_effort ?? null,
+            most_used_reasoning_effort_percentage: stats.most_used_reasoning_effort_percentage ?? 0,
+          },
+        },
+        top_plugins: Array.isArray(stats.top_plugins) && stats.top_plugins.length ? stats.top_plugins : page.top_plugins,
+      },
+    };
   }
 
   function stopProfileQueryCacheObserver() {
@@ -1685,6 +1930,15 @@ const VERSION = "0.7.9";
     state.profileQueryCacheObserverClient = null;
     state.profileQueryCacheObserverUnsubscribe = null;
     state.profileQueryCacheSyncQueued = false;
+    state.profileRealChatgptCached = false;
+    state.profileRealChatgptCacheClient = null;
+    if (state.profileQueryClientDiscoveryTimer) window.clearTimeout(state.profileQueryClientDiscoveryTimer);
+    state.profileQueryClientDiscoveryTimer = 0;
+  }
+
+  function isProfileAuthQueryKey(queryKey) {
+    if (!Array.isArray(queryKey)) return false;
+    return (queryKey[0] === "accounts" && queryKey[1] === "check") || queryKey[0] === "rate-limit-status";
   }
 
   function scheduleProfileQueryCacheSync(queryClient) {
@@ -1700,7 +1954,7 @@ const VERSION = "0.7.9";
   }
 
   function installProfileQueryCacheObserver(queryClient) {
-    if (!profileUnlockEnabled() || !isProfileQueryClient(queryClient)) return false;
+    if (!isProfileQueryClient(queryClient)) return false;
     const cache = queryClient.getQueryCache?.();
     if (!cache || typeof cache.subscribe !== "function") return false;
     if (state.profileQueryCacheObserverClient === queryClient) return true;
@@ -1708,9 +1962,28 @@ const VERSION = "0.7.9";
     state.profileQueryCacheObserverClient = queryClient;
     try {
       const unsubscribe = cache.subscribe((event) => {
-        if (event?.type !== "added" && event?.type !== "observerAdded") return;
-        if (!isProfileUsageQueryKey(event.query?.queryKey)) return;
-        scheduleProfileQueryCacheSync(queryClient);
+        if (!event?.query?.queryKey) return;
+        if (isProfileAuthQueryKey(event.query.queryKey)) {
+          const real = refreshProfileRealChatgptCache(queryClient);
+          if (real) {
+            if (profileDataOverrideEnabledFor(queryClient)) syncProfileUsageQueryCache(queryClient);
+          } else if (profileSyntheticEnabled(queryClient)) {
+            safeInstallOfficialProfileUnlock();
+            scheduleProfileUsageRefresh(0);
+          }
+        }
+        if (
+          (event?.type === "added" || event?.type === "observerAdded") &&
+          isProfileUsageQueryKey(event.query.queryKey)
+        ) {
+          scheduleProfileQueryCacheSync(queryClient);
+        } else if (
+          (event?.type === "added" || event?.type === "observerAdded" || event?.type === "updated") &&
+          isProfilePageQueryKey(event.query.queryKey) &&
+          (event?.type !== "updated" || profilePageDataNeedsOverride(event.query?.state?.data))
+        ) {
+          scheduleProfileQueryCacheSync(queryClient);
+        }
       });
       state.profileQueryCacheObserverUnsubscribe = typeof unsubscribe === "function" ? unsubscribe : null;
       return true;
@@ -1724,8 +1997,11 @@ const VERSION = "0.7.9";
     if (!node || typeof node !== "object") return null;
     const fiberKey = Object.keys(node).find((key) => key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
     for (let fiber = fiberKey ? node[fiberKey] : null; fiber; fiber = fiber.return) {
-      const queryClient = fiber.memoizedProps?.value;
-      if (isProfileQueryClient(queryClient)) return queryClient;
+      const candidates = [fiber.memoizedProps?.value];
+      for (let dependency = fiber.dependencies?.firstContext; dependency; dependency = dependency.next) candidates.push(dependency.memoizedValue);
+      for (let stateNode = fiber.memoizedState; stateNode; stateNode = stateNode.next) candidates.push(stateNode.memoizedState);
+      const queryClient = candidates.find((value) => isProfileQueryClient(value));
+      if (queryClient) return queryClient;
     }
     return null;
   }
@@ -1733,6 +2009,7 @@ const VERSION = "0.7.9";
   function profileQueryClientFromDocument(doc = document) {
     const candidates = [
       findSidebarProfileButton(doc),
+      doc.querySelector?.("[data-settings-panel-slug='profile'], [aria-label='个人资料'], [aria-label='Profile']"),
       doc.querySelector?.("input[type='file']"),
       doc.querySelector?.("[aria-label='编辑个人资料'], [aria-label='Edit profile']"),
       doc.querySelector?.("main h1, [role='main'] h1, h1"),
@@ -1787,11 +2064,12 @@ const VERSION = "0.7.9";
           enumerable: descriptor?.enumerable ?? true,
           get() {
             const value = descriptor?.get ? descriptor.get.call(this) : currentValue;
+            const active = stickyBridge();
             if (
-              profileUnlockEnabled() &&
+              (active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) &&
               isProfileUiAuthRead(new Error().stack, authContext.__codexLiveTokenCostProfileUiComponents)
             ) {
-              return profileUiAuthContextValue(value);
+              return active.profileUiAuthContextValue(value);
             }
             return value;
           },
@@ -1822,7 +2100,7 @@ const VERSION = "0.7.9";
   }
 
   function profileUnlockedSettingsSections(source, visible) {
-    if (!profileUnlockEnabled()) return visible;
+    if (!profileSyntheticEnabled()) return visible;
     if (!isSettingsSectionsArray(source) || !Array.isArray(visible) || visible.some((item) => item?.slug === "profile")) return visible;
     const profile = source.find((item) => item?.slug === "profile");
     if (!profile) return visible;
@@ -1880,9 +2158,12 @@ const VERSION = "0.7.9";
   function officialVersionedModelFromText(textValue) {
     const text = normalizeText(String(textValue ?? ""), 500);
     const match = text.match(/\b(?:gpt[._\s-]?)?(\d+(?:\.\d+)+)(?:[._\s-]?(codex|mini|nano|pro|sol|terra|luna))?\b/i);
-    if (!match) return "";
-    const suffix = match[2] ? `-${match[2].toLowerCase()}` : "";
-    return `gpt-${match[1]}${suffix}`;
+    if (match) {
+      const suffix = match[2] ? `-${match[2].toLowerCase()}` : "";
+      return `gpt-${match[1]}${suffix}`;
+    }
+    const short = text.match(/\b(\d+)\s*(codex|mini|nano|pro|sol|terra|luna)\b/i);
+    return short ? `gpt-${short[1]}-${short[2].toLowerCase()}` : "";
   }
 
   function officialModelInfoFromText(textValue, effortValue = "") {
@@ -1927,10 +2208,27 @@ const VERSION = "0.7.9";
 
   function officialModelTriggerInfo(trigger) {
     if (!trigger || state.root?.contains?.(trigger) || state.settingsOverlay?.contains?.(trigger)) {
-      return { model: "", effort: "", fastMode: false };
+      return { model: "", displayModel: "", effort: "", displayEffort: "", fastMode: false };
     }
-    const info = officialModelInfoFromText(trigger.innerText || trigger.textContent || "", trigger.getAttribute?.("data-selected-reasoning-effort") || "");
-    return { ...info, fastMode: officialTriggerFastMode(trigger) };
+    const text = trigger.innerText || trigger.textContent || "";
+    const info = officialModelInfoFromText(text, trigger.getAttribute?.("data-selected-reasoning-effort") || "");
+    const displayModel =
+      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelText']")?.textContent || "", 120) ||
+      normalizeText(trigger.querySelector?.("[class*='ComposerDropdownLabel']")?.textContent || "", 120) ||
+      normalizeText(String(text).split(/\r?\n/)[0], 120);
+    const displayEffort =
+      normalizeText(
+        Array.from(trigger.querySelectorAll?.("[data-reasoning-effort]") || [])
+          .find((node) => node.getAttribute?.("data-reasoning-effort") === info.effort)?.textContent ||
+          "",
+        40,
+      ) ||
+      String(text)
+        .split(/\r?\n/)
+        .map((line) => normalizeText(line, 40))
+        .find((line) => line && normalizeOfficialEffort(line) === info.effort) ||
+      "";
+    return { ...info, displayModel, displayEffort, fastMode: officialTriggerFastMode(trigger) };
   }
 
   function readOfficialModelTrigger(trigger = null) {
@@ -1941,8 +2239,16 @@ const VERSION = "0.7.9";
       state.detectedModel = info.model;
       changed = true;
     }
+    if (info.displayModel && info.displayModel !== state.detectedModelLabel) {
+      state.detectedModelLabel = info.displayModel;
+      changed = true;
+    }
     if (info.effort && info.effort !== state.detectedEffort) {
       state.detectedEffort = info.effort;
+      changed = true;
+    }
+    if (info.displayEffort && info.displayEffort !== state.detectedEffortLabel) {
+      state.detectedEffortLabel = info.displayEffort;
       changed = true;
     }
     if (info.fastMode !== state.detectedFastMode) {
@@ -1961,7 +2267,9 @@ const VERSION = "0.7.9";
     const ledgerModel = recentLedgerModel();
     return {
       model: modelName(ledgerModel),
+      displayModel: state.detectedModelLabel || modelName(ledgerModel),
       effort: state.detectedEffort || "",
+      displayEffort: state.detectedEffortLabel || state.detectedEffort || "",
       manual: false,
     };
   }
@@ -2659,8 +2967,16 @@ const VERSION = "0.7.9";
 
   function currentSessionTurns(turns, key = currentSessionKey()) {
     const sessionKey = normalizeText(key, 240);
-    if (isTransientSessionKey(sessionKey)) return [];
-    return (Array.isArray(turns) ? turns : []).filter((turn) => sameSessionKey(turnSessionKey(turn), sessionKey));
+    if (isTransientSessionKey(sessionKey) || !Array.isArray(turns)) return [];
+    let byKey = state.currentSessionTurnsCache.get(turns);
+    if (!byKey) {
+      byKey = new Map();
+      state.currentSessionTurnsCache.set(turns, byKey);
+    }
+    if (byKey.has(sessionKey)) return byKey.get(sessionKey);
+    const filtered = turns.filter((turn) => sameSessionKey(turnSessionKey(turn), sessionKey));
+    byKey.set(sessionKey, filtered);
+    return filtered;
   }
 
   function loadDailyLedger() {
@@ -2689,6 +3005,7 @@ const VERSION = "0.7.9";
     const removedEntries = compacted.turns.length !== valid.length;
     state.localLedger = compacted.turns;
     state.localUsageArchive = compacted.archive;
+    invalidateLocalUsageCache();
     state.localLast = state.localLedger[state.localLedger.length - 1] || null;
     state.localTurnSeq = toCount(saved.seq);
     for (const [sourceKey, targetKey] of Object.entries(saved.sessionAliases || {})) {
@@ -2707,6 +3024,7 @@ const VERSION = "0.7.9";
       const compacted = compactLocalLedger(state.localLedger, state.localUsageArchive);
       state.localLedger = compacted.turns;
       state.localUsageArchive = compacted.archive;
+    invalidateLocalUsageCache();
       if (isTransientSessionKey(turnSessionKey(state.localLast))) state.localLast = state.localLedger[state.localLedger.length - 1] || null;
       localStorage.setItem(
         LOCAL_USAGE_KEY,
@@ -2870,6 +3188,7 @@ const VERSION = "0.7.9";
       saveProfileLedgerSnapshot();
       profileLedgerQueueSnapshotWrite();
     }
+    invalidateLocalUsageCache();
     state.localLedger = Array.from(byId.values()).sort(
       (a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")),
     );
@@ -4395,6 +4714,7 @@ const VERSION = "0.7.9";
     if (isTransientSessionKey(key)) return false;
     state.localLast = { ...metric, persistReason: reason };
     state.localLedger = state.localLedger.filter((item) => item.turnId !== metric.turnId).concat(state.localLast);
+    invalidateLocalUsageCache();
     state.localPersistedUsage.set(usageKey(metric.usage), Date.now());
     saveLocalLedger();
     rememberDailyUsage(metric);
@@ -5191,6 +5511,13 @@ const VERSION = "0.7.9";
     if (rememberNewConversationClick(event)) return;
     rememberSidebarThreadClick(event);
     rememberPendingInput(event);
+    clearEmbeddedRailActiveAfterNavigation(event);
+  }
+
+  function clearEmbeddedRailActiveAfterNavigation(event) {
+    const clicked = event.target?.closest?.("nav[data-app-navigation-rail] button[aria-label]");
+    if (clicked && (clicked.getAttribute("aria-label") || "") === "Codex Token Cost") return;
+    clearEmbeddedRailActive();
   }
 
   function liveSnapshot() {
@@ -5200,11 +5527,12 @@ const VERSION = "0.7.9";
     migrateLegacyLocationSessionTurns(sessionKey);
     if (!localCurrentTurn(sessionKey)) restoreRunningCurrentTurnFromLast(sessionKey);
     const source = readTokenUsage();
-    const turns = currentSessionTurns(source.turns, sessionKey);
+    const turns = currentSessionTurns(state.localLedger, sessionKey);
     const lastTurn = sameSessionKey(turnSessionKey(source.last), sessionKey) ? source.last : turns[turns.length - 1] || null;
     const currentTurn = sameSessionKey(source.currentTurn?.sessionKey, sessionKey) ? source.currentTurn : null;
     const modelInfo = activeModelInfo();
     const model = modelInfo.model;
+    const displayModel = modelInfo.displayModel || model;
     const price = priceFor(model);
     const currentTurnUsage = normalizeUsage(currentTurn?.usage);
     const exactLast = normalizeUsage(lastTurn?.usage);
@@ -5231,7 +5559,7 @@ const VERSION = "0.7.9";
     const outputRateEnabled = outputRateVisible();
     const rate = outputRateEnabled ? outputTokenRate(currentTurn, running) : { active: false, visible: false, value: 0 };
     const averageRate = outputRateEnabled ? averageOutputTokenRate(lastTurn, running) : { visible: false, value: 0 };
-    return { current, session: displaySession, turns: turns.length, sessionKey, model, modelInfo, price, sessionCost, dayCost, dayUsage, confidence, running, fastMode, outputRateEnabled, rate, averageRate };
+    return { current, session: displaySession, turns: turns.length, sessionKey, model, displayModel, modelInfo, price, sessionCost, dayCost, dayUsage, confidence, running, fastMode, outputRateEnabled, rate, averageRate };
   }
 
   function emptyDailyUsageBucket(date = "") {
@@ -5285,51 +5613,49 @@ const VERSION = "0.7.9";
 
   function localDailyUsage(options = {}) {
     ensureLocalLedgerLoaded();
-    const byDayModel = new Map();
-    const ledgerTurnIds = new Set();
-    for (const turn of [...localUsageArchiveTurns(), ...state.localLedger]) {
-      const usage = normalizeUsage(turn?.usage);
-      if (!usage.exact) continue;
-      const turnId = normalizeText(turn?.turnId || turn?.id, 120);
-      if (turnId) ledgerTurnIds.add(turnId);
-      const date = localDateKey(turnTimestampMs(turn) || Date.now());
-      const key = date;
-      const source = normalizeText(turn.source, 80);
-      const importSource = normalizeText(turn.importSource, 80);
-      const isCcSwitch = source === "cc-switch" || importSource === "cc-switch";
-      const group = byDayModel.get(key) || {
-        date,
-        local: emptyDailyUsageBucket(date),
-        ccSwitch: emptyDailyUsageBucket(date),
-      };
-      if (isCcSwitch) addTurnToDailyBucket(group.ccSwitch, turn, usage);
-      else addTurnToDailyBucket(group.local, turn, usage);
-      byDayModel.set(key, group);
+    const activeCurrentTurn = localCurrentTurn(currentSessionKey());
+    const cached = state.localDailyUsageCache;
+    if (cached?.revision === state.localLedgerRevision && !activeCurrentTurn && cached.value) return cached.value;
+    const byDayModel = cached?.revision === state.localLedgerRevision
+      ? new Map(Array.from(cached.groups.entries(), ([date, group]) => [date, { date, local: { ...group.local }, ccSwitch: { ...group.ccSwitch } }]))
+      : new Map();
+    const ledgerTurnIds = cached?.revision === state.localLedgerRevision ? cached.turnIds : new Set();
+    if (!cached || cached.revision !== state.localLedgerRevision) {
+      for (const turn of [...localUsageArchiveTurns(), ...state.localLedger]) {
+        const usage = normalizeUsage(turn?.usage);
+        if (!usage.exact) continue;
+        const turnId = normalizeText(turn?.turnId || turn?.id, 120);
+        if (turnId) ledgerTurnIds.add(turnId);
+        const date = localDateKey(turnTimestampMs(turn) || Date.now());
+        const source = normalizeText(turn.source, 80);
+        const importSource = normalizeText(turn.importSource, 80);
+        const group = byDayModel.get(date) || { date, local: emptyDailyUsageBucket(date), ccSwitch: emptyDailyUsageBucket(date) };
+        if (source === "cc-switch" || importSource === "cc-switch") addTurnToDailyBucket(group.ccSwitch, turn, usage);
+        else addTurnToDailyBucket(group.local, turn, usage);
+        byDayModel.set(date, group);
+      }
+      state.localDailyUsageCache = { revision: state.localLedgerRevision, groups: byDayModel, turnIds: ledgerTurnIds, value: null };
     }
-
-    const currentMetric = localTurnMetric(localCurrentTurn(currentSessionKey()));
+    const currentMetric = localTurnMetric(activeCurrentTurn);
     if (currentMetric && !ledgerTurnIds.has(currentMetric.turnId)) {
       const date = localDateKey(turnTimestampMs(currentMetric) || Date.now());
-      const key = date;
-      const group = byDayModel.get(key) || {
-        date,
-        local: emptyDailyUsageBucket(date),
-        ccSwitch: emptyDailyUsageBucket(date),
-      };
+      const group = byDayModel.get(date) || { date, local: emptyDailyUsageBucket(date), ccSwitch: emptyDailyUsageBucket(date) };
       addTurnToDailyBucket(group.local, currentMetric, normalizeUsage(currentMetric.usage));
-      byDayModel.set(key, group);
+      byDayModel.set(date, group);
     }
-
     const days = new Map();
     for (const group of byDayModel.values()) {
-      const prev = days.get(group.date) || emptyDailyUsageBucket(group.date);
       const merged = emptyDailyUsageBucket(group.date);
       maxDailyBucket(merged, group.local);
       maxDailyBucket(merged, group.ccSwitch);
-      addDailyBucket(prev, merged);
-      days.set(group.date, prev);
+      days.set(group.date, merged);
     }
+    if (!activeCurrentTurn && state.localDailyUsageCache) state.localDailyUsageCache.value = days;
     return days;
+  }
+  function invalidateLocalUsageCache() {
+    state.localLedgerRevision += 1;
+    state.localDailyUsageCache = null;
   }
 
   function localProfileThreadCount() {
@@ -5399,6 +5725,7 @@ const VERSION = "0.7.9";
     if (options.profileEditor) saveProfileDefaultEmail(next.email);
     state.profilePrefs = next;
     syncProfileUsageQueryCache();
+    syncProfileAccountInfoQueryCache();
     scheduleSidebarProfileIdentitySync(0);
     void scheduleProfileAccountsCheckRefresh();
     return next;
@@ -5500,9 +5827,11 @@ const VERSION = "0.7.9";
   function syncSidebarProfileIdentity(doc = document) {
     const button = findSidebarProfileButton(doc);
     const menuSynced = syncSidebarProfileMenuIdentity(doc, button);
+    const dataOverride = profileDataOverrideEnabledFor();
     const label = button?.querySelector?.("span.min-w-0.flex-1.truncate");
     const gear = button?.querySelector?.("svg");
-    if (!button || !label || !gear || typeof doc.createElement !== "function") return menuSynced;
+    const compactAvatar = button?.querySelector?.("span[class*='avatar']");
+    if (!button || typeof doc.createElement !== "function" || (!label && !compactAvatar)) return menuSynced;
 
     const prefs = localProfilePrefs();
     const displayName = prefs.displayName || prefs.username || "Local Usage";
@@ -5510,22 +5839,37 @@ const VERSION = "0.7.9";
     if (!snapshot) {
       snapshot = {
         label,
-        labelText: label.textContent,
+        labelText: label?.textContent || "",
         gear,
-        gearDisplay: gear.style?.display || "",
+        gearDisplay: gear?.style?.display || "",
+        compactAvatar,
+        compactAvatarText: compactAvatar?.textContent || "",
+        compactAvatarHtml: compactAvatar?.innerHTML || null,
         avatar: null,
       };
       button.__codexLiveTokenCostProfileIdentity = snapshot;
       state.profileIdentityButtons.add(button);
     }
 
-    const avatarTag = prefs.imageUrl ? "IMG" : "SPAN";
     let avatar = button.querySelector?.("[data-cltc-profile-identity-avatar]");
-    if (avatar && avatar.tagName !== avatarTag) {
-      avatar.remove?.();
-      avatar = null;
-    }
-    if (!avatar) {
+    if (!avatar && compactAvatar) {
+      if (prefs.imageUrl) {
+        if (compactAvatar.tagName !== "IMG") {
+          avatar = doc.createElement("img");
+          avatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
+          avatar.className = "icon-sm shrink-0 rounded-full";
+          compactAvatar.replaceWith?.(avatar);
+        } else {
+          avatar = compactAvatar;
+          avatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
+        }
+      } else {
+        compactAvatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
+        compactAvatar.textContent = displayName.slice(0, 1);
+        avatar = compactAvatar;
+      }
+    } else if (!avatar && label && gear) {
+      const avatarTag = prefs.imageUrl ? "IMG" : "SPAN";
       avatar = doc.createElement(prefs.imageUrl ? "img" : "span");
       avatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
       avatar.className = prefs.imageUrl
@@ -5541,8 +5885,9 @@ const VERSION = "0.7.9";
     } else if (avatar.textContent !== displayName.slice(0, 1)) {
       avatar.textContent = displayName.slice(0, 1);
     }
-    if (gear.style && gear.style.display !== "none") gear.style.display = "none";
-    if (label.textContent !== displayName) label.textContent = displayName;
+    if (gear?.style && gear.style.display !== "none") gear.style.display = "none";
+    if (label && label.textContent !== displayName) label.textContent = displayName;
+    if (dataOverride) return true;
     return true;
   }
 
@@ -5586,15 +5931,23 @@ const VERSION = "0.7.9";
 
   function syncSidebarProfileMenuIdentity(doc = document, button = findSidebarProfileButton(doc)) {
     const menuId = button?.getAttribute?.("aria-controls");
-    const menu = menuId ? doc.getElementById?.(menuId) : null;
-    if (!menu || menu.getAttribute?.("role") !== "menu" || menu.getAttribute?.("aria-labelledby") !== button.id) return false;
+    const menus = Array.from(doc.querySelectorAll?.("[role=\"menu\"]") || []);
+    const menu = menuId
+      ? doc.getElementById?.(menuId)
+      : menus.find((candidate) => candidate.getAttribute?.("aria-labelledby") === button?.id)
+        || menus.find((candidate) => candidate.querySelector?.("span.min-w-0.text-xs.leading-dense.text-tertiary.whitespace-normal"))
+        || menus.find((candidate) => /退出登录|sign out/i.test(String(candidate.innerText || candidate.textContent || "")));
+    if (!menu || menu.getAttribute?.("role") !== "menu" || (menu.getAttribute?.("aria-labelledby") && menu.getAttribute?.("aria-labelledby") !== button.id)) return false;
 
+    const planSynced = syncSidebarProfileMenuPlan(menu);
+    if (profileDataOverrideEnabledFor()) return planSynced;
     const menuItem = menu.querySelector?.("[role='menuitem']");
+    if (!menuItem) return planSynced;
     let snapshot = menuItem?.__codexLiveTokenCostProfileMenuIdentity;
-    if (!snapshot && (menuItem?.getAttribute?.("aria-disabled") !== "true" || !menuItem.hasAttribute?.("data-disabled"))) return false;
+    if (!snapshot && (menuItem?.getAttribute?.("aria-disabled") !== "true" || !menuItem.hasAttribute?.("data-disabled"))) return planSynced;
     const row = menuItem.firstElementChild;
-    const label = row?.querySelector?.("span.flex-1.min-w-0.truncate");
-    if (!label) return false;
+    const label = row?.querySelector?.("span.flex-1.min-w-0.truncate, span.min-w-0.truncate");
+    if (!label) return planSynced;
     const staleAvatar = row.querySelector?.("[data-cltc-profile-menu-identity-avatar]");
     staleAvatar?.remove?.();
     if (snapshot?.avatar) {
@@ -5642,6 +5995,29 @@ const VERSION = "0.7.9";
     return true;
   }
 
+  function syncSidebarProfileMenuPlan(menu) {
+    if (!menu) return false;
+    let snapshot = menu.__codexLiveTokenCostProfileMenuPlan;
+    if (!snapshot) {
+      const officialNode = menu.querySelector?.("span.min-w-0.text-xs.leading-dense.text-tertiary.whitespace-normal")
+        || menu.querySelector?.("span.min-w-0.text-xs.leading-dense.text-tertiary.truncate");
+      const knownLabels = new Set(PROFILE_PLAN_OPTIONS.flatMap((option) => [option.value, option.label]));
+      const candidates = Array.from(menu.querySelectorAll?.("*") || []).filter((node) => {
+        if (node.children?.length || node.closest?.("[data-cltc-profile-menu-identity]")) return false;
+        const text = normalizeText(node.textContent, 64);
+        return knownLabels.has(text) || /^(free|go|plus|pro(?:\s+\d+x)?|business|enterprise|edu|staff|founder)$/i.test(text);
+      });
+      const node = officialNode || candidates[0];
+      if (!node) return false;
+      snapshot = { node, text: node.textContent, html: node.innerHTML };
+      menu.__codexLiveTokenCostProfileMenuPlan = snapshot;
+      state.profileIdentityMenus.add(menu);
+    }
+    const label = localProfilePlanLabel();
+    if (snapshot.node.textContent !== label) snapshot.node.textContent = label;
+    return true;
+  }
+
   function restoreSidebarProfileMenuIdentity() {
     for (const menuItem of state.profileIdentityMenuItems) {
       const snapshot = menuItem?.__codexLiveTokenCostProfileMenuIdentity;
@@ -5664,6 +6040,16 @@ const VERSION = "0.7.9";
       }
     }
     state.profileIdentityMenuItems.clear();
+    for (const menu of state.profileIdentityMenus) {
+      const snapshot = menu.__codexLiveTokenCostProfileMenuPlan;
+      if (!snapshot) continue;
+      if (snapshot.node) {
+        if (snapshot.html != null) snapshot.node.innerHTML = snapshot.html;
+        else snapshot.node.textContent = snapshot.text;
+      }
+      try { delete menu.__codexLiveTokenCostProfileMenuPlan; } catch {}
+    }
+    state.profileIdentityMenus.clear();
   }
 
   function restoreSidebarProfileIdentity() {
@@ -5673,7 +6059,11 @@ const VERSION = "0.7.9";
       if (!snapshot) continue;
       if (snapshot.label) snapshot.label.textContent = snapshot.labelText;
       if (snapshot.gear?.style) snapshot.gear.style.display = snapshot.gearDisplay;
-      snapshot.avatar?.remove?.();
+      if (snapshot.compactAvatar) {
+        if (snapshot.compactAvatarHtml != null) snapshot.compactAvatar.innerHTML = snapshot.compactAvatarHtml;
+        else snapshot.compactAvatar.textContent = snapshot.compactAvatarText;
+      }
+      if (snapshot.avatar !== snapshot.compactAvatar) snapshot.avatar?.remove?.();
       try {
         delete button.__codexLiveTokenCostProfileIdentity;
       } catch {
@@ -5684,7 +6074,7 @@ const VERSION = "0.7.9";
   }
 
   function scheduleSidebarProfileIdentitySync(delay = 80) {
-    if (!profileUnlockEnabled() || state.profileIdentitySyncTimer || typeof window.setTimeout !== "function") return;
+    if (state.profileIdentitySyncTimer || typeof window.setTimeout !== "function") return;
     state.profileIdentitySyncTimer = window.setTimeout(() => {
       state.profileIdentitySyncTimer = 0;
       syncSidebarProfileIdentity();
@@ -5852,33 +6242,65 @@ const VERSION = "0.7.9";
   }
 
   function syncProfileAccountInfoQueryCache(queryClient = null) {
-    if (!profileUnlockEnabled()) return false;
     const client = queryClient || state.profileQueryClient || profileQueryClientFromDocument();
     if (!isProfileQueryClient(client) || typeof client.setQueryData !== "function") return false;
+    const synthetic = profileSyntheticEnabled(client);
+    const dataOverride = profileDataOverrideEnabledFor(client);
+    if (!synthetic && !dataOverride) return false;
     state.profileQueryClient = client;
-    client.setQueryData(PROFILE_ACCOUNT_INFO_QUERY_KEY.slice(), profileAccountInfoQueryData());
-    return true;
+    if (synthetic) {
+      client.setQueryData(PROFILE_ACCOUNT_INFO_QUERY_KEY.slice(), profileAccountInfoQueryData());
+      return true;
+    }
+    let updated = false;
+    try {
+      for (const query of client.getQueryCache()?.getAll?.() || []) {
+        if (!Array.isArray(query?.queryKey) || query.queryKey[0] !== PROFILE_ACCOUNT_INFO_QUERY_KEY[0] || query.queryKey[1] !== PROFILE_ACCOUNT_INFO_QUERY_KEY[1]) continue;
+        const source = query.state?.data;
+        if (!source || typeof source !== "object") continue;
+        client.setQueryData(query.queryKey, { ...source, plan: localProfilePrefs().planType });
+        updated = true;
+      }
+    } catch {
+      return updated;
+    }
+    return updated;
   }
 
   function syncProfileUsageQueryCache(queryClient = null) {
-    if (!profileUnlockEnabled()) return false;
     const client = queryClient || state.profileQueryClient || profileQueryClientFromDocument();
     if (!isProfileQueryClient(client) || typeof client.setQueryData !== "function") return false;
     state.profileQueryClient = client;
+    const synthetic = profileSyntheticEnabled(client);
+    const dataOverride = profileDataOverrideEnabledFor(client);
+    if (!synthetic && !dataOverride) return false;
     installProfileQueryCacheObserver(client);
-    let queryKeys = [];
+    let queries = [];
     try {
-      queryKeys = (client.getQueryCache().getAll?.() || [])
-        .map((query) => query?.queryKey)
-        .filter((queryKey) => Array.isArray(queryKey) && queryKey[0] === "profile" && queryKey[1] === "usage")
-        .map((queryKey) => queryKey.slice());
+      queries = client.getQueryCache().getAll?.() || [];
     } catch {
-      queryKeys = [];
+      queries = [];
     }
-    if (!queryKeys.length) queryKeys = [["profile", "usage", "disabled"]];
-    const data = profileUsageQueryData();
-    for (const queryKey of queryKeys) client.setQueryData(queryKey, data);
-    syncProfileAccountInfoQueryCache(client);
+    const profileQueries = queries.filter((query) => isProfileUsageQueryKey(query?.queryKey));
+    const pageQueries = queries.filter((query) => isProfilePageQueryKey(query?.queryKey));
+    const queryKeys = profileQueries.map((query) => query.queryKey);
+    if (!queryKeys.length) {
+      if (!synthetic) return false;
+      queryKeys.push(["profile", "usage", "disabled"]);
+    }
+    if (dataOverride) {
+      const official = profileQueries.find((query) => query?.state?.data)?.state?.data || {};
+      queryKeys.forEach((queryKey) => client.setQueryData(queryKey, applyProfileDataOverride(official)));
+      pageQueries.forEach((query) => {
+        if (query?.state?.data && profilePageDataNeedsOverride(query.state.data)) {
+          client.setQueryData(query.queryKey, profilePageDataOverride(query.state.data));
+        }
+      });
+    } else {
+      const data = profileUsageQueryData();
+      queryKeys.forEach((queryKey) => client.setQueryData(queryKey, data));
+    }
+    if (synthetic) syncProfileAccountInfoQueryCache(client);
     return true;
   }
 
@@ -5902,14 +6324,18 @@ const VERSION = "0.7.9";
     }
     if (typeof client.checkGate === "function") {
       const originalCheckGate = client.__codexLiveTokenCostOriginalCheckGate || client.checkGate.bind(client);
-      client.checkGate = (name, options) => (profileUnlockEnabled() && name === PROFILE_GATE_ID ? true : originalCheckGate(name, options));
+      client.checkGate = (name, options) => {
+        const active = stickyBridge();
+        return (active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && name === PROFILE_GATE_ID ? true : originalCheckGate(name, options);
+      };
       client.__codexLiveTokenCostOriginalCheckGate = originalCheckGate;
     }
     if (typeof client.getFeatureGate === "function") {
       const originalGetFeatureGate = client.__codexLiveTokenCostOriginalGetFeatureGate || client.getFeatureGate.bind(client);
       client.getFeatureGate = (name, options) => {
         const gate = originalGetFeatureGate(name, options);
-        if (!profileUnlockEnabled() || name !== PROFILE_GATE_ID) return gate;
+        const active = stickyBridge();
+        if (active?.profileSyntheticEnabled() !== true || name !== PROFILE_GATE_ID) return gate;
         return gate && typeof gate === "object" ? { ...gate, value: true } : gate;
       };
       client.__codexLiveTokenCostOriginalGetFeatureGate = originalGetFeatureGate;
@@ -5930,7 +6356,7 @@ const VERSION = "0.7.9";
     const originalTest = RegExp.prototype.__codexLiveTokenCostOriginalTest || RegExp.prototype.test;
     if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) return;
     const patchedTest = function codexLiveTokenCostProfileUsernameTest(value) {
-      if (profileUnlockEnabled() && this?.source === "^[a-z0-9._-]+$" && this?.flags === "") return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
+      if (profileSyntheticEnabled() && this?.source === "^[a-z0-9._-]+$" && this?.flags === "") return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
       return originalTest.call(this, value);
     };
     patchedTest.__codexLiveTokenCostProfileUnlock = VERSION;
@@ -6023,7 +6449,7 @@ const VERSION = "0.7.9";
   }
 
   async function invalidateProfileQuery(queryKey) {
-    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return false;
+    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return false;
     if (!state.profileQueryClient) rememberProfileQueryClient(profileQueryClientFromDocument());
     let invalidatedLocally = false;
     try {
@@ -6061,14 +6487,14 @@ const VERSION = "0.7.9";
   }
 
   function scheduleProfileAccountsCheckRefresh() {
-    if (!profileUnlockEnabled()) return Promise.resolve(false);
+    if (!profileSyntheticEnabled()) return Promise.resolve(false);
     const next = chainProfileQueryRefresh(state.profileAccountsRefreshPromise, invalidateProfileAccountsCheckQuery);
     state.profileAccountsRefreshPromise = next.catch(() => false);
     return state.profileAccountsRefreshPromise;
   }
 
   function scheduleProfileUsageRefresh(delay = 1000) {
-    if (!profileUnlockEnabled()) return;
+    if (!profileSyntheticEnabled()) return;
     state.profileUsageRefreshRequests += 1;
     if (window.__CODEX_LIVE_TOKEN_COST_TEST__ || state.profileUsageRefreshTimer || typeof window.setTimeout !== "function") return;
     state.profileUsageRefreshTimer = window.setTimeout(() => {
@@ -6086,17 +6512,21 @@ const VERSION = "0.7.9";
     const originalSafePatch = client.__codexLiveTokenCostOriginalSafePatch || client.safePatch?.bind(client);
     if (typeof originalSafeGet === "function") {
       client.safeGet = async function codexLiveTokenCostProfileSafeGet(url, ...args) {
-        if (profileUnlockEnabled() && isProfileUsageUrl(url)) return profileFetchBodyAsync("GET", null, url);
+        const active = stickyBridge();
+        if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileUsageUrl(url)) return active.profileFetchBodyAsync("GET", null, url);
         const response = await originalSafeGet(url, ...args);
-        return profileUnlockEnabled() && isProfileAccountsCheckUrl(url) ? spoofProfileAccountsCheckPayload(response) : response;
+        return (active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileAccountsCheckUrl(url)
+          ? active.spoofProfileAccountsCheckPayload(response)
+          : response;
       };
       client.__codexLiveTokenCostOriginalSafeGet = originalSafeGet;
     }
     if (typeof originalSafePatch === "function") {
       client.safePatch = async function codexLiveTokenCostProfileSafePatch(url, options, ...args) {
-        if (profileUnlockEnabled() && isProfileUsageUrl(url)) {
-          applyLocalProfilePatch(options);
-          return localProfileResponse();
+        const active = stickyBridge();
+        if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileUsageUrl(url)) {
+          active.applyLocalProfilePatch(options);
+          return active.localProfileResponse();
         }
         return originalSafePatch(url, options, ...args);
       };
@@ -6111,8 +6541,9 @@ const VERSION = "0.7.9";
     if (client.__codexLiveTokenCostProfilePhotoPatch === VERSION) return true;
     const originalPost = client.__codexLiveTokenCostOriginalPost || client.post.bind(client);
     client.post = async function codexLiveTokenCostProfilePhotoPost(url, body, headers, ...args) {
-      if (profileUnlockEnabled() && isProfilePhotoUrl(url)) {
-        await applyLocalProfilePhotoUpload(body);
+      const active = stickyBridge();
+      if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfilePhotoUrl(url)) {
+        await active.applyLocalProfilePhotoUpload(body);
         return { status: 200, body: { asset_pointer: "local-profile-photo" }, headers: { "content-type": "application/json" } };
       }
       return originalPost(url, body, headers, ...args);
@@ -6123,12 +6554,12 @@ const VERSION = "0.7.9";
   }
 
   async function installProfileRequestClientPatch() {
-    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       let patched = 0;
       for (const delay of [0, 200, 700, 1500]) {
         if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
-        if (!profileUnlockEnabled()) return;
+        if (!profileSyntheticEnabled()) return;
         const module = await loadCodexAppModule("request-");
         for (const value of module?.Fct ? [module.Fct] : Object.values(module || {})) {
           if (patchProfileRequestClient(value)) patched += 1;
@@ -6144,10 +6575,10 @@ const VERSION = "0.7.9";
   }
 
   async function installProfilePhotoUploadPatch() {
-    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const module = await loadCodexAppModule("vscode-api-");
-      if (!profileUnlockEnabled()) return;
+      if (!profileSyntheticEnabled()) return;
       let patched = 0;
       const values = Object.values(module || {});
       const photoClientExport = values.find((value) => {
@@ -6178,14 +6609,15 @@ const VERSION = "0.7.9";
     state.profileUiReadinessObserver = null;
   }
 
-  function activateProfileSyntheticUi(componentNames, doc = document) {
-    if (!profileUnlockEnabled()) return false;
+  function activateProfileUiPatch(componentNames, doc = document) {
+    if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) return false;
     const authContext = profileAuthContextFromDocument(doc);
     const queryClient = profileQueryClientFromDocument(doc);
     if (!authContext || !isProfileQueryClient(queryClient) || typeof queryClient.setQueryData !== "function") return false;
     if (!syncProfileUsageQueryCache(queryClient) || !patchProfileReactAuthContext(authContext, componentNames)) return false;
     state.profileSyntheticAuth = true;
     window.__codexLiveTokenCostProfileAuthPatch = VERSION;
+    if (!profileSyntheticEnabled()) return true;
     void Promise.all([
       invalidateProfileQueryWithClient(queryClient, PROFILE_ACCOUNTS_CHECK_QUERY_KEY),
       invalidateProfileQueryWithClient(queryClient, PROFILE_USAGE_QUERY_KEY),
@@ -6196,11 +6628,11 @@ const VERSION = "0.7.9";
   function installProfileUiReadinessCoordinator(componentNames, doc = document) {
     stopProfileUiReadinessCoordinator();
     state.profileSyntheticAuth = false;
-    if (!profileUnlockEnabled() || !componentNames?.length) {
+    if ((!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) || !componentNames?.length) {
       window.__codexLiveTokenCostProfileAuthPatch = "not-found";
       return false;
     }
-    if (activateProfileSyntheticUi(componentNames, doc)) return true;
+    if (activateProfileUiPatch(componentNames, doc)) return true;
     const target = doc.body || doc.documentElement;
     if (!target || typeof MutationObserver !== "function") {
       window.__codexLiveTokenCostProfileAuthPatch = "not-found";
@@ -6208,22 +6640,22 @@ const VERSION = "0.7.9";
     }
     window.__codexLiveTokenCostProfileAuthPatch = "waiting";
     state.profileUiReadinessObserver = new MutationObserver(() => {
-      if (!profileUnlockEnabled()) {
+      if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) {
         stopProfileUiReadinessCoordinator();
         return;
       }
-      if (activateProfileSyntheticUi(componentNames, doc)) stopProfileUiReadinessCoordinator();
+      if (activateProfileUiPatch(componentNames, doc)) stopProfileUiReadinessCoordinator();
     });
     state.profileUiReadinessObserver.observe(target, { childList: true, subtree: true });
     return false;
   }
 
   async function installProfileAuthContextPatch() {
-    if (!profileUnlockEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if ((!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const appUrl = await codexAppAssetUrl("app-initial-");
       const appSource = appUrl ? await fetch(appUrl).then((response) => (response.ok ? response.text() : "")) : "";
-      if (!profileUnlockEnabled()) return;
+      if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) return;
       const componentNames = profileUiComponentNamesFromSource(appSource);
       installProfileUiReadinessCoordinator(componentNames);
     } catch (error) {
@@ -6235,7 +6667,7 @@ const VERSION = "0.7.9";
   }
 
   function isProfileFetchMessage(message) {
-    return profileUnlockEnabled() && message?.type === "fetch" && (isProfileUsageUrl(message.url) || isProfilePhotoUrl(message.url));
+    return profileSyntheticEnabled() && message?.type === "fetch" && (isProfileUsageUrl(message.url) || isProfilePhotoUrl(message.url));
   }
 
   function rememberProfileRequestId(requestId) {
@@ -6393,7 +6825,7 @@ const VERSION = "0.7.9";
   }
 
   function installOfficialProfileUnlock() {
-    if (!profileUnlockEnabled()) return;
+    if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) return;
     const originalFilter = Array.prototype.__codexLiveTokenCostOriginalFilter || Array.prototype.filter;
     if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock !== VERSION) {
       const patchedFilter = function codexLiveTokenCostProfileFilter(callback, thisArg) {
@@ -6452,8 +6884,12 @@ const VERSION = "0.7.9";
   function setProfileUnlockEnabled(value) {
     const enabled = saveProfileUnlockEnabled(Boolean(value));
     if (enabled) {
-      installOfficialProfileUnlock();
-      scheduleProfileUsageRefresh(0);
+      if (profileSyntheticEnabled()) {
+        safeInstallOfficialProfileUnlock();
+        scheduleProfileUsageRefresh(0);
+      } else if (profileDataOverrideEnabledFor()) {
+        syncProfileUsageQueryCache();
+      }
     } else {
       uninstallOfficialProfileUnlock();
       if (state.settingsPanel === "profile") state.settingsPanel = "general";
@@ -6474,34 +6910,6 @@ const VERSION = "0.7.9";
     return candidate;
   }
 
-  function isCodexPlusText(value) {
-    return /(^|[\s([{<])Codex\+\+(?=$|[\s)\]}>:：·|/-])/i.test(normalizeText(value, 240));
-  }
-
-  function findCodexPlusMenu(doc = document) {
-    const byId = doc.getElementById?.(CODEX_PLUS_MENU_ID);
-    if (byId) return byId;
-    const candidates = Array.from(
-      doc.querySelectorAll?.("button,[role='button'],a,header *,nav *,.app-header-tint *,[id*='codex-plus'],[class*='codex-plus']") || [],
-    );
-    return (
-      candidates.find((node) => {
-        const text = normalizeText(`${node.getAttribute?.("aria-label") || ""} ${node.textContent || ""}`, 160);
-        return isCodexPlusText(text);
-      }) || null
-    );
-  }
-
-  function openSettingsEditor() {
-    state.priceEditorOpen = true;
-    state.priceEditorModel = modelName();
-    render(true);
-    const focusModal = () => state.settingsOverlay?.querySelector("[data-action='close-price']")?.focus?.();
-    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(focusModal);
-    else focusModal();
-    if (state.settingsPanel === "usage") void refreshUsageAnalyticsFromHelper();
-  }
-
   function closeSettingsEditor() {
     state.priceEditorOpen = false;
     state.analyticsModel = "";
@@ -6509,72 +6917,120 @@ const VERSION = "0.7.9";
     render(true);
   }
 
-  function headerSettingsLabel(snap = null) {
-    const usage = snap?.dayUsage || todayUsage();
-    return `今日 ${fmtCount(usage.total)}`;
+  function renderEmbeddedSettingsPage(container, options = {}) {
+    state.priceEditorOpen = true;
+    state.embeddedPageContainer = container;
+    container.classList.add("cltc-settings-overlay", "cltc-settings-embedded");
+    const html = pricePopoverHtml(liveSnapshot());
+    if (state.embeddedHtmlSignature === html && container.innerHTML) {
+      return;
+    }
+    state.embeddedHtmlSignature = html;
+    container.innerHTML = html;
+    animateAnalyticsSegments(container, options);
+    for (const button of Array.from(container.querySelectorAll?.(".cltc-settings-nav [data-settings-panel]") || [])) {
+      button.addEventListener("pointerdown", handleSettingsNavPointerDown);
+    }
+    for (const button of Array.from(container.querySelectorAll?.("[data-action='save-profile']") || [])) {
+      button.addEventListener("pointerdown", handleEmbeddedProfileSavePointerDown);
+    }
+    if (container.dataset.cltcEmbeddedBound !== "true") {
+      container.dataset.cltcEmbeddedBound = "true";
+      container.addEventListener("click", handleSettingsClick, true);
+      container.addEventListener("pointerdown", handleEmbeddedControlPointerDown, true);
+      container.addEventListener("change", handleSettingsChange, true);
+      container.addEventListener("keydown", handleSettingsKeydown, true);
+    }
+    if (state.settingsPanel === "usage") void refreshUsageAnalyticsFromHelper();
   }
 
-  function updateHeaderSettingsButton(snap = null) {
-    if (!state.settingsButton) return;
-    const label = headerSettingsLabel(snap);
-    state.settingsButton.textContent = label;
-    state.settingsButton.title = `${label} · Codex Token Cost 设置`;
-    state.settingsButton.setAttribute("aria-label", `${label}，打开 Codex Token Cost 设置`);
-  }
-
-  function ensureHeaderSettingsButton(doc = document) {
-    ensureStyle();
-    const existingButton = doc.getElementById?.(SETTINGS_BUTTON_ID);
-    if (!state.settingsButton && existingButton?.id === SETTINGS_BUTTON_ID) state.settingsButton = existingButton;
-    if (state.settingsButton && state.settingsButton.id !== SETTINGS_BUTTON_ID) state.settingsButton = null;
-    const menu = findCodexPlusMenu(doc);
-    if (!menu?.parentElement) {
-      return state.settingsButton || (existingButton?.id === SETTINGS_BUTTON_ID ? existingButton : null);
-    }
-    if (existingButton && existingButton !== state.settingsButton) existingButton.remove?.();
-    if (!state.settingsButton) {
-      const button = doc.createElement("button");
-      button.id = SETTINGS_BUTTON_ID;
-      button.className = "cltc-header-settings no-drag cursor-interaction text-token-text-tertiary";
-      button.type = "button";
-      button.textContent = headerSettingsLabel();
-      button.title = "Codex Token Cost 设置";
-      button.setAttribute("aria-label", "打开 Codex Token Cost 设置");
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openSettingsEditor();
-      });
-      state.settingsButton = button;
-    }
-    if (!state.settingsButton.style) state.settingsButton.style = {};
-    const menuRect = menu.getBoundingClientRect?.();
-    const floating = menu.parentElement === doc.documentElement || menu.parentElement === doc.body || /codex-plus-menu-floating/i.test(String(menu.className || ""));
-    const setFloating = (value) => {
-      if (state.settingsButton.dataset) state.settingsButton.dataset.floating = value;
-      else state.settingsButton.setAttribute?.("data-floating", value);
+  function animateAnalyticsSegments(root, options = {}) {
+    if (!root) return;
+    const animateAnalyticsSegment = options.analyticsRange === true || options.analyticsMetric === true;
+    if (!animateAnalyticsSegment) return;
+    const selector = options.analyticsRange ? ".cltc-analytics-toolbar .cltc-segmented" : ".cltc-analytics-section-head .cltc-segmented-compact";
+    const segmentGroup = root.querySelector(selector);
+    const fromIndex = Number(options.analyticsSegmentFrom);
+    const toIndex = Number(segmentGroup?.getAttribute("data-cltc-segment-index"));
+    if (!segmentGroup || !Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex < 0 || fromIndex === toIndex) return;
+    segmentGroup.dataset.cltcSegmentFromIndex = String(fromIndex);
+    const activate = () => {
+      state.analyticsSegmentSwitchFrame = 0;
+      if (!segmentGroup.isConnected) return;
+      void segmentGroup.offsetWidth;
+      segmentGroup.removeAttribute("data-cltc-segment-from-index");
     };
-    if (floating && menuRect) {
-      const parent = doc.body || doc.documentElement;
-      if (state.settingsButton.parentElement !== parent) parent.appendChild(state.settingsButton);
-      const gap = 4;
-      setFloating("true");
-      const buttonRect = state.settingsButton.getBoundingClientRect?.();
-      const width = buttonRect?.width || 96;
-      const height = buttonRect?.height || 30;
-      const left = Math.max(gap, menuRect.left - width - gap);
-      state.settingsButton.style.left = `${Math.round(left)}px`;
-      state.settingsButton.style.top = `${Math.round(menuRect.top + (menuRect.height - height) / 2)}px`;
-    } else {
-      const parent = menu.parentElement;
-      setFloating("false");
-      state.settingsButton.style.left = "";
-      state.settingsButton.style.top = "";
-      if (state.settingsButton.parentElement !== parent || menu.nextSibling !== state.settingsButton) {
-        parent.insertBefore(state.settingsButton, menu.nextSibling);
-      }
+    if (typeof window.requestAnimationFrame === "function") state.analyticsSegmentSwitchFrame = window.requestAnimationFrame(activate);
+    else activate();
+  }
+
+  function clearEmbeddedRailActive() {
+    const button = Array.from(document.querySelectorAll?.('nav[data-app-navigation-rail] button[aria-label]') || [])
+      .find((node) => (node.getAttribute('aria-label') || '') === 'Codex Token Cost');
+    if (!button) return;
+    for (const attribute of ['aria-current', 'data-active', 'data-selected']) {
+      if (button.hasAttribute(attribute)) button.removeAttribute(attribute);
     }
-    return state.settingsButton;
+  }
+  function closeEmbeddedSettingsPage() {
+    if (!state.embeddedPageContainer) return closeSettingsEditor();
+    state.priceEditorOpen = false;
+    state.embeddedPageContainer = null;
+    if (embeddedPageClose) embeddedPageClose();
+    else closeSettingsEditor();
+    clearEmbeddedRailActive();
+    return true;
+  }
+
+  function selectSettingsPanel(panel) {
+    if (!["profile", "general", "usage", "pricing"].includes(panel)) return false;
+    state.settingsPanel = panel;
+    renderSettingsOverlay(liveSnapshot(), { animate: true });
+    if (panel === "usage") void refreshUsageAnalyticsFromHelper();
+    return true;
+  }
+
+  function handleSettingsNavPointerDown(event) {
+    if (event.button !== 0) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    selectSettingsPanel(event.currentTarget?.getAttribute?.("data-settings-panel") || "");
+  }
+
+  function handleEmbeddedControlPointerDown(event) {
+    if (event.target?.closest?.("select, input, textarea")) event.stopPropagation?.();
+  }
+
+  function handleEmbeddedProfileSavePointerDown(event) {
+    if (event.button !== 0) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    saveProfilePrefsFromEditor();
+  }
+
+  let embeddedPageClose = null;
+
+  function installCodexPlusEmbeddedPage() {
+    if (state.embeddedPageDispose || state.destroyed) return;
+    if (typeof window.codexPlus?.registerPage !== "function") return;
+    try {
+      state.embeddedPageDispose = window.codexPlus.registerPage(
+        {
+          title: "Codex Token Cost",
+          render: ({ container, close }) => {
+            embeddedPageClose = typeof close === "function" ? close : null;
+            renderEmbeddedSettingsPage(container);
+          },
+        },
+        { navLabel: "Codex Token Cost", icon: SETTINGS_BUTTON_ICON },
+      );
+    } catch {
+      state.embeddedPageDispose = null;
+    }
+  }
+
+  function setButtonAttribute(node, name, value) {
+    if (node.getAttribute?.(name) !== value) node.setAttribute(name, value);
   }
 
   function ensureStyle() {
@@ -6716,6 +7172,10 @@ const VERSION = "0.7.9";
       }
       #${ROOT_ID} .cltc-fast-mode-icon[hidden] {
         display: none;
+      }
+      [data-model-picker-view] [data-active="false"][aria-hidden="true"] {
+        visibility: hidden !important;
+        pointer-events: none !important;
       }
       #${ROOT_ID} .cltc-cadenced-shimmer {
         --cltc-shimmer-text-primary: var(--cltc-muted);
@@ -6881,7 +7341,9 @@ const VERSION = "0.7.9";
         --cltc-surface-secondary: var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a));
         --cltc-popover: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
         --cltc-input: var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
+        --cltc-sidebar-surface: var(--cltc-surface-secondary);
         --cltc-hover: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)));
+        --cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)));
         --cltc-shadow: light-dark(rgba(0, 0, 0, .18), rgba(0, 0, 0, .48));
         --cltc-primary: var(--color-token-text-primary, light-dark(#171717, #f4f4f5));
         --cltc-primary-text: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
@@ -6890,7 +7352,7 @@ const VERSION = "0.7.9";
         --cltc-warning: var(--color-token-warning, #b45309);
         --cltc-chart-blue: var(--color-token-charts-blue, #3b82f6);
         --cltc-chart-purple: var(--color-token-charts-purple, #8b5cf6);
-        --cltc-focus-ring: var(--color-token-focus-ring, color-mix(in srgb, var(--cltc-text) 16%, transparent));
+        --cltc-focus-ring: var(--color-token-focus-border, light-dark(rgba(0, 122, 204, .76), rgba(131, 195, 255, .76)));
         --cltc-font-family: var(--font-family-sans, var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif));
         --cltc-radius-sm: var(--radius-md, 6px);
         --cltc-radius-control: var(--radius-lg, 8px);
@@ -6930,15 +7392,18 @@ const VERSION = "0.7.9";
         --cltc-muted: #a1a1aa;
         --cltc-border: #3f3f46;
         --cltc-border-subtle: #323238;
-        --cltc-surface: #18181b;
-        --cltc-surface-secondary: #27272a;
-        --cltc-popover: #18181b;
-        --cltc-input: #18181b;
+        --cltc-surface: rgb(22, 22, 22);
+        --cltc-surface-secondary: rgb(30, 30, 30);
+        --cltc-popover: rgb(22, 22, 22);
+        --cltc-input: rgb(22, 22, 22);
+        --cltc-sidebar-surface: rgb(30, 30, 30);
         --cltc-hover: rgba(255, 255, 255, .08);
+        --cltc-active: rgba(255, 255, 255, .08);
         --cltc-shadow: rgba(0, 0, 0, .48);
         --cltc-primary: #f4f4f5;
         --cltc-primary-text: #18181b;
         --cltc-danger: #f97066;
+        --cltc-focus-ring: var(--color-token-focus-border, rgba(131, 195, 255, .76));
         color-scheme: dark;
       }
       .cltc-settings-modal {
@@ -7052,8 +7517,7 @@ const VERSION = "0.7.9";
       #${ROOT_ID} .cltc-button,
       #${ROOT_ID} .cltc-price-head button,
       #${ROOT_ID} .cltc-price-actions button,
-      .cltc-settings-overlay button,
-      .cltc-header-settings {
+      .cltc-settings-overlay button {
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out),
@@ -7075,13 +7539,12 @@ const VERSION = "0.7.9";
       #${ROOT_ID} .cltc-button:active,
       #${ROOT_ID} .cltc-price-head button:active,
       #${ROOT_ID} .cltc-price-actions button:active,
-      .cltc-settings-overlay button:active,
-      .cltc-header-settings:active {
+      .cltc-settings-overlay button:active {
         transform: scale(.97);
       }
       .cltc-settings-overlay .cltc-settings-shell {
         display: grid;
-        grid-template-columns: 176px minmax(0, 1fr);
+        grid-template-columns: max-content minmax(0, 1fr);
         min-height: 0;
         overflow: hidden;
       }
@@ -7090,15 +7553,13 @@ const VERSION = "0.7.9";
         flex-direction: column;
         min-width: 0;
         padding: 18px 10px;
-        border-right: 1px solid var(--cltc-border-subtle);
-        background: color-mix(in srgb, var(--cltc-surface-secondary) 62%, var(--cltc-popover));
+        background: var(--cltc-sidebar-surface);
       }
       .cltc-settings-overlay .cltc-settings-footer {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        margin-top: auto;
         padding: 12px 10px 0;
         color: var(--cltc-muted);
         font-size: 11px;
@@ -7127,7 +7588,7 @@ const VERSION = "0.7.9";
       }
       .cltc-settings-overlay .cltc-settings-nav button:focus-visible,
       .cltc-settings-overlay .cltc-settings-nav button[data-active="true"] {
-        background: var(--cltc-hover);
+        background: var(--cltc-active);
         color: var(--cltc-text);
         outline: none;
       }
@@ -7137,6 +7598,15 @@ const VERSION = "0.7.9";
       }
       .cltc-settings-overlay .cltc-settings-nav button[data-active="true"] {
         font-weight: 600;
+      }
+      .cltc-settings-overlay button:focus-visible {
+        outline: 2px solid var(--cltc-focus-ring);
+        outline-offset: 2px;
+      }
+      .cltc-settings-overlay button:disabled {
+        cursor: not-allowed;
+        opacity: .5;
+        pointer-events: none;
       }
       .cltc-settings-overlay .cltc-settings-content {
         min-width: 0;
@@ -7269,7 +7739,7 @@ const VERSION = "0.7.9";
       }
       #${ROOT_ID} .cltc-price-row[data-active="true"],
       .cltc-settings-overlay .cltc-price-row[data-active="true"] {
-        background: var(--cltc-hover);
+        background: var(--cltc-active);
         font-weight: 650;
       }
       .cltc-settings-overlay .cltc-price-table-head {
@@ -7401,7 +7871,7 @@ const VERSION = "0.7.9";
       }
       #${ROOT_ID} .cltc-profile-select,
       .cltc-settings-overlay .cltc-profile-select {
-        appearance: base-select;
+        appearance: auto;
         cursor: pointer;
       }
       #${ROOT_ID} .cltc-price-field[data-profile-locked],
@@ -7418,7 +7888,7 @@ const VERSION = "0.7.9";
       }
       #${ROOT_ID} .cltc-profile-select::picker(select),
       .cltc-settings-overlay .cltc-profile-select::picker(select) {
-        appearance: base-select;
+        appearance: auto;
         margin-top: 5px;
         padding: 5px;
         border: 1px solid var(--cltc-border);
@@ -7637,6 +8107,52 @@ const VERSION = "0.7.9";
         border: 0;
         opacity: 0;
         pointer-events: none;
+      }
+      .cltc-settings-overlay .cltc-analytics-control-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--cltc-muted);
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .cltc-settings-overlay .cltc-analytics-control {
+        min-height: 32px;
+        min-width: 112px;
+        padding: 5px 9px;
+        border: 1px solid var(--cltc-border);
+        border-radius: var(--cltc-radius-sm);
+        background: var(--cltc-input);
+        color: var(--cltc-text);
+        font: inherit;
+      }
+      .cltc-settings-overlay .cltc-analytics-control:focus-visible {
+        outline: 2px solid var(--cltc-focus-ring);
+        outline-offset: 2px;
+      }
+      .cltc-settings-overlay .cltc-analytics-date-range {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .cltc-settings-overlay .cltc-analytics-date-range[hidden] {
+        display: none;
+      }
+      .cltc-settings-overlay .cltc-analytics-date-range .cltc-analytics-control {
+        min-width: 132px;
+      }
+      .cltc-settings-overlay .cltc-analytics-filter,
+      .cltc-settings-overlay .cltc-analytics-filter,
+      .cltc-settings-overlay .cltc-analytics-expand,
+      .cltc-settings-overlay .cltc-analytics-degraded {
+        min-height: 30px;
+        padding: 5px 9px;
+        border: 0;
+        border-radius: var(--cltc-radius-sm);
+        background: transparent;
+        color: var(--cltc-muted);
+        cursor: pointer;
+        font: inherit;
       }
       .cltc-settings-overlay .cltc-analytics-filter {
         flex: 0 1 auto;
@@ -7870,8 +8386,7 @@ const VERSION = "0.7.9";
         .cltc-settings-overlay .cltc-settings-row button:hover,
         .cltc-settings-overlay .cltc-settings-row .cltc-link-button:hover,
         .cltc-settings-overlay .cltc-price-row:hover,
-        .cltc-settings-overlay .cltc-analytics-model-row:hover,
-        .cltc-header-settings:hover {
+        .cltc-settings-overlay .cltc-analytics-model-row:hover {
           background: var(--cltc-hover);
         }
         .cltc-settings-overlay .cltc-settings-nav button:hover {
@@ -7891,8 +8406,7 @@ const VERSION = "0.7.9";
         .cltc-settings-overlay button[data-variant="primary"]:hover {
           background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
         }
-        .cltc-settings-overlay .cltc-segmented button:hover,
-        .cltc-settings-overlay .cltc-date-range-trigger:hover {
+        .cltc-settings-overlay .cltc-analytics-control:hover {
           background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
@@ -7974,12 +8488,10 @@ const VERSION = "0.7.9";
         #${ROOT_ID} .cltc-price-head button,
         #${ROOT_ID} .cltc-price-actions button,
         .cltc-settings-overlay button,
-        .cltc-header-settings,
         #${ROOT_ID} .cltc-button:active,
         #${ROOT_ID} .cltc-price-head button:active,
         #${ROOT_ID} .cltc-price-actions button:active,
-        .cltc-settings-overlay button:active,
-        .cltc-header-settings:active {
+        .cltc-settings-overlay button:active {
           transition: none;
           transform: none;
         }
@@ -7992,9 +8504,6 @@ const VERSION = "0.7.9";
         .cltc-settings-overlay .cltc-sync-status[data-cltc-status-pulse="true"] {
           transition: none;
           opacity: 1;
-        }
-        .cltc-settings-overlay .cltc-segmented::before {
-          transition: none;
         }
         .cltc-settings-overlay .cltc-toggle-field input,
         .cltc-settings-overlay .cltc-toggle-field input:active,
@@ -8010,42 +8519,58 @@ const VERSION = "0.7.9";
           transition: opacity var(--cltc-duration-press) var(--cltc-ease-out), visibility 0s linear var(--cltc-duration-press);
         }
       }
-      .cltc-header-settings {
-        --cltc-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-        --cltc-duration-press: 160ms;
-        --cltc-muted: var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa));
-        --cltc-hover: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)));
-        box-sizing: border-box;
-        color-scheme: light dark;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-width: 72px;
-        height: 30px;
-        margin-left: 4px;
-        padding: 0 8px;
-        border: 0;
-        border-radius: 7px;
+      .cltc-settings-overlay.cltc-settings-embedded {
+        --cltc-text: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#111827, #f4f4f5)));
+        --cltc-muted: var(--codex-plus-text-tertiary, var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa)));
+        --cltc-border: var(--codex-plus-border, var(--color-token-border-light, light-dark(#d1d5db, #3f3f46)));
+        --cltc-border-subtle: var(--codex-plus-border-subtle, var(--color-token-border-light, light-dark(#e5e7eb, #323238)));
+        --cltc-surface: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
+        --cltc-surface-secondary: var(--codex-plus-bg-secondary, var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a)));
+        --cltc-popover: var(--codex-plus-bg-elevated, var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b))));
+        --cltc-input: var(--codex-plus-bg-primary, var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b))));
+        --cltc-hover: var(--codex-plus-bg-hover, var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08))));
+        --cltc-active: var(--codex-plus-bg-selected, var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08))));
+        --cltc-primary: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#171717, #f4f4f5)));
+        --cltc-primary-text: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
+        --cltc-danger: var(--codex-plus-danger, light-dark(#b42318, #f97066));
+        --cltc-success: var(--codex-plus-success, var(--color-token-success, #10a37f));
+        --cltc-warning: var(--codex-plus-warning, var(--color-token-warning, #b45309));
+        --cltc-focus-ring: var(--codex-plus-focus, var(--color-token-focus-border, light-dark(rgba(0, 122, 204, .76), rgba(131, 195, 255, .76))));
+        position: static;
+        inset: auto;
+        z-index: auto;
+        display: block;
+        align-items: initial;
+        justify-content: initial;
+        width: 100%;
+        height: 100%;
+        padding: 0;
+        overflow: auto;
         background: transparent;
-        color: var(--cltc-muted);
-        cursor: pointer;
-        pointer-events: auto;
-        -webkit-app-region: no-drag;
-        white-space: nowrap;
-        font: 13px/18px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        letter-spacing: 0;
       }
-      .cltc-header-settings[data-floating="true"] {
-        position: fixed;
-        z-index: 2147483647;
-        margin-left: 0;
+      .cltc-settings-overlay.cltc-settings-embedded .cltc-settings-modal {
+        width: 100%;
+        height: 100%;
+        max-height: none;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        background: transparent;
+        transform: none;
+        opacity: 1;
       }
-      .cltc-header-settings:focus-visible {
-        background: var(--cltc-hover);
-        outline: none;
+      .cltc-settings-overlay.cltc-settings-embedded .cltc-settings-shell {
+        height: 100%;
+      }
+      .cltc-settings-overlay.cltc-settings-embedded .cltc-price-head {
+        display: none;
       }
     `;
     document.head?.appendChild(style);
+  }
+
+  function codexPlusScriptKey() {
+    return normalizeText(window.codexPlus?.script?.key, 120) || "user:market-codex-live-token-cost.js";
   }
 
   function ensureRoot() {
@@ -8057,17 +8582,22 @@ const VERSION = "0.7.9";
       cleanupDuplicateRoots();
       return null;
     }
+    let rootChanged = false;
     if (!state.root) {
       state.root = document.createElement("div");
       state.root.id = ROOT_ID;
+      state.root.setAttribute("data-codex-plus-ext", codexPlusScriptKey());
       state.root.addEventListener("click", (event) => {
         handleSettingsClick(event);
       });
+      rootChanged = true;
     }
     state.root.dataset.cltcVersion = VERSION;
     if (state.root.parentElement !== composer.parentElement || state.root.nextElementSibling !== composer) {
       composer.parentElement.insertBefore(state.root, composer);
+      rootChanged = true;
     }
+    if (rootChanged) syncHubVisibility(state.root);
     cleanupDuplicateRoots(state.root);
     return state.root;
   }
@@ -8080,7 +8610,7 @@ const VERSION = "0.7.9";
 
   function handleSettingsClick(event) {
     if (event.target?.classList?.contains("cltc-settings-overlay")) {
-      closeSettingsEditor();
+      closeEmbeddedSettingsPage();
       return;
     }
     const panelButton = event.target.closest?.("[data-settings-panel]");
@@ -8163,14 +8693,10 @@ const VERSION = "0.7.9";
       startNewPriceModel();
       return;
     }
-    if (event.target.closest?.("[data-action='close-price']")) {
-      closeSettingsEditor();
-      return;
-    }
   }
 
   function settingsEditorRoot() {
-    return state.settingsOverlay || state.root;
+    return state.settingsOverlay || document.querySelector?.(".cltc-settings-embedded") || (state.embeddedPageContainer?.querySelector ? state.embeddedPageContainer : state.root);
   }
 
   function rootPriceModel() {
@@ -8288,26 +8814,12 @@ const VERSION = "0.7.9";
   function saveProfilePrefsFromEditor(rootOverride, options = {}) {
     const root = rootOverride || settingsEditorRoot();
     if (!root) return false;
-    const emailField = root.querySelector("[data-profile-field='email']");
-    if (!emailField) return false;
-    const email = normalizeText(emailField.value, 128);
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      setProfileSaveStatus("邮箱格式无效", "error");
-      syncProfileSaveStatus(options);
-      return false;
-    }
     const planType = root.querySelector("[data-profile-field='planType']")?.value;
     const planCustom = root.querySelector("[data-profile-field='planCustom']")?.value;
     const selectedPlan = planType === "custom" ? planCustom : planType;
     const plan = normalizeProfilePlan(selectedPlan, planCustom);
     try {
-      saveLocalProfilePrefs({
-        ...localProfilePrefs(),
-        email,
-        accountStructure: "personal",
-        planType: plan.planType,
-        planLabel: plan.planLabel,
-      }, { profileEditor: true });
+      saveLocalProfilePrefs({ ...localProfilePrefs(), planType: plan.planType, planLabel: plan.planLabel });
     } catch (error) {
       setProfileSaveStatus(error?.message || "保存失败", "error");
       syncProfileSaveStatus(options);
@@ -8317,7 +8829,6 @@ const VERSION = "0.7.9";
     syncProfileSaveStatus(options);
     return true;
   }
-
   function setCcSwitchSyncStatus(message) {
     state.ccSwitchSyncStatus = normalizeText(message, 160);
     const status = settingsEditorRoot()?.querySelector("[data-field='cc-switch-sync-status']");
@@ -8390,7 +8901,7 @@ const VERSION = "0.7.9";
         <label class="cltc-toggle-field">
           <span>
             <strong>启用本地 Profile 解锁</strong>
-            <small>关闭后停止资料伪装与 Profile 补丁；如界面未完全恢复，请重启 Codex。</small>
+            <small>API 模式使用本地资料伪装；官方账号模式只覆盖资料页统计，不改变登录状态。</small>
           </span>
           <input type="checkbox" data-misc-field="profileUnlockEnabled"${profileUnlockEnabled() ? " checked" : ""}>
         </label>
@@ -8427,22 +8938,6 @@ const VERSION = "0.7.9";
           <p>这些资料只保存在本地，用于 Codex 个人资料与账号菜单。</p>
         </div>
         <div class="cltc-price-grid">
-          <label class="cltc-price-field cltc-price-field-full">
-            <span>邮箱</span>
-            <input class="cltc-price-input" data-profile-field="email" type="email" value="${escapeHtml(prefs.email)}">
-            <small class="cltc-profile-field-note">官方新版本的账号菜单不再显示邮箱；这里修改的是本地伪装资料。</small>
-          </label>
-          <label class="cltc-price-field" data-profile-locked title="新版本不再允许全局伪装账号">
-            <span>账号类型</span>
-            <select class="cltc-profile-select" data-profile-field="accountStructure" disabled aria-disabled="true">
-              <option value="personal" selected>个人账户</option>
-              <option value="workspace">工作区账户</option>
-            </select>
-          </label>
-          <label class="cltc-price-field" data-profile-locked title="新版本不再允许全局伪装账号">
-            <span>空间名称</span>
-            <input class="cltc-price-input" data-profile-field="workspaceName" type="text" value="${escapeHtml(prefs.workspaceName)}" placeholder="Codex Workspace" disabled aria-disabled="true">
-          </label>
           <label class="cltc-price-field">
             <span>Plan 类型</span>
             <select class="cltc-profile-select" data-profile-field="planType">
@@ -8454,8 +8949,7 @@ const VERSION = "0.7.9";
             <span>自定义</span>
             <input class="cltc-price-input" data-profile-field="planCustom" type="text" value="${escapeHtml(customValue)}" placeholder="Team Enterprise">
           </label>
-        </div>
-        <div class="cltc-price-actions">
+        </div>        <div class="cltc-price-actions">
           <button type="button" data-action="save-profile" data-variant="primary">保存更改</button>
         </div>
       </section>
@@ -8538,7 +9032,6 @@ const VERSION = "0.7.9";
       <div class="cltc-settings-modal" role="dialog" aria-modal="true" aria-label="Codex Token Cost 设置" data-price-model="${escapeHtml(model)}" data-settings-active="${panel}">
         <div class="cltc-price-head">
           <span class="cltc-price-title">Codex Token Cost</span>
-          <button type="button" data-action="close-price" aria-label="关闭">×</button>
         </div>
         <div class="cltc-settings-shell">
           <aside class="cltc-settings-sidebar">
@@ -8822,7 +9315,8 @@ const VERSION = "0.7.9";
 
   async function openAnalyticsCalendar() {
     destroyAnalyticsCalendar();
-    const input = state.settingsOverlay?.querySelector?.("[data-analytics-date-input]");
+    const root = settingsEditorRoot();
+    const input = root?.querySelector?.("[data-analytics-date-input]");
     if (!input) return false;
     try {
       const flatpickr = await ensureFlatpickr();
@@ -8842,7 +9336,7 @@ const VERSION = "0.7.9";
         showMonths: window.matchMedia?.("(max-width: 680px)")?.matches ? 1 : 2,
         disableMobile: true,
         allowInput: false,
-        appendTo: state.settingsOverlay,
+        appendTo: root,
         onChange(selectedDates) {
           if (selectedDates.length !== 2) return;
           state.analyticsCustomStart = localDateKey(selectedDates[0]);
@@ -8860,7 +9354,7 @@ const VERSION = "0.7.9";
       state.analyticsCalendar.open();
       return true;
     } catch (error) {
-      const trigger = state.settingsOverlay?.querySelector?.("[data-action='open-analytics-calendar']");
+      const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
       const message = normalizeText(error?.message || error, 160) || "日期选择器不可用";
       if (trigger) {
         trigger.textContent = message;
@@ -8869,7 +9363,6 @@ const VERSION = "0.7.9";
       return false;
     }
   }
-
   function syncAnalyticsTimer() {
     if (!state.priceEditorOpen || state.settingsPanel !== "usage") {
       stopAnalyticsTimer();
@@ -8897,7 +9390,7 @@ const VERSION = "0.7.9";
   function handleSettingsKeydown(event) {
     if (event.key === "Escape") {
       event.preventDefault?.();
-      closeSettingsEditor();
+      closeEmbeddedSettingsPage();
       return;
     }
     if (event.key === "Tab" && trapSettingsFocus(event)) return;
@@ -8965,6 +9458,17 @@ const VERSION = "0.7.9";
   }
 
   function renderSettingsOverlay(snap, options = {}) {
+    if (state.embeddedPageContainer) {
+      renderEmbeddedSettingsPage(state.embeddedPageContainer, options);
+      return;
+    }
+    // 设置界面只以嵌入式页面存在；旧浮层 modal 路径不再允许创建，避免异常实例残留旧弹窗。
+    if (state.priceEditorOpen) {
+      state.settingsOverlay?.remove?.();
+      state.settingsOverlay = null;
+      state.settingsOverlayCloseTimer = 0;
+      return;
+    }
     const animate = options.animate === true;
     const animateAnalyticsSegment = options.analyticsRange === true || options.analyticsMetric === true;
     if (state.analyticsSegmentSwitchFrame) {
@@ -8973,7 +9477,6 @@ const VERSION = "0.7.9";
     }
     if (!state.priceEditorOpen) {
       cancelSettingsFocusFrame();
-      destroyAnalyticsCalendar();
       stopAnalyticsTimer();
       const overlay = state.settingsOverlay;
       if (!overlay) return;
@@ -8990,7 +9493,6 @@ const VERSION = "0.7.9";
         if (state.priceEditorOpen || state.settingsOverlay !== overlay) return;
         overlay.remove?.();
         state.settingsOverlay = null;
-        state.settingsButton?.focus?.();
       };
       state.settingsOverlayCloseTimer = window.setTimeout(remove, SETTINGS_MODAL_EXIT_MS);
       return;
@@ -9006,6 +9508,7 @@ const VERSION = "0.7.9";
       for (const node of Array.from(document.querySelectorAll?.(".cltc-settings-overlay") || [])) node.remove?.();
       state.settingsOverlay = document.createElement("div");
       state.settingsOverlay.className = "cltc-settings-overlay";
+      state.settingsOverlay.setAttribute("data-codex-plus-ext", codexPlusScriptKey());
       state.settingsOverlay.dataset.cltcEntering = "true";
       state.settingsOverlay.addEventListener("click", handleSettingsClick);
       state.settingsOverlay.addEventListener("change", handleSettingsChange);
@@ -9048,23 +9551,7 @@ const VERSION = "0.7.9";
       if (typeof window.requestAnimationFrame === "function") state.settingsFocusFrame = window.requestAnimationFrame(restoreFocus);
       else restoreFocus();
     }
-    if (animateAnalyticsSegment) {
-      const selector = options.analyticsRange ? ".cltc-analytics-toolbar .cltc-segmented" : ".cltc-analytics-section-head .cltc-segmented-compact";
-      const segmentGroup = state.settingsOverlay.querySelector(selector);
-      const fromIndex = Number(options.analyticsSegmentFrom);
-      const toIndex = Number(segmentGroup?.getAttribute("data-cltc-segment-index"));
-      if (segmentGroup && Number.isInteger(fromIndex) && Number.isInteger(toIndex) && fromIndex >= 0 && fromIndex !== toIndex) {
-        segmentGroup.dataset.cltcSegmentFromIndex = String(fromIndex);
-        const activate = () => {
-          state.analyticsSegmentSwitchFrame = 0;
-          if (!segmentGroup.isConnected) return;
-          void segmentGroup.offsetWidth;
-          segmentGroup.removeAttribute("data-cltc-segment-from-index");
-        };
-        if (typeof window.requestAnimationFrame === "function") state.analyticsSegmentSwitchFrame = window.requestAnimationFrame(activate);
-        else activate();
-      }
-    }
+    animateAnalyticsSegments(state.settingsOverlay, options);
     if (animate && content) {
       content.dataset.cltcSwitching = "true";
       const settle = () => content.removeAttribute("data-cltc-switching");
@@ -9175,6 +9662,7 @@ const VERSION = "0.7.9";
   function updateRollingValueSlot(slot, key, value) {
     const cacheKey = normalizeText(key, 80);
     const text = normalizeText(value, 80);
+    if (slot.__cltcValueText === text) return;
     const previous = state.hubValueCache.get(cacheKey);
     const animate = Boolean(previous && previous !== text);
     let roll = slot.firstElementChild;
@@ -9205,6 +9693,7 @@ const VERSION = "0.7.9";
       return column;
     });
     roll.replaceChildren(...nodes);
+    slot.__cltcValueText = text;
     state.hubValueCache.set(cacheKey, text);
   }
 
@@ -9339,15 +9828,15 @@ const VERSION = "0.7.9";
       <span class="cltc-pill cltc-current-pill"><span class="cltc-current-flow">${cadencedShimmerHtml(currentFlow)}</span></span>
       <span class="cltc-pill">会话 ${valueSlot("session-total")}</span>
       <span class="cltc-pill">${sessionCache}</span>
-      <span class="cltc-pill">花费 ${valueSlot("session-cost")}${textSlot("session-priced-label")}</span>
-      <span class="cltc-pill">今日 ${valueSlot("day-cost")}${textSlot("day-priced-label")}</span>
+      <span class="cltc-pill">花费 ${valueSlot("session-cost")}</span>
+      <span class="cltc-pill">今日 ${valueSlot("day-cost")}</span>
       <span class="cltc-pill" data-cltc-model-pill="true"><span class="cltc-model-label">${officialFastModeIconHtml()}<span class="cltc-model-text">${textSlot("model")}<span class="cltc-model-effort" data-cltc-model-effort="true" data-cltc-text-key="model-effort"></span></span></span></span>
     `;
   }
 
   function ensureHubSkeleton(root, showOutputRate = outputRateVisible()) {
     const outputRateEnabled = Boolean(showOutputRate);
-    root.dataset.cltcOutputRateVisible = String(outputRateEnabled);
+    if (root.dataset.cltcOutputRateVisible !== String(outputRateEnabled)) root.dataset.cltcOutputRateVisible = String(outputRateEnabled);
     const hasOutputRateMarkup = Boolean(root.querySelector?.("[data-cltc-output-rate='average']"));
     if (
       root.dataset.cltcSkeletonVersion === VERSION &&
@@ -9385,10 +9874,10 @@ const VERSION = "0.7.9";
     updateValueSlot(root, "day-cost", fmtMoney(snap.dayCost.value));
     updateTextSlot(root, "session-priced-label", sessionPricedLabel);
     updateTextSlot(root, "day-priced-label", dayPricedLabel);
-    updateTextSlot(root, "model", snap.model);
-    updateTextSlot(root, "model-effort", snap.modelInfo.effort || "");
+    updateTextSlot(root, "model", snap.displayModel || snap.model);
+    updateTextSlot(root, "model-effort", snap.modelInfo.displayEffort || snap.modelInfo.effort || "");
     const effortNode = root.querySelector?.("[data-cltc-model-effort='true']");
-    if (effortNode) effortNode.dataset.effort = snap.modelInfo.effort || "";
+    if (effortNode) setButtonAttribute(effortNode, "data-effort", snap.modelInfo.effort || "");
     const modelPill = root.querySelector?.("[data-cltc-model-pill='true']");
     if (modelPill) modelPill.removeAttribute("title");
     const fastIcon = root.querySelector?.("[data-cltc-fast-mode-icon='true']");
@@ -9398,26 +9887,27 @@ const VERSION = "0.7.9";
       else fastIcon.setAttribute?.("hidden", "");
     }
     root.querySelectorAll?.("[data-cltc-output-rate='live']").forEach((node) => {
-      node.hidden = !snap.rate.visible;
+      const hidden = !snap.rate.visible;
+      if (node.hidden !== hidden) node.hidden = hidden;
     });
     root.querySelectorAll?.("[data-cltc-output-rate='average']").forEach((node) => {
-      node.hidden = !snap.averageRate.visible;
+      const hidden = !snap.averageRate.visible;
+      if (node.hidden !== hidden) node.hidden = hidden;
     });
   }
 
   function render(force = false) {
+    if (state.destroyed) return;
     if (!force && state.priceEditorOpen && state.settingsOverlay?.contains(document.activeElement) && document.activeElement?.closest?.(".cltc-settings-modal")) {
       return;
     }
     state.lastRenderAt = Date.now();
-    ensureHeaderSettingsButton();
     const root = ensureRoot();
     if (!root) return;
     const snap = liveSnapshot();
-    updateHeaderSettingsButton(snap);
     const sessionPricedLabel = costPricedLabel(snap.sessionCost, snap.session);
     const dayPricedLabel = costPricedLabel(snap.dayCost, snap.dayUsage);
-    root.dataset.running = String(snap.running);
+    if (root.dataset.running !== String(snap.running)) root.dataset.running = String(snap.running);
     ensureHubSkeleton(root, snap.outputRateEnabled);
     updateHubContent(root, snap, sessionPricedLabel, dayPricedLabel);
       syncCadencedShimmer(snap.running);
@@ -9427,6 +9917,7 @@ const VERSION = "0.7.9";
     }
 
   function scheduleRender(delay = 0) {
+    if (state.destroyed) return;
     if (state.renderTimer) return;
     const wait = Math.max(delay, RENDER_THROTTLE_MS - (Date.now() - state.lastRenderAt), 0);
     state.renderTimer = window.setTimeout(() => {
@@ -9436,6 +9927,30 @@ const VERSION = "0.7.9";
   }
 
   function handleSettingsChange(event) {
+    const analyticsPreset = event.target?.closest?.("[data-analytics-preset]");
+    if (analyticsPreset) {
+      state.analyticsPreset = ["today", "7d", "30d", "custom"].includes(analyticsPreset.value) ? analyticsPreset.value : "today";
+      renderSettingsOverlay(liveSnapshot(), { animate: false });
+      return;
+    }
+    const analyticsMetric = event.target?.closest?.("[data-analytics-metric]");
+    if (analyticsMetric) {
+      state.analyticsMetric = analyticsMetric.value === "cost" ? "cost" : "tokens";
+      renderSettingsOverlay(liveSnapshot(), { animate: false });
+      return;
+    }
+    const analyticsDate = event.target?.closest?.("[data-analytics-start], [data-analytics-end]");
+    if (analyticsDate) {
+      const start = state.settingsOverlay?.querySelector?.("[data-analytics-start]")?.value || "";
+      const end = state.settingsOverlay?.querySelector?.("[data-analytics-end]")?.value || "";
+      state.analyticsCustomStart = start;
+      state.analyticsCustomEnd = end;
+      if (parseLocalDateInput(start) && parseLocalDateInput(end) && parseLocalDateInput(end) >= parseLocalDateInput(start)) {
+        state.analyticsPreset = "custom";
+        renderSettingsOverlay(liveSnapshot(), { animate: false });
+      }
+      return;
+    }
     const hubToggle = event.target?.closest?.("[data-misc-field='hubVisible']");
     if (hubToggle) {
       saveHubVisible(Boolean(hubToggle.checked));
@@ -9458,6 +9973,11 @@ const VERSION = "0.7.9";
   }
 
   function handleDocumentPointerDown(event) {
+    if (state.embeddedPageContainer) {
+      if (state.embeddedPageContainer.contains?.(event.target)) return;
+      closeEmbeddedSettingsPage();
+      return;
+    }
     if (state.priceEditorOpen && !state.root?.contains(event.target) && !state.settingsOverlay?.contains(event.target)) {
       state.priceEditorOpen = false;
       state.analyticsModel = "";
@@ -9472,7 +9992,7 @@ const VERSION = "0.7.9";
     async function wrappedFetch(input, init) {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
-      if (profileUnlockEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url))) {
+      if (profileSyntheticEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url))) {
         return new Response(JSON.stringify(await profileFetchBodyAsync(method, init?.body)), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -9766,6 +10286,25 @@ const VERSION = "0.7.9";
     }, 1500);
   }
 
+  function scheduleProfileQueryClientDiscovery(retry = 0) {
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__ || state.profileQueryClient || state.profileQueryClientDiscoveryTimer || retry > 4) return;
+    state.profileQueryClientDiscoveryTimer = window.setTimeout(() => {
+      state.profileQueryClientDiscoveryTimer = 0;
+      const client = profileQueryClientFromDocument();
+      if (client) {
+        rememberProfileQueryClient(client);
+        if (profileSyntheticEnabled() || profileDataOverrideEnabledFor(client)) {
+          safeInstallOfficialProfileUnlock();
+          scheduleProfileUsageRefresh(0);
+        } else {
+          syncProfileUsageQueryCache(client);
+        }
+        return;
+      }
+      scheduleProfileQueryClientDiscovery(retry + 1);
+    }, retry === 0 ? 0 : 250 * retry);
+  }
+
   function installLocalCapture() {
     installLocalFetchCapture();
     installLocalXhrCapture();
@@ -9773,8 +10312,27 @@ const VERSION = "0.7.9";
     installLocalMessageCapture();
   }
 
+  function installProfileQueryClientObserver() {
+    if (state.profileQueryClientDiscoveryObserver || window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof MutationObserver !== "function") return;
+    const target = document.body || document.documentElement;
+    if (!target) return;
+    state.profileQueryClientDiscoveryObserver = new MutationObserver(() => {
+      if (state.profileQueryClient) return;
+      const client = profileQueryClientFromDocument();
+      if (!client) return;
+      rememberProfileQueryClient(client);
+      if (profileSyntheticEnabled() || profileDataOverrideEnabledFor(client)) {
+        safeInstallOfficialProfileUnlock();
+        scheduleProfileUsageRefresh(0);
+      } else {
+        syncProfileUsageQueryCache(client);
+      }
+    });
+    state.profileQueryClientDiscoveryObserver.observe(target, { childList: true, subtree: true });
+  }
+
   function start() {
-    if (state.started) return;
+    if (state.started || state.destroyed) return;
     state.started = true;
     loadLocalLedger();
     cleanupAutoZeroPriceModels();
@@ -9785,9 +10343,12 @@ const VERSION = "0.7.9";
     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     installOfficialModelObserver();
     installTaskRunningObserver();
-    if (profileUnlockEnabled()) installOfficialProfileUnlock();
+    scheduleProfileQueryClientDiscovery();
+    installProfileQueryClientObserver();
+    if ((profileSyntheticEnabled() || profileDataOverrideEnabledFor()) && state.profileQueryClient) safeInstallOfficialProfileUnlock();
     installHubVisibilityObserver();
-    if (profileUnlockEnabled()) scheduleProfileUsageRefresh(0);
+    if (profileSyntheticEnabled() && state.profileQueryClient) scheduleProfileUsageRefresh(0);
+    installCodexPlusEmbeddedPage();
     refreshLocalHelperStatsOnStart();
     startCcSwitchStartupSync();
     render();
@@ -9802,8 +10363,11 @@ const VERSION = "0.7.9";
 
   function destroy() {
     state.started = false;
+    state.destroyed = true;
     stopProfileUiReadinessCoordinator();
     stopSidebarProfileIdentitySync();
+    state.profileUiAuthCacheKey = "";
+    state.profileUiAuthCache = null;
     if (state.renderTimer) window.clearTimeout(state.renderTimer);
     cancelOutputRateRefresh();
     if (state.profileSaveStatusTimer) window.clearTimeout(state.profileSaveStatusTimer);
@@ -9825,8 +10389,8 @@ const VERSION = "0.7.9";
     state.settingsStatusPulseFrame = 0;
     state.analyticsSegmentSwitchFrame = 0;
     stopAnalyticsTimer();
-    destroyAnalyticsCalendar();
     state.hubVisibilityObserver?.disconnect?.();
+    state.profileQueryClientDiscoveryObserver?.disconnect?.();
     state.officialModelObserver?.disconnect?.();
     state.officialModelRootObserver?.disconnect?.();
     state.taskRunningObserver?.disconnect?.();
@@ -9835,6 +10399,7 @@ const VERSION = "0.7.9";
     state.officialModelTrigger = null;
     state.taskRunningObserver = null;
     state.hubVisibilityObserver = null;
+    state.profileQueryClientDiscoveryObserver = null;
     state.profileQueryClient = null;
     stopProfileQueryCacheObserver();
     state.profileAccountsRefreshPromise = null;
@@ -9890,10 +10455,20 @@ const VERSION = "0.7.9";
     clearLocalTurnTimer();
     stopCadencedShimmer();
     state.root?.remove();
-    state.settingsButton?.remove?.();
+    if (typeof state.embeddedPageDispose === "function") {
+      try {
+        state.embeddedPageDispose();
+      } catch {
+        // Best-effort teardown; Codex++ page hosts are rebuilt by the host.
+      }
+      state.embeddedPageDispose = null;
+    }
+    state.embeddedPageContainer = null;
     state.settingsOverlay?.remove?.();
     state.settingsOverlay = null;
     document.getElementById(STYLE_ID)?.remove();
+    if (window.__codexLiveTokenCostActiveBridge === state.activeBridge) delete window.__codexLiveTokenCostActiveBridge;
+    state.activeBridge = null;
     delete window.__codexLiveTokenCost;
     if (window.__codexLiveTokenCostVersion === VERSION) delete window.__codexLiveTokenCostVersion;
   }
@@ -9923,7 +10498,6 @@ const VERSION = "0.7.9";
     refreshProfileData,
     mergeHelperStats,
     debugSessionState,
-    openAnalyticsCalendar,
   };
 
   if (window.__CODEX_LIVE_TOKEN_COST_TEST__) {
@@ -9978,9 +10552,6 @@ const VERSION = "0.7.9";
       mainEditable,
       isMainComposerSurfaceTarget,
       findComposerBox,
-      isCodexPlusText,
-      findCodexPlusMenu,
-      ensureHeaderSettingsButton,
       readTokenUsage,
       liveSnapshot,
       locationSessionKey,
@@ -10015,6 +10586,8 @@ const VERSION = "0.7.9";
       usageAnalyticsHtml,
       analyticsChartBuckets,
       refreshUsageAnalyticsFromHelper,
+      renderEmbeddedSettingsPage,
+      installCodexPlusEmbeddedPage,
       todayUsage,
       todayCost,
       inspectLocalPayload,
@@ -10050,6 +10623,12 @@ const VERSION = "0.7.9";
       helperStatusText,
       profileUsageRefreshRequests: () => state.profileUsageRefreshRequests,
       profileUnlockEnabled,
+      profileSyntheticEnabled,
+      profileDataOverrideEnabledFor,
+      applyProfileDataOverride,
+      isRealChatgptAccount,
+      profileRealChatgptCached,
+      refreshProfileRealChatgptCache,
       saveProfileUnlockEnabled,
       setProfileUnlockEnabled,
       installLocalFetchCapture,
@@ -10096,6 +10675,7 @@ const VERSION = "0.7.9";
       profileAuthContextFromFiberNode,
       profileAuthContextFromDocument,
       isProfileQueryClient,
+      rememberProfileQueryClient,
       profileQueryClientFromFiberNode,
       profileQueryClientFromDocument,
       chainProfileQueryRefresh,
@@ -10106,6 +10686,7 @@ const VERSION = "0.7.9";
       patchProfileRequestClient,
       patchProfilePhotoUploadClient,
       profileUsageQueryData,
+      profilePageDataOverride,
       profileAccountInfoQueryData,
       syncProfileAccountInfoQueryCache,
       syncProfileUsageQueryCache,
@@ -10123,7 +10704,27 @@ const VERSION = "0.7.9";
     };
   }
 
-  if (profileUnlockEnabled()) installOfficialProfileUnlock();
+  state.activeBridge = {
+    profileSyntheticEnabled,
+    profileDataOverrideEnabledFor,
+    profileFetchBodyAsync,
+    localProfileResponse,
+    applyLocalProfilePatch,
+    applyLocalProfilePhotoUpload,
+    spoofProfileAccountsCheckPayload,
+    profileUiAuthContextValue,
+  };
+  window.__codexLiveTokenCostActiveBridge = state.activeBridge;
+
+  if ((profileSyntheticEnabled() || profileDataOverrideEnabledFor()) && state.profileQueryClient) safeInstallOfficialProfileUnlock();
+
+  // Codex++ only hot-reloads in place when every loaded script registered a cleanup during
+  // initialization; otherwise it reloads the whole page.
+  try {
+    window.codexPlus?.onCleanup?.(destroy);
+  } catch {
+    // Older Codex++ builds without the extension API keep the page-reload behavior.
+  }
 
   scheduleStart();
 })();
