@@ -658,6 +658,135 @@ const rolloutTurnRow = {
   assert.equal(syncMiss.busy, false);
   assert.ok(String(syncMiss.status).includes("未找到会话记录"), "miss status expected: " + syncMiss.status);
 
+  // --- 10. usage sync: app-server auto channel (silent backfill, no picker) ---
+  // auto mode without a usable channel stays quiet: no picker, no throw
+  const autoQuiet = await api.usageSyncRun({ auto: true });
+  assert.equal(autoQuiet.busy, false);
+  assert.ok(String(autoQuiet.status).startsWith("自动同步暂不可用"), "quiet auto status expected: " + autoQuiet.status);
+
+  // root derivation from rollout paths (visible + archived, extended-length prefix stripped)
+  assert.equal(
+    api.usageSyncRootFromRolloutPath("\\\\?\\C:\\Users\\ovo\\.codex\\sessions\\2026\\10\\15\\rollout-2026-10-15T14-49-58-01a13e53-2008-71c0-b385-bb92f2431c54.jsonl"),
+    "C:\\Users\\ovo\\.codex",
+  );
+  assert.equal(api.usageSyncRootFromRolloutPath("C:\\Users\\x\\.codex\\archived_sessions\\rollout-1.jsonl.zst"), "C:\\Users\\x\\.codex");
+  assert.equal(api.usageSyncRootFromRolloutPath("C:\\Users\\x\\sessions\\rollout-1.jsonl"), "");
+  assert.equal(api.usageSyncRootFromRolloutPath(""), "");
+  assert.equal(api.usageSyncJoinPath("C:\\Users\\x\\.codex\\", "sessions"), "C:\\Users\\x\\.codex\\sessions");
+  assert.deepEqual(Array.from(api.usageSyncBase64ToBytes("aGVsbG8=")), Array.from(Buffer.from("hello", "utf8")));
+
+  const autoStartedUnix = Date.parse("2026-07-02T09:00:00.000Z") / 1000;
+  const autoCompletedUnix = Date.parse("2026-07-02T09:01:30.000Z") / 1000;
+  const autoRolloutText =
+    [
+      JSON.stringify({ timestamp: "2026-07-02T09:00:00.000Z", type: "session_meta", payload: { session_id: "01auto-thread", cwd: "C:\\proj" } }),
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "auto-turn-1", model: "gpt-5.5", effort: "medium" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "auto-turn-1", started_at: autoStartedUnix } }),
+      JSON.stringify({ timestamp: "2026-07-02T09:00:20.000Z", type: "event_msg", payload: { type: "token_count", info: { last_token_usage: { input_tokens: 300, cached_input_tokens: 50, output_tokens: 25, total_tokens: 325 } } } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "auto-turn-1", duration_ms: 90000, completed_at: autoCompletedUnix } }),
+    ].join("\n") + "\n";
+  const autoFileName = "rollout-2026-07-02T09-00-00-01auto-thread.jsonl";
+  const autoDir = "C:\\Users\\auto\\.codex";
+  const autoFilePath = `${autoDir}\\sessions\\2026\\07\\02\\${autoFileName}`;
+  const autoModifiedAt = 1751450000000;
+  const autoEntries = new Map([
+    [`${autoDir}\\sessions`, [{ fileName: "2026", isDirectory: true }]],
+    [`${autoDir}\\sessions\\2026`, [{ fileName: "07", isDirectory: true }]],
+    [`${autoDir}\\sessions\\2026\\07`, [{ fileName: "02", isDirectory: true }]],
+    [`${autoDir}\\sessions\\2026\\07\\02`, [{ fileName: autoFileName, isFile: true }]],
+    [`${autoDir}\\archived_sessions`, []],
+  ]);
+  const autoRequests = [];
+  const autoClient = {
+    hostId: "local",
+    async sendRequest(method, params) {
+      autoRequests.push({ method, params });
+      if (method === "thread/list") return { data: [{ id: "01auto-thread", path: `\\\\?\\${autoFilePath}` }] };
+      if (method === "fs/readDirectory") {
+        if (!autoEntries.has(params.path)) throw new Error("ENOENT " + params.path);
+        return { entries: autoEntries.get(params.path) };
+      }
+      if (method === "fs/getMetadata") {
+        if (params.path !== autoFilePath) throw new Error("ENOENT " + params.path);
+        return { isFile: true, modifiedAtMs: autoModifiedAt };
+      }
+      if (method === "fs/readFile") {
+        if (params.path !== autoFilePath) throw new Error("ENOENT " + params.path);
+        return { dataBase64: Buffer.from(autoRolloutText, "utf8").toString("base64") };
+      }
+      throw new Error("unexpected app-server method: " + method);
+    },
+  };
+
+  // client discovery through the Codex++ native host client map (WeakRef entry)
+  context.__codexPlusNativeHostClients = new Map([["local", { hostId: "local", ref: { deref: () => autoClient } }]]);
+  assert.equal(api.usageSyncResolveClient(), autoClient);
+  assert.equal(api.usageSyncResolveClient(), autoClient, "resolved client must be cached");
+  assert.equal(await api.usageSyncResolveCodexRoot(autoClient), autoDir);
+
+  // collector: directory walk + metadata + base64 read + decode + parse
+  const autoCollect = await api.usageSyncCollectRowsViaAppServer(autoClient, { root: autoDir });
+  assert.equal(autoCollect.scannedFiles, 1);
+  assert.equal(autoCollect.parsedFiles, 1);
+  assert.equal(autoCollect.readErrors.length, 0);
+  assert.equal(autoCollect.rows.length, 1);
+  const autoRow = autoCollect.rows[0];
+  assert.equal(autoRow.turnId, "auto-turn-1");
+  assert.equal(autoRow.sessionKey, "local:01auto-thread");
+  assert.equal(autoRow.callCount, 1);
+  assert.equal(autoRow.usage.total_tokens, 325);
+  assert.equal(autoRow.durationMs, 90000);
+  const autoStampKey = `sessions/2026/07/02/${autoFileName}`;
+  const autoStamp = autoCollect.nextStamps[autoStampKey];
+  assert.equal(autoStamp.lastModified, autoModifiedAt);
+  assert.equal(autoStamp.size, Buffer.byteLength(autoRolloutText, "utf8"));
+
+  // unchanged metadata is skipped without reading the rollout again
+  const autoReadsBefore = autoRequests.filter((request) => request.method === "fs/readFile").length;
+  const autoStamped = await api.usageSyncCollectRowsViaAppServer(autoClient, {
+    root: autoDir,
+    stamps: { [autoStampKey]: { lastModified: autoModifiedAt, size: Buffer.byteLength(autoRolloutText, "utf8") } },
+  });
+  assert.equal(autoStamped.skippedFiles, 1);
+  assert.equal(autoStamped.rows.length, 0);
+  assert.equal(autoRequests.filter((request) => request.method === "fs/readFile").length, autoReadsBefore, "stamped files must not be re-read");
+
+  // full silent run: no directory handle, no picker, root auto-resolved through the app
+  autoRequests.length = 0;
+  const autoRun = await api.usageSyncRun({ client: autoClient, auto: true });
+  assert.equal(autoRun.busy, false);
+  assert.equal(autoRun.result.imported, 1);
+  assert.equal(autoRun.result.files, 1);
+  assert.ok(String(autoRun.status).startsWith("自动同步完成：写入 1 轮"), "auto status expected: " + autoRun.status);
+  assert.ok(autoRequests.some((request) => request.method === "thread/list"), "auto run must resolve .codex through the app");
+  assert.ok(autoRequests.some((request) => request.method === "fs/readFile"), "auto run must read rollouts through the app");
+  const autoTurn = api.profileLedgerTurns().find((turn) => turn.turnId === "auto-turn-1");
+  assert.ok(autoTurn, "auto-synced turn must reach the profile ledger");
+  assert.equal(autoTurn.usage.total, 325);
+
+  // rerunning stays idempotent (replace-source import, single ledger turn)
+  const autoRerun = await api.usageSyncRun({ client: autoClient, auto: true });
+  assert.equal(autoRerun.result.imported, 1);
+  assert.equal(api.profileLedgerTurns().filter((turn) => turn.turnId === "auto-turn-1").length, 1);
+
+  // analytics merge: ledger backfill reaches source turns, same turnId / same usage tuple never double counts
+  const mergedBackfill = api.mergeProfileLedgerTurns([]);
+  assert.ok(mergedBackfill.some((turn) => turn.turnId === "auto-turn-1"), "ledger backfill must reach analytics source turns");
+  assert.ok(mergedBackfill.length >= 2, "ledger must contribute multiple turns");
+  const mergedDedupe = api.mergeProfileLedgerTurns([
+    { turnId: "auto-turn-1", threadKey: "local:01auto-thread", usage: { input: 300, cached: 50, output: 25, total: 325 } },
+    { turnId: "kept-turn-1", threadKey: "local:kept-thread", usage: { input: 9, cached: 1, output: 6, total: 15 } },
+  ]);
+  assert.equal(mergedDedupe.filter((turn) => turn.turnId === "auto-turn-1").length, 1, "same turnId must not double count");
+  assert.ok(mergedDedupe.some((turn) => turn.turnId === "kept-turn-1"), "non-duplicate base turns must be preserved");
+  assert.ok(mergedDedupe.length > 2, "non-duplicate ledger turns must still append");
+  const mergedKeyDedupe = api.mergeProfileLedgerTurns([
+    { turnId: "synthetic-twin-1", threadKey: "local:synthetic", usage: { input: 300, cached: 50, output: 25, total: 325 } },
+  ]);
+  assert.equal(mergedKeyDedupe.some((turn) => turn.turnId === "auto-turn-1"), false, "same usage tuple must not double count");
+
+  delete context.__codexPlusNativeHostClients;
+
   console.log("backfill + quota regression tests passed");
 })().catch((error) => {
   setImmediate(() => {

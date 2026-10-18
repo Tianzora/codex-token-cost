@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.9-beta1
+// @version      0.7.10-beta1
 // @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-const VERSION = "0.7.9-beta1";
+const VERSION = "0.7.10-beta1";
   const ROOT_ID = "codex-live-token-cost";
   const STYLE_ID = "codex-live-token-cost-style";
   const FLATPICKR_STYLE_ID = "codex-live-token-cost-flatpickr-style";
@@ -59,6 +59,11 @@ const VERSION = "0.7.9-beta1";
   const USAGE_SYNC_LAST_RESULT_KEY = "__codexLiveTokenCostUsageSyncLastV1";
   const USAGE_SYNC_SOURCE = "codex-usage-backfill";
   const USAGE_SYNC_ROLLOUT_FILE_RE = /\.(jsonl|jsonl\.zst|jsonl\.zstd)$/i;
+  const USAGE_SYNC_AUTO_START_DELAY_MS = 12_000;
+  const USAGE_SYNC_AUTO_INTERVAL_MS = 5 * 60_000;
+  const USAGE_SYNC_AUTO_RETRY_INTERVAL_MS = 20 * 60_000;
+  const USAGE_SYNC_AUTO_MAX_ENTRIES = 8000;
+  const USAGE_SYNC_AUTO_MAX_DEPTH = 6;
   const USAGE_SYNC_USAGE_FIELDS = [
     "input_tokens",
     "cached_input_tokens",
@@ -357,6 +362,10 @@ const VERSION = "0.7.9-beta1";
     usageSyncResult: null,
     usageSyncDirHandle: null,
     usageSyncDbPromise: null,
+    usageSyncClient: null,
+    usageSyncAutoTimer: 0,
+    usageSyncAutoAt: 0,
+    usageSyncAutoFailures: 0,
     analyticsModel: "",
     analyticsModelsExpanded: false,
     analyticsRollup: null,
@@ -3028,6 +3037,32 @@ const VERSION = "0.7.9-beta1";
     return [...(Array.isArray(localTurns) ? localTurns : []), ...extra];
   }
 
+  // 使用统计合并 Profile Ledger（IDB）里的回填数据：turnId 优先去重，其次按用量签名去重，
+  // 避免实时捕获与历史导入的同一轮重复计数。
+  function mergeProfileLedgerTurns(turns) {
+    const base = (Array.isArray(turns) ? turns : []).slice();
+    const ids = new Set();
+    const keys = new Set();
+    for (const turn of base) {
+      const id = normalizeText(turn?.turnId, 240);
+      if (id) ids.add(id);
+      const key = codexppTokenKey(turn);
+      if (key) keys.add(key);
+    }
+    const extra = [];
+    for (const turn of ensureProfileLedgerLoaded().turns || []) {
+      if (!normalizeUsage(turn?.usage).exact) continue;
+      const id = normalizeText(turn?.turnId, 240);
+      if (id && ids.has(id)) continue;
+      const key = codexppTokenKey(turn);
+      if (key && keys.has(key)) continue;
+      if (id) ids.add(id);
+      if (key) keys.add(key);
+      extra.push(turn);
+    }
+    return base.concat(extra);
+  }
+
   function currentSessionTurns(turns, key = currentSessionKey()) {
     const sessionKey = normalizeText(key, 240);
     if (isTransientSessionKey(sessionKey) || !Array.isArray(turns)) return [];
@@ -3717,70 +3752,14 @@ const VERSION = "0.7.9-beta1";
           continue;
         }
         nextStamps[item.path] = { lastModified: loaded.lastModified, size: loaded.size };
-        const fileSummary = { lineErrors: 0 };
-        const thread = usageSyncParseRolloutLines(String(loaded.text).split(/\r?\n/), fileSummary);
-        lineErrors += fileSummary.lineErrors;
-        if (!thread) continue;
-        const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [] };
-        for (const [turnId, record] of thread.turns) {
-          if (!target.turns.has(turnId)) target.turns.set(turnId, record);
-        }
-        if (thread.orphanCalls.length) target.orphanCalls.push(...thread.orphanCalls);
-        threads.set(thread.threadId, target);
-        parsedFiles += 1;
+        const ingested = usageSyncIngestRolloutText(loaded.text, threads);
+        lineErrors += ingested.lineErrors;
+        if (ingested.parsed) parsedFiles += 1;
       } catch (error) {
         readErrors.push(`${item.path}: ${(error && error.message) || error}`);
       }
     }
-
-    const rows = [];
-    for (const [threadId, info] of threads) {
-      for (const record of info.turns.values()) {
-        const row = usageSyncFinalizeTurnRow(threadId, record);
-        if (row) rows.push(row);
-      }
-      if (info.orphanCalls.length) {
-        const orphanRow = usageSyncFinalizeTurnRow(threadId, {
-          turnId: `${threadId}:orphan`,
-          model: "",
-          effort: "",
-          startedAtMs: 0,
-          finishedAtMs: 0,
-          durationMs: 0,
-          calls: info.orphanCalls,
-          skillCounts: new Map(),
-          pluginCounts: new Map(),
-        });
-        if (orphanRow) rows.push(orphanRow);
-      }
-    }
-    rows.sort(
-      (left, right) =>
-        String(left.startedAt).localeCompare(String(right.startedAt)) || String(left.turnId).localeCompare(String(right.turnId)),
-    );
-    const days = new Set();
-    let calls = 0;
-    let tokens = 0;
-    for (const row of rows) {
-      calls += row.callCount || 0;
-      tokens += row.usage?.total_tokens || 0;
-      const day = localDateKey(toTimestampMs(row.startedAt));
-      if (day) days.add(day);
-    }
-    const sortedDays = Array.from(days).sort();
-    return {
-      rows,
-      scannedFiles: files.length,
-      parsedFiles,
-      skippedFiles,
-      readErrors,
-      lineErrors,
-      calls,
-      tokens,
-      firstDay: sortedDays[0] || "",
-      lastDay: sortedDays[sortedDays.length - 1] || "",
-      nextStamps,
-    };
+    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps });
   }
 
   function openUsageSyncDatabase() {
@@ -3905,93 +3884,445 @@ const VERSION = "0.7.9-beta1";
     return null;
   }
 
+  // ---------------------------------------------------------------------------
+  // 自动同步通道：通过 Codex 应用自带的 app-server 接口（fs/readDirectory、
+  // fs/getMetadata、fs/readFile）静默读取本机 .codex 会话，全程无需选择文件夹、
+  // 无弹窗；仅在通道不可用时才回退到手动选择目录。
+  // ---------------------------------------------------------------------------
+
+  function isAppServerSyncClient(value) {
+    return Boolean(
+      value &&
+        typeof value === "object" &&
+        typeof value.sendRequest === "function" &&
+        (typeof value.sendAppServerExtensionRequest === "function" || normalizeText(value.hostId, 40) === "local"),
+    );
+  }
+
+  function appServerSyncClientFromHostMap() {
+    try {
+      const map = globalThis.__codexPlusNativeHostClients;
+      if (!map || typeof map.get !== "function") return null;
+      const hostIds = ["local"];
+      if (typeof map.keys === "function") {
+        for (const key of map.keys()) if (!hostIds.includes(key)) hostIds.push(key);
+      }
+      for (const hostId of hostIds) {
+        const entry = map.get(hostId);
+        const candidates = [
+          entry && entry.ref && typeof entry.ref.deref === "function" ? entry.ref.deref() : null,
+          entry && typeof entry.deref === "function" ? entry.deref() : null,
+          entry,
+        ];
+        for (const candidate of candidates) {
+          if (isAppServerSyncClient(candidate)) return candidate;
+        }
+      }
+    } catch {
+      // Codex++ 未暴露原生 host client 时静默降级
+    }
+    return null;
+  }
+
+  function appServerSyncClientFromFiberNode(node) {
+    if (!node || typeof node !== "object") return null;
+    const fiberKey = Object.keys(node).find((key) => key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
+    for (let fiber = fiberKey ? node[fiberKey] : null; fiber; fiber = fiber.return) {
+      const candidates = [fiber.memoizedProps?.value];
+      for (let dependency = fiber.dependencies?.firstContext; dependency; dependency = dependency.next) candidates.push(dependency.memoizedValue);
+      for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+        candidates.push(hook.memoizedState);
+        candidates.push(hook.memoizedState?.current);
+      }
+      const client = candidates.find((value) => isAppServerSyncClient(value));
+      if (client) return client;
+    }
+    return null;
+  }
+
+  function appServerSyncClientFromDocument(doc = document) {
+    const anchors = [
+      doc.querySelector?.("[data-codex-composer-root]"),
+      doc.querySelector?.("[data-app-action-sidebar-thread-id]"),
+      doc.querySelector?.("main h1, [role='main'] h1, h1"),
+      doc.body,
+    ].filter(Boolean);
+    for (const anchor of anchors) {
+      const client = appServerSyncClientFromFiberNode(anchor);
+      if (client) return client;
+    }
+    return null;
+  }
+
+  function appServerSyncClient() {
+    if (isAppServerSyncClient(state.usageSyncClient)) return state.usageSyncClient;
+    state.usageSyncClient = appServerSyncClientFromHostMap() || appServerSyncClientFromDocument() || null;
+    return state.usageSyncClient;
+  }
+
+  function usageSyncJoinPath(dir, name) {
+    const base = normalizeText(dir, 600).replace(/[\\/]+$/, "");
+    const child = normalizeText(name, 260).replace(/^[\\/]+/, "");
+    return base && child ? `${base}\\${child}` : base || child;
+  }
+
+  function usageSyncRootFromRolloutPath(value) {
+    const text = normalizeText(value, 600).replace(/^\\\\\?\\/, "");
+    const match = text.match(/^(.*[\\/]\.codex)[\\/](?:sessions|archived_sessions)[\\/]/i);
+    return match ? match[1] : "";
+  }
+
+  async function usageSyncResolveCodexRoot(client) {
+    if (!isAppServerSyncClient(client)) return "";
+    for (const archived of [false, true]) {
+      try {
+        const response = await client.sendRequest(
+          "thread/list",
+          { archived, cursor: null, limit: 50, sortKey: "updated_at", useStateDbOnly: true },
+          { priority: "background", source: "plugin_usage_sync" },
+        );
+        for (const item of response?.data || []) {
+          const root = usageSyncRootFromRolloutPath(item?.path);
+          if (root) return root;
+        }
+      } catch {
+        // 列表不可用时继续尝试 archived 与手动回退
+      }
+    }
+    return "";
+  }
+
+  function usageSyncBase64ToBytes(value) {
+    const text = String(value || "");
+    if (!text) return new Uint8Array(0);
+    let binary = "";
+    if (typeof globalThis.atob === "function") {
+      try {
+        binary = globalThis.atob(text);
+      } catch {
+        binary = "";
+      }
+    }
+    if (!binary) {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      const clean = text.replace(/[^A-Za-z0-9+/=]/g, "");
+      const codes = [];
+      for (let index = 0; index < clean.length; index += 4) {
+        const c0 = alphabet.indexOf(clean[index]);
+        const c1 = alphabet.indexOf(clean[index + 1]);
+        if (c0 < 0 || c1 < 0) break;
+        const c2 = alphabet.indexOf(clean[index + 2]);
+        const c3 = alphabet.indexOf(clean[index + 3]);
+        codes.push(((c0 << 2) | (c1 >> 4)) & 0xff);
+        if (c2 >= 0) codes.push(((c1 << 4) | (c2 >> 2)) & 0xff);
+        if (c2 >= 0 && c3 >= 0) codes.push(((c2 << 6) | c3) & 0xff);
+      }
+      return new Uint8Array(codes);
+    }
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+
+  async function usageSyncReadDirectoryViaAppServer(client, path) {
+    const response = await client.sendRequest("fs/readDirectory", { path }, { priority: "background", source: "plugin_usage_sync" });
+    return Array.isArray(response?.entries) ? response.entries : [];
+  }
+
+  async function usageSyncCollectFilesViaAppServer(client, root) {
+    const files = [];
+    let visited = 0;
+    const walk = async (dir, prefix, depth) => {
+      if (depth > USAGE_SYNC_AUTO_MAX_DEPTH || visited > USAGE_SYNC_AUTO_MAX_ENTRIES) return;
+      let entries = [];
+      try {
+        entries = await usageSyncReadDirectoryViaAppServer(client, dir);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        visited += 1;
+        if (visited > USAGE_SYNC_AUTO_MAX_ENTRIES) return;
+        const name = normalizeText(entry?.fileName, 260);
+        if (!name) continue;
+        const child = usageSyncJoinPath(dir, name);
+        if (entry.isDirectory) {
+          await walk(child, `${prefix}${name}/`, depth + 1);
+        } else if (entry.isFile && USAGE_SYNC_ROLLOUT_FILE_RE.test(name)) {
+          files.push({ path: `${prefix}${name}`, absPath: child });
+        }
+      }
+    };
+    await walk(usageSyncJoinPath(root, "sessions"), "sessions/", 0);
+    await walk(usageSyncJoinPath(root, "archived_sessions"), "archived_sessions/", 0);
+    return files;
+  }
+
+  function usageSyncIngestRolloutText(text, threads) {
+    const fileSummary = { lineErrors: 0 };
+    const thread = usageSyncParseRolloutLines(String(text).split(/\r?\n/), fileSummary);
+    if (thread) {
+      const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [] };
+      for (const [turnId, record] of thread.turns) {
+        if (!target.turns.has(turnId)) target.turns.set(turnId, record);
+      }
+      if (thread.orphanCalls.length) target.orphanCalls.push(...thread.orphanCalls);
+      threads.set(thread.threadId, target);
+    }
+    return { parsed: Boolean(thread), lineErrors: fileSummary.lineErrors };
+  }
+
+  function usageSyncFinalizeCollected(files, threads, stats) {
+    const rows = [];
+    for (const [threadId, info] of threads) {
+      for (const record of info.turns.values()) {
+        const row = usageSyncFinalizeTurnRow(threadId, record);
+        if (row) rows.push(row);
+      }
+      if (info.orphanCalls.length) {
+        const orphanRow = usageSyncFinalizeTurnRow(threadId, {
+          turnId: `${threadId}:orphan`,
+          model: "",
+          effort: "",
+          startedAtMs: 0,
+          finishedAtMs: 0,
+          durationMs: 0,
+          calls: info.orphanCalls,
+          skillCounts: new Map(),
+          pluginCounts: new Map(),
+        });
+        if (orphanRow) rows.push(orphanRow);
+      }
+    }
+    rows.sort(
+      (left, right) =>
+        String(left.startedAt).localeCompare(String(right.startedAt)) || String(left.turnId).localeCompare(String(right.turnId)),
+    );
+    const days = new Set();
+    let calls = 0;
+    let tokens = 0;
+    for (const row of rows) {
+      calls += row.callCount || 0;
+      tokens += row.usage?.total_tokens || 0;
+      const day = localDateKey(toTimestampMs(row.startedAt));
+      if (day) days.add(day);
+    }
+    const sortedDays = Array.from(days).sort();
+    return {
+      rows,
+      scannedFiles: files.length,
+      parsedFiles: stats.parsedFiles,
+      skippedFiles: stats.skippedFiles,
+      readErrors: stats.readErrors,
+      lineErrors: stats.lineErrors,
+      calls,
+      tokens,
+      firstDay: sortedDays[0] || "",
+      lastDay: sortedDays[sortedDays.length - 1] || "",
+      nextStamps: stats.nextStamps,
+    };
+  }
+
+  async function usageSyncCollectRowsViaAppServer(client, options = {}) {
+    if (!isAppServerSyncClient(client)) throw new Error("自动同步通道不可用");
+    const root = normalizeText(options.root, 600);
+    if (!root) throw new Error("未定位到本机 .codex 目录");
+    const files = await usageSyncCollectFilesViaAppServer(client, root);
+    files.sort((left, right) => left.path.localeCompare(right.path));
+
+    const stampIndex = options.stamps && typeof options.stamps === "object" ? options.stamps : null;
+    const threads = new Map();
+    const readErrors = [];
+    const nextStamps = {};
+    let parsedFiles = 0;
+    let skippedFiles = 0;
+    let lineErrors = 0;
+    for (let index = 0; index < files.length; index += 1) {
+      const item = files[index];
+      if (typeof options.onProgress === "function") options.onProgress({ index: index + 1, total: files.length, path: item.path });
+      try {
+        const meta = await client.sendRequest("fs/getMetadata", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
+        const lastModified = toCount(meta?.modifiedAtMs) || toCount(meta?.modified_at_ms);
+        const previous = stampIndex ? stampIndex[item.path] : null;
+        if (previous && lastModified && previous.lastModified === lastModified) {
+          skippedFiles += 1;
+          nextStamps[item.path] = previous;
+          continue;
+        }
+        const loaded = await client.sendRequest("fs/readFile", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
+        const bytes = usageSyncBase64ToBytes(loaded?.dataBase64);
+        const text = usageSyncDecodeBytes(bytes);
+        nextStamps[item.path] = { lastModified, size: bytes.length };
+        const ingested = usageSyncIngestRolloutText(text, threads);
+        lineErrors += ingested.lineErrors;
+        if (ingested.parsed) parsedFiles += 1;
+      } catch (error) {
+        readErrors.push(`${item.path}: ${(error && error.message) || error}`);
+      }
+    }
+    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps });
+  }
+
+  async function usageSyncApplyCollected(collected, options = {}) {
+    const auto = options.auto === true;
+    if (!collected.scannedFiles) {
+      state.usageSyncStatus = auto
+        ? "未找到会话记录：请确认本机存在 .codex/sessions 目录"
+        : "未找到会话记录：请选择 .codex 文件夹（通常位于用户主目录）";
+      return;
+    }
+    if (options.dirHandle) {
+      state.usageSyncDirHandle = options.dirHandle;
+      void usageSyncStoreHandle(options.dirHandle);
+    }
+    if (!collected.rows.length) {
+      if (collected.readErrors.length) {
+        state.usageSyncStatus = `同步失败：${collected.readErrors.length} 个会话文件读取失败（${String(collected.readErrors[0]).slice(0, 120)}）`;
+      } else {
+        await usageSyncStoreFileStamps(collected.nextStamps);
+        state.usageSyncResult = {
+          imported: 0,
+          deduped: 0,
+          skipped: 0,
+          files: collected.scannedFiles,
+          skippedFiles: collected.skippedFiles,
+          turns: 0,
+          firstDay: "",
+          lastDay: "",
+          at: Date.now(),
+        };
+        state.usageSyncStatus = collected.skippedFiles
+          ? `已是最新：${collected.skippedFiles} 个会话文件自上次同步后无变化`
+          : "已是最新：没有新的会话记录";
+        saveUsageSyncLastResult(state.usageSyncResult);
+      }
+      return;
+    }
+    const imported = importLocalUsageTurns(collected.rows, {
+      replaceSource: USAGE_SYNC_SOURCE,
+      idbOnly: true,
+      dedupeAgainstLedger: true,
+    });
+    await usageSyncStoreFileStamps(collected.nextStamps);
+    state.usageSyncResult = {
+      imported: imported.imported,
+      deduped: imported.deduped,
+      skipped: imported.skipped,
+      files: collected.scannedFiles,
+      skippedFiles: collected.skippedFiles,
+      turns: collected.rows.length,
+      firstDay: collected.firstDay,
+      lastDay: collected.lastDay,
+      at: Date.now(),
+    };
+    const range = collected.firstDay ? ` · 覆盖 ${collected.firstDay} ~ ${collected.lastDay}` : "";
+    const failures = collected.readErrors.length ? ` · ${collected.readErrors.length} 个文件读取失败` : "";
+    const prefix = auto ? "自动同步完成" : "同步完成";
+    state.usageSyncStatus = `${prefix}：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${failures}`;
+    saveUsageSyncLastResult(state.usageSyncResult);
+  }
+
+  async function usageAutoSyncTick() {
+    if (state.destroyed) return;
+    if (state.usageSyncBusy || document.visibilityState === "hidden") {
+      usageAutoSyncScheduleNext(60_000);
+      return;
+    }
+    let outcome = null;
+    try {
+      outcome = await runUsageSync({ auto: true });
+    } catch {
+      outcome = null;
+    }
+    const status = String(outcome?.status || "");
+    const ready = status.startsWith("自动同步完成") || status.startsWith("已是最新");
+    const notReady = status.startsWith("自动同步暂不可用");
+    state.usageSyncAutoAt = Date.now();
+    state.usageSyncAutoFailures = ready ? 0 : state.usageSyncAutoFailures + 1;
+    const delay =
+      !ready && state.usageSyncAutoFailures >= 3
+        ? USAGE_SYNC_AUTO_RETRY_INTERVAL_MS
+        : notReady
+          ? 2 * 60_000
+          : USAGE_SYNC_AUTO_INTERVAL_MS;
+    usageAutoSyncScheduleNext(delay);
+  }
+
+  function usageAutoSyncScheduleNext(delay = USAGE_SYNC_AUTO_INTERVAL_MS) {
+    if (state.destroyed || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (state.usageSyncAutoTimer) window.clearTimeout(state.usageSyncAutoTimer);
+    state.usageSyncAutoTimer = trackTimer(
+      window.setTimeout(() => {
+        state.usageSyncAutoTimer = 0;
+        void usageAutoSyncTick();
+      }, delay),
+    );
+  }
+
+  function scheduleUsageAutoSync() {
+    if (state.usageSyncAutoTimer || state.destroyed || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!state.usageSyncAutoAt) {
+      usageAutoSyncScheduleNext(USAGE_SYNC_AUTO_START_DELAY_MS);
+      return;
+    }
+    usageAutoSyncScheduleNext();
+  }
+
   async function runUsageSync(options = {}) {
     if (state.usageSyncBusy) return usageSyncTestState();
     state.usageSyncBusy = true;
-    state.usageSyncStatus = "正在同步…";
-    renderSettingsOverlay(liveSnapshot(), { animate: false });
+    state.usageSyncStatus = options.auto ? "正在自动同步…" : "正在同步…";
+    if (!options.auto) renderSettingsOverlay(liveSnapshot(), { animate: false });
     try {
-      let dirHandle = options.dirHandle || (await usageSyncLoadStoredHandle());
-      if (dirHandle && typeof dirHandle.queryPermission === "function") {
-        let permission = "granted";
-        try {
-          permission = await dirHandle.queryPermission({ mode: "read" });
-        } catch {
-          permission = "granted";
-        }
-        if (permission !== "granted") {
-          try {
-            permission = await dirHandle.requestPermission({ mode: "read" });
-          } catch {
-            permission = "denied";
-          }
-        }
-        if (permission !== "granted") dirHandle = null;
-      }
-      if (!dirHandle) {
-        const picker = usageSyncDirectoryPicker();
-        if (!picker) throw new Error("当前环境不支持读取本地会话目录");
-        state.usageSyncStatus = "请选择本机 .codex 数据文件夹…";
-        renderSettingsOverlay(liveSnapshot(), { animate: false });
-        dirHandle = await picker({ id: USAGE_SYNC_PICKER_ID, mode: "read" });
-      }
       const stamps = options.stamps && typeof options.stamps === "object" ? options.stamps : await usageSyncLoadFileStamps();
-      const collected = await usageSyncCollectRows(dirHandle, {
-        stamps,
-        onProgress: ({ index, total }) => {
-          state.usageSyncStatus = `正在同步：读取会话文件 ${index}/${total}…`;
-          if (index === 1 || index === total || index % 8 === 0) renderSettingsOverlay(liveSnapshot(), { animate: false });
-        },
-      });
-      if (!collected.scannedFiles) {
-        state.usageSyncStatus = "未找到会话记录：请选择 .codex 文件夹（通常位于用户主目录）";
+      const requestedClient = options.dirHandle ? null : options.client || appServerSyncClient();
+      const autoClient = isAppServerSyncClient(requestedClient) ? requestedClient : null;
+      const autoRoot = autoClient ? normalizeText(options.root, 600) || (await usageSyncResolveCodexRoot(autoClient)) : "";
+      if (autoClient && autoRoot) {
+        const collected = await usageSyncCollectRowsViaAppServer(autoClient, {
+          root: autoRoot,
+          stamps,
+          onProgress: ({ index, total }) => {
+            state.usageSyncStatus = `正在自动同步：读取会话文件 ${index}/${total}…`;
+            if (!options.auto && (index === 1 || index === total || index % 8 === 0)) renderSettingsOverlay(liveSnapshot(), { animate: false });
+          },
+        });
+        await usageSyncApplyCollected(collected, { auto: options.auto === true });
+      } else if (options.auto) {
+        state.usageSyncStatus = "自动同步暂不可用（未找到 Codex 本地通道）";
       } else {
-        state.usageSyncDirHandle = dirHandle;
-        void usageSyncStoreHandle(dirHandle);
-        if (!collected.rows.length) {
-          if (collected.readErrors.length) {
-            state.usageSyncStatus = `同步失败：${collected.readErrors.length} 个会话文件读取失败（${String(collected.readErrors[0]).slice(0, 120)}）`;
-          } else {
-            await usageSyncStoreFileStamps(collected.nextStamps);
-            state.usageSyncResult = {
-              imported: 0,
-              deduped: 0,
-              skipped: 0,
-              files: collected.scannedFiles,
-              skippedFiles: collected.skippedFiles,
-              turns: 0,
-              firstDay: "",
-              lastDay: "",
-              at: Date.now(),
-            };
-            state.usageSyncStatus = collected.skippedFiles
-              ? `已是最新：${collected.skippedFiles} 个会话文件自上次同步后无变化`
-              : "已是最新：没有新的会话记录";
-            saveUsageSyncLastResult(state.usageSyncResult);
+        let dirHandle = options.dirHandle || (await usageSyncLoadStoredHandle());
+        if (dirHandle && typeof dirHandle.queryPermission === "function") {
+          let permission = "granted";
+          try {
+            permission = await dirHandle.queryPermission({ mode: "read" });
+          } catch {
+            permission = "granted";
           }
-        } else {
-          const imported = importLocalUsageTurns(collected.rows, {
-            replaceSource: USAGE_SYNC_SOURCE,
-            idbOnly: true,
-            dedupeAgainstLedger: true,
-          });
-          await usageSyncStoreFileStamps(collected.nextStamps);
-          state.usageSyncResult = {
-            imported: imported.imported,
-            deduped: imported.deduped,
-            skipped: imported.skipped,
-            files: collected.scannedFiles,
-            skippedFiles: collected.skippedFiles,
-            turns: collected.rows.length,
-            firstDay: collected.firstDay,
-            lastDay: collected.lastDay,
-            at: Date.now(),
-          };
-          const range = collected.firstDay ? ` · 覆盖 ${collected.firstDay} ~ ${collected.lastDay}` : "";
-          const failures = collected.readErrors.length ? ` · ${collected.readErrors.length} 个文件读取失败` : "";
-          state.usageSyncStatus = `同步完成：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${failures}`;
-          saveUsageSyncLastResult(state.usageSyncResult);
+          if (permission !== "granted") {
+            try {
+              permission = await dirHandle.requestPermission({ mode: "read" });
+            } catch {
+              permission = "denied";
+            }
+          }
+          if (permission !== "granted") dirHandle = null;
         }
+        if (!dirHandle) {
+          const picker = usageSyncDirectoryPicker();
+          if (!picker) throw new Error("当前环境不支持读取本地会话目录");
+          state.usageSyncStatus = "请选择本机 .codex 数据文件夹…";
+          renderSettingsOverlay(liveSnapshot(), { animate: false });
+          dirHandle = await picker({ id: USAGE_SYNC_PICKER_ID, mode: "read" });
+        }
+        const collected = await usageSyncCollectRows(dirHandle, {
+          stamps,
+          onProgress: ({ index, total }) => {
+            state.usageSyncStatus = `正在同步：读取会话文件 ${index}/${total}…`;
+            if (index === 1 || index === total || index % 8 === 0) renderSettingsOverlay(liveSnapshot(), { animate: false });
+          },
+        });
+        await usageSyncApplyCollected(collected, { dirHandle });
       }
     } catch (error) {
       const name = (error && error.name) || "";
@@ -6045,10 +6376,12 @@ const VERSION = "0.7.9-beta1";
     const sourceTurns =
       Array.isArray(options.turns)
         ? options.turns
-        : mergeCodexppHistoryTurns(
-            preset === "today"
-              ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
-              : [...localUsageArchiveTurns(), ...state.localLedger],
+        : mergeProfileLedgerTurns(
+            mergeCodexppHistoryTurns(
+              preset === "today"
+                ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
+                : [...localUsageArchiveTurns(), ...state.localLedger],
+            ),
           );
     const turns = analyticsVisibleTurns(sourceTurns);
     const model = options.model ?? state.analyticsModel;
@@ -9587,6 +9920,18 @@ const VERSION = "0.7.9-beta1";
     return `上次同步：写入 ${result.imported} 轮 · 去重 ${result.deduped} · 跳过 ${result.skipped}${range}（${new Date(result.at).toLocaleString()}）`;
   }
 
+  function usageSyncAutoStatusText() {
+    if (state.usageSyncAutoFailures >= 3) return "自动同步：通道暂不可用，将按长间隔自动重试；也可点「同步」立即重试";
+    const last = toCount(state.usageSyncAutoAt);
+    if (last) {
+      const time = new Date(last);
+      const stamp = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+      return `自动同步：已启用 · 上次静默检查 ${stamp}`;
+    }
+    if (!state.usageSyncClient) return "自动同步：启动后会自动检查（首选 Codex 本地通道，无需选择文件夹）";
+    return "自动同步：已连接 Codex 本地通道，无需选择文件夹";
+  }
+
   function usageSyncSectionHtml() {
     const busy = state.usageSyncBusy;
     const statusText = usageSyncStatusText();
@@ -9595,11 +9940,12 @@ const VERSION = "0.7.9-beta1";
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
           <h2>历史数据同步</h2>
-          <p>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量。首次使用需选择一次本机 .codex 数据文件夹，之后点击「同步」即可增量更新；重复同步不会重复计数。</p>
+          <p>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量。默认走自动通道：通过 Codex 应用的本地接口静默读取 .codex 会话（含 .jsonl 与 .jsonl.zst），插件启动后与运行期间自动增量同步，无需选择文件夹；点击「同步」可立即触发一次。仅在自动通道不可用时才需要手动选择 .codex 数据文件夹。重复同步不会重复计数。</p>
         </div>
         <div class="cltc-price-actions cltc-price-actions-left">
           <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>同步</button>
         </div>
+        <p class="cltc-usage-sync-status" data-field="usage-sync-auto">${escapeHtml(usageSyncAutoStatusText())}</p>
         ${statusHtml}
       </section>
     `;
@@ -10909,6 +11255,7 @@ const VERSION = "0.7.9-beta1";
     if (profileSyntheticEnabled() && state.profileQueryClient) scheduleProfileUsageRefresh(0);
     installCodexPlusEmbeddedPage();
     refreshCodexppHistory();
+    scheduleUsageAutoSync();
     render();
     void refreshDefaultPrices();
   }
@@ -10930,6 +11277,8 @@ const VERSION = "0.7.9-beta1";
     state.profileUiAuthCacheKey = "";
     state.profileUiAuthCache = null;
     if (state.renderTimer) window.clearTimeout(state.renderTimer);
+    if (state.usageSyncAutoTimer) window.clearTimeout(state.usageSyncAutoTimer);
+    state.usageSyncAutoTimer = 0;
     cancelOutputRateRefresh();
     if (state.profileSaveStatusTimer) window.clearTimeout(state.profileSaveStatusTimer);
     if (state.settingsOverlayCloseTimer) window.clearTimeout(state.settingsOverlayCloseTimer);
@@ -11188,6 +11537,14 @@ const VERSION = "0.7.9-beta1";
       usageSyncFinalizeTurnRow: (threadId, record) => usageSyncFinalizeTurnRow(threadId, record),
       usageSyncCollectRows: (dirHandle, options) => usageSyncCollectRows(dirHandle, options || {}),
       usageSyncDecodeBytes: (bytes) => usageSyncDecodeBytes(bytes),
+      usageSyncCollectRowsViaAppServer: (client, options) => usageSyncCollectRowsViaAppServer(client, options || {}),
+      usageSyncResolveCodexRoot: (client) => usageSyncResolveCodexRoot(client),
+      usageSyncResolveClient: () => appServerSyncClient(),
+      usageSyncRootFromRolloutPath: (value) => usageSyncRootFromRolloutPath(value),
+      usageSyncJoinPath: (dir, name) => usageSyncJoinPath(dir, name),
+      usageSyncBase64ToBytes: (value) => usageSyncBase64ToBytes(value),
+      usageAutoSyncTick: () => usageAutoSyncTick(),
+      mergeProfileLedgerTurns,
       profileUsageRefreshRequests: () => state.profileUsageRefreshRequests,
       profileUnlockEnabled,
       profileSyntheticEnabled,
