@@ -122,7 +122,7 @@ assert.equal(code.includes('pushState(history.state, "", "/settings/profile")'),
 assert.equal(code.includes("@run-at       document-start"), true);
 assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
-assert.equal(code.includes('const VERSION = "0.7.9-beta1"'), true);
+assert.equal(code.includes('const VERSION = "0.7.10-beta1"'), true);
 assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
 assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
@@ -642,6 +642,23 @@ assert.equal(code.includes("handleProfileFetchResponseEvent"), true);
 assert.equal(code.includes("syncOpenProfileAccountMenuIdentity"), false);
 assert.equal(code.includes("accountTarget.textContent"), false);
 assert.equal(code.includes("data-cltc-profile-account-label"), false);
+assert.equal(code.includes("fs/readDirectory"), true);
+assert.equal(code.includes("fs/readFile"), true);
+assert.equal(code.includes("fs/getMetadata"), true);
+assert.equal(code.includes("__codexPlusNativeHostClients"), true);
+assert.equal(code.includes("function appServerSyncClient"), true);
+assert.equal(code.includes("function usageSyncCollectRowsViaAppServer"), true);
+assert.equal(code.includes("function usageSyncResolveCodexRoot"), true);
+assert.equal(code.includes("function usageSyncRootFromRolloutPath"), true);
+assert.equal(code.includes("function usageSyncBase64ToBytes"), true);
+assert.equal(code.includes("function usageSyncIngestRolloutText"), true);
+assert.equal(code.includes("function usageSyncFinalizeCollected"), true);
+assert.equal(code.includes("function mergeProfileLedgerTurns"), true);
+assert.equal(code.includes("function usageAutoSyncTick"), true);
+assert.equal(code.includes("function scheduleUsageAutoSync"), true);
+assert.equal(code.includes("scheduleUsageAutoSync();"), true);
+assert.equal(code.includes("自动同步暂不可用"), true);
+assert.match(code, /mergeProfileLedgerTurns\(\s*mergeCodexppHistoryTurns\(/);
 
 const listeners = new Map();
 const windowListeners = new Map();
@@ -1357,7 +1374,7 @@ const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   ],
 });
 assert.equal(unavailableCacheWriteHtml.includes("写缓存<strong>未提供</strong>"), true);
-assert.equal(context.__codexLiveTokenCost.version, "0.7.9-beta1");
+assert.equal(context.__codexLiveTokenCost.version, "0.7.10-beta1");
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.extractSessionKeyFromUrl("/thread/thread-1"), "thread-1");
 assert.equal(api.extractSessionKeyFromUrl("/api/conversation?conversationId=thread-1"), "thread-1");
@@ -2637,7 +2654,7 @@ const apiKeyQueryClient = {
       },
     };
     assert.equal(api.installProfileUiReadinessCoordinator(["ProfileFooterHarness"], realChatgptDocument), true);
-    assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.9-beta1");
+    assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.10-beta1");
     assert.equal(api.profileSyntheticAuth(), true);
     const realChatgptPatchedAuth = api.profileUiAuthContextValue(realChatgptAuthContext._currentValue);
     assert.equal(realChatgptPatchedAuth.accountId, "real-chatgpt-account");
@@ -2729,7 +2746,7 @@ delayedProfileButton = {
   },
 };
 profileReadinessObserver.callback([{ addedNodes: [delayedProfileButton] }]);
-assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.9-beta1");
+assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.7.10-beta1");
 assert.equal(api.profileSyntheticAuth(), true);
 assert.equal(profileReadinessObserver.disconnected, true);
 assert.equal(delayedProfileCacheWrites.length > 0, true);
@@ -4948,7 +4965,7 @@ const profileLifecycleTest = Promise.resolve()
     const localMessageHandler = api.localMessageHandler();
     assert.equal(typeof localMessageHandler, "function");
     assert.equal((windowListeners.get("message") || []).length, messageListenersBeforeLocalCapture + 1);
-assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.9-beta1");
+assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.10-beta1");
     context.document.getElementById = () => null;
     context.__codexLiveTokenCost.destroy();
     assert.equal((windowListeners.get("message") || []).includes(localMessageHandler), false);
@@ -5541,7 +5558,7 @@ profileLifecycleTest.then(async () => {
     assert.equal(cleanups.length, 2);
     assert.equal(typeof context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled, "function");
     assert.equal(context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled(), false);
-    assert.equal(context.__codexLiveTokenCostVersion, "0.7.9-beta1");
+    assert.equal(context.__codexLiveTokenCostVersion, "0.7.10-beta1");
 
     assert.equal(cleanups[1](), undefined);
     assert.equal(context.__codexLiveTokenCostActiveBridge, undefined);
