@@ -8664,8 +8664,12 @@ const VERSION = "0.7.10-beta1";
         margin-top: 16px;
       }
       .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading h2 {
-        font-size: 16px;
-        line-height: 22px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading p {
+        font-size: 12px;
+        line-height: 17px;
       }
       .cltc-settings .cltc-settings-section-heading {
         display: grid;
@@ -8841,7 +8845,7 @@ const VERSION = "0.7.10-beta1";
         margin: 0;
         border: 1px solid var(--cltc-border);
         border-radius: var(--cltc-radius-pill);
-        background: var(--cltc-surface-secondary);
+        background: color-mix(in srgb, var(--cltc-text) 16%, transparent);
         cursor: pointer;
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
@@ -8856,9 +8860,10 @@ const VERSION = "0.7.10-beta1";
         width: 14px;
         height: 14px;
         border-radius: var(--cltc-radius-pill);
-        background: var(--cltc-surface);
+        background: var(--cltc-muted);
         box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
-        transition: transform var(--cltc-duration-press) var(--cltc-ease-out);
+        transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
+          background var(--cltc-duration-press) var(--cltc-ease-out);
       }
       #${ROOT_ID} .cltc-toggle-field input:checked,
       .cltc-settings .cltc-toggle-field input:checked {
@@ -8868,6 +8873,7 @@ const VERSION = "0.7.10-beta1";
       #${ROOT_ID} .cltc-toggle-field input:checked::after,
       .cltc-settings .cltc-toggle-field input:checked::after {
         transform: translateX(14px);
+        background: var(--cltc-surface);
       }
       #${ROOT_ID} .cltc-toggle-field input:active,
       .cltc-settings .cltc-toggle-field input:active {
