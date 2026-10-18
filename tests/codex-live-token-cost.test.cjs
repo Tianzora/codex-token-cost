@@ -535,6 +535,7 @@ assert.equal(code.includes("cltc-price-actions-left"), false);
 assert.equal(code.includes(".cltc-settings .cltc-sync-block"), true);
 assert.equal(code.includes(".cltc-usage-sync-status"), false);
 assert.match(code, /\.cltc-settings \.cltc-settings-section \+ \.cltc-settings-section \{/);
+assert.match(code, /\.cltc-settings \.cltc-settings-section \+ \.cltc-settings-section \.cltc-settings-section-heading h2 \{\s*font-size: 16px;\s*line-height: 22px;\s*\}/);
 assert.equal(code.includes('busy ? "正在同步…" : "立即同步"'), true);
 assert.equal(code.includes("已启用 · 上次静默检查"), true);
 assert.equal(code.includes("自动同步：已启用"), false);

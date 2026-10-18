@@ -8663,6 +8663,10 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings .cltc-settings-section + .cltc-settings-section {
         margin-top: 16px;
       }
+      .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading h2 {
+        font-size: 16px;
+        line-height: 22px;
+      }
       .cltc-settings .cltc-settings-section-heading {
         display: grid;
         gap: 4px;
