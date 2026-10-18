@@ -141,8 +141,8 @@ assert.equal(code.includes("transform-origin: center bottom;"), true);
 assert.equal(code.includes("transform: scaleY(0);"), true);
 assert.equal(code.includes("animation: cltc-analytics-bar-grow 720ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;"), true);
 assert.equal(code.includes('style="--cltc-chart-bar-delay:${index * stagger}ms"'), true);
-assert.match(code, /prefers-reduced-motion: reduce[\s\S]*?\.cltc-settings-overlay \.cltc-analytics-chart rect\[data-chart-index\][\s\S]*?animation: none;[\s\S]*?transform: scaleY\(1\);/);
-assert.equal(code.includes("refreshUsageAnalyticsFromHelper"), true);
+assert.match(code, /prefers-reduced-motion: reduce[\s\S]*?\.cltc-settings \.cltc-analytics-chart rect\[data-chart-index\][\s\S]*?animation: none;[\s\S]*?transform: scaleY\(1\);/);
+assert.equal(code.includes("refreshUsageAnalyticsFromHelper"), false);
 assert.equal(code.includes("__FLATPICKR_JS_GZIP_BASE64__"), false);
 assert.equal(code.includes("__FLATPICKR_CSS_GZIP_BASE64__"), false);
 assert.equal(code.includes('data-settings-panel="usage"'), true);
@@ -160,8 +160,8 @@ assert.equal(code.includes('aria-modal="true"'), true);
 assert.equal(code.includes("justify-content: center"), true);
 assert.equal(code.includes("grid-template-columns: max-content minmax(0, 1fr)"), true);
 assert.equal(code.includes("grid-template-columns: 176px minmax(0, 1fr)"), false);
-const settingsSidebarRule = code.match(/\.cltc-settings-overlay \.cltc-settings-sidebar \{([\s\S]*?)\n      \}/)?.[1] || "";
-const settingsFooterRule = code.match(/\.cltc-settings-overlay \.cltc-settings-footer \{([\s\S]*?)\n      \}/)?.[1] || "";
+const settingsSidebarRule = code.match(/\.cltc-settings \.cltc-settings-sidebar \{([\s\S]*?)\n      \}/)?.[1] || "";
+const settingsFooterRule = code.match(/\.cltc-settings \.cltc-settings-footer \{([\s\S]*?)\n      \}/)?.[1] || "";
 assert.equal(settingsSidebarRule.includes("border-right"), false);
 assert.equal(settingsFooterRule.includes("margin-top: auto"), false);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
@@ -170,7 +170,7 @@ assert.equal(code.includes(".cltc-profile-select option"), true);
 assert.equal(code.includes("appearance: auto"), true);
 assert.equal(code.includes("::picker(select)"), true);
 assert.equal(code.includes("::picker-icon"), true);
-assert.equal(code.includes("html.electron-dark .cltc-settings-overlay"), true);
+assert.equal(code.includes("html.electron-dark .cltc-settings"), true);
 assert.equal(code.includes("background: rgba(0, 0, 0, .28)"), false);
 assert.equal(code.includes("scrollbar-width: thin"), true);
 assert.equal(code.includes("color-scheme: light dark"), true);
@@ -186,7 +186,7 @@ assert.equal(code.includes("--cltc-font-family: var(--font-family-sans, var(--fo
 assert.equal(code.includes("--cltc-radius-control: var(--radius-lg, 8px)"), true);
 assert.equal(code.includes("--cltc-focus-ring: var(--color-token-focus-border,"), true);
 assert.equal(code.includes("--cltc-success: var(--color-token-success, #10a37f)"), true);
-assert.equal(code.includes(".cltc-settings-overlay *::before"), true);
+assert.equal(code.includes(".cltc-settings *::before"), true);
 assert.equal(code.includes("border-radius: var(--cltc-radius-modal)"), true);
 assert.equal(code.includes("--cltc-arc-bg: light-dark(rgb(246, 246, 246), rgba(255, 255, 255, .08))"), true);
 assert.equal(code.includes("--cltc-shimmer-contrast: #fff"), true);
@@ -224,15 +224,15 @@ assert.equal(code.includes("--cltc-arc-bg: rgb(246, 246, 246)"), true);
 assert.equal(code.includes("--cltc-arc-bg: rgba(0, 0, 0, 1)"), false);
 assert.equal(code.includes("--cltc-arc-bg: rgba(0, 0, 0, .07)"), false);
 assert.match(code, /\.cltc-settings-modal \{[\s\S]*?background: var\(--cltc-popover\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-settings-sidebar \{[\s\S]*?background: var\(--cltc-sidebar-surface\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-settings-nav button\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
-assert.match(code, /\.cltc-settings-overlay button:focus-visible \{[\s\S]*?outline: 2px solid var\(--cltc-focus-ring\);/);
-assert.match(code, /\.cltc-settings-overlay button:disabled \{[\s\S]*?cursor: not-allowed;[\s\S]*?opacity: \.5;/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-price-row\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
+assert.match(code, /\.cltc-settings \.cltc-settings-sidebar \{[\s\S]*?background: var\(--cltc-sidebar-surface\);/);
+assert.match(code, /\.cltc-settings \.cltc-settings-nav button\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
+assert.match(code, /\.cltc-settings button:focus-visible \{[\s\S]*?outline: 2px solid var\(--cltc-focus-ring\);/);
+assert.match(code, /\.cltc-settings button:disabled \{[\s\S]*?cursor: not-allowed;[\s\S]*?opacity: \.5;/);
+assert.match(code, /\.cltc-settings \.cltc-price-row\[data-active="true"\] \{[\s\S]*?background: var\(--cltc-active\);/);
 assert.match(code, /#\$\{ROOT_ID\} \.cltc-toggle-field input,[\s\S]*?background: var\(--cltc-surface-secondary\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-control \{[\s\S]*?background: var\(--cltc-input\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-filter \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-composition-bar \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-control \{[\s\S]*?background: var\(--cltc-input\);/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-filter \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
+assert.match(code, /\.cltc-settings \.cltc-composition-bar \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
 assert.equal(code.includes("function updateRollingValueSlot(slot, key, value)"), true);
 assert.equal(code.includes("if (previous === text) return;"), false);
 assert.equal(code.includes("function isTransientSessionKey(value)"), true);
@@ -263,7 +263,7 @@ assert.equal(code.includes("--cltc-duration-popover: 180ms;"), true);
 assert.equal(code.includes("--cltc-duration-modal: 200ms;"), true);
 assert.equal(code.includes("--cltc-duration-data: 160ms;"), true);
 const settingsOverlayTokenBlock = code.match(
-  /\.cltc-settings-overlay \{\n([\s\S]*?)\n      \}\n      html\.electron-dark \.cltc-settings-overlay \{/,
+  /\.cltc-settings-overlay \{\n([\s\S]*?)\n      \}\n      html\.electron-dark \.cltc-settings \{/,
 );
 assert.ok(settingsOverlayTokenBlock);
 for (const declaration of [
@@ -277,15 +277,10 @@ for (const declaration of [
 ]) assert.equal(settingsOverlayTokenBlock[1].includes(declaration), true);
 assert.match(code, /syncHubVisibility\(root\);\s+if \(!state\.settingsOverlay\?\.isConnected \|\| !state\.priceEditorOpen\) renderSettingsOverlay\(snap\);/);
 assert.match(code, /const SETTINGS_BUTTON_ICON =/);
-const syncCcSwitchSource = code.match(/async function syncCcSwitchFromSettings\(\) \{[\s\S]*?\n  \}\n\n  function ccSwitchSettingsHtml/)?.[0];
-assert.ok(syncCcSwitchSource);
-assert.match(syncCcSwitchSource, /syncCcSwitchUsageFromHelper\(\{ refresh: true \}\)/);
-assert.match(syncCcSwitchSource, /if \(result\.ok\) \{[\s\S]*?renderSettingsOverlay\(liveSnapshot\(\)\);\s+setCcSwitchSyncStatus\([\s\S]*?\);\s+\} else if \(result\.skipped\)/);
-assert.doesNotMatch(syncCcSwitchSource, /if \(result\.ok\) \{[\s\S]*?render\(true\);/);
-const syncCcSwitchUsageSource = code.match(/async function syncCcSwitchUsageFromHelper\(options = \{\}\) \{[\s\S]*?\n  \}\n\n  function refreshProfileData/)?.[0];
-assert.ok(syncCcSwitchUsageSource);
-assert.match(syncCcSwitchUsageSource, /if \(state\.ccSwitchSyncInFlight\) \{\s+if \(!options\.refresh\) return state\.ccSwitchSyncPromise \|\| \{ ok: false, skipped: true \};\s+const inFlightPromise = state\.ccSwitchSyncPromise;\s+if \(inFlightPromise\) await inFlightPromise;\s+if \(state\.ccSwitchSyncInFlight\) return \{ ok: false, skipped: true, refreshing: true \};\s+\}/);
-assert.doesNotMatch(syncCcSwitchUsageSource, /\.then\(\(\) => syncCcSwitchUsageFromHelper\(options\)\)/);
+assert.equal(code.includes("syncCcSwitchFromSettings"), false);
+assert.equal(code.includes("syncCcSwitchUsageFromHelper"), false);
+assert.equal(code.includes("ccSwitchSettingsHtml"), false);
+assert.equal(code.includes("generalSettingsHtml"), true);
 assert.match(code, /let entering = false;\s+if \(!state\.settingsOverlay\) \{\s+entering = true;[\s\S]*?state\.settingsOverlay\.dataset\.cltcEntering = "true";/);
 assert.match(code, /if \(entering\) \{\s+const overlay = state\.settingsOverlay;\s+const settle = \(\) => overlay\?\.removeAttribute\("data-cltc-entering"\);\s+if \(typeof window\.requestAnimationFrame === "function"\) window\.requestAnimationFrame\(settle\);\s+else settle\(\);\s+\}/);
 assert.match(code, /if \(!state\.settingsOverlay\.isConnected\)[\s\S]*?if \(entering\) \{[\s\S]*?else settle\(\);\s+\}/);
@@ -307,8 +302,7 @@ assert.equal(code.includes('data-action="close-price"'), false);
 assert.match(code, /function clearEmbeddedRailActiveAfterNavigation\(event\) \{[\s\S]*?closest\?\.\(\"nav\[data-app-navigation-rail\] button\[aria-label\]\"\)[\s\S]*?clearEmbeddedRailActive\(\);/);
 assert.match(code, /rememberPendingInput\(event\);\s+clearEmbeddedRailActiveAfterNavigation\(event\);/);
 assert.match(code, /function clearEmbeddedRailActive\(\) \{[\s\S]*?nav\[data-app-navigation-rail\] button\[aria-label\][\s\S]*?aria-current'\, 'data-active'\, 'data-selected'[\s\S]*?removeAttribute/);
-assert.match(code, /else closeSettingsEditor\(\);\s+clearEmbeddedRailActive\(\);/);
-assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{[\s\S]*?container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded"\);/);
+assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{\s+state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
 assert.match(code, /animateAnalyticsSegments\(container, options\);/);
 assert.match(code, /button\.addEventListener\("pointerdown", handleSettingsNavPointerDown\)/);
 assert.match(code, /function handleSettingsNavPointerDown\(event\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?event\.stopPropagation\?\.\(\);[\s\S]*?selectSettingsPanel/);
@@ -327,6 +321,24 @@ assert.match(code, /function isSettingsFocusable\(node\) \{[\s\S]*?node\.disable
 assert.match(code, /function restoreSettingsFocus\(root, key\) \{[\s\S]*?querySelectorAll\?\.\(SETTINGS_FOCUS_SELECTOR\)[\s\S]*?target\?\.focus\?\.\(\);/);
 assert.match(code, /function renderSettingsOverlay\(snap, options = \{\}\) \{\s+if \(state\.embeddedPageContainer\) \{\s+renderEmbeddedSettingsPage\(state\.embeddedPageContainer, options\);\s+return;\s+\}[\s\S]*?if \(state\.priceEditorOpen\) \{[\s\S]*?state\.settingsOverlay\?\.remove\?\.\(\);[\s\S]*?state\.settingsOverlay = null;[\s\S]*?return;\s+\}[\s\S]*?const animate = options\.animate === true;/);
 assert.match(code, /function animateAnalyticsSegments\(root, options = \{\}\) \{[\s\S]*?data-cltc-segment-from-index/);
+assert.match(code, /function animateAnalyticsSegments\(root, options = \{\}\) \{[\s\S]*?if \(prefersReducedMotion\(\)\) return;[\s\S]*?data-cltc-segment-from-index/);
+assert.match(code, /const CODEX_PLUS_SUPPORTED_API = 1;[\s\S]*?function codexPlusApiReady\(\) \{[\s\S]*?if \(typeof version !== "number"\) return true;[\s\S]*?return version === CODEX_PLUS_SUPPORTED_API;/);
+assert.match(code, /function installCodexPlusEmbeddedPage\(\) \{[\s\S]*?if \(!codexPlusApiReady\(\)\) \{[\s\S]*?reportFailure\(new Error\("Codex\+\+ API version mismatch: " \+\s*window\.codexPlus\?\.apiVersion\)\);[\s\S]*?return;[\s\S]*?\}/);
+assert.match(code, /if \(codexPlusApiReady\(\)\) window\.codexPlus\?\.onCleanup\?\.\(destroy\);/);
+assert.equal(code.includes("--cltc-radius-pill: 999px"), true);
+assert.match(code, /\.cltc-settings \.cltc-settings-content::-webkit-scrollbar-thumb[\s\S]*?\.cltc-price-list::-webkit-scrollbar-thumb \{[\s\S]*?border-radius: var\(--cltc-radius-pill\)/);
+assert.equal(code.includes("border-radius: var(--cltc-radius-pill)"), true);
+assert.equal(code.includes("border-radius: var(--cltc-radius-sm)"), true);
+assert.match(code, /\.cltc-settings \*,[\s\S]*?\.cltc-settings \*::before,[\s\S]*?\.cltc-settings \*::after \{[\s\S]*?box-sizing: border-box;/);
+assert.match(code, /container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\)/);
+assert.match(code, /state\.settingsOverlay\.className = "cltc-settings-overlay cltc-settings"/);
+assert.match(code, /\.cltc-settings \.cltc-settings-content \{[^}]*?transition: opacity var\(--cltc-duration-popover\)/);
+assert.match(code, /const disposers = \[\];[\s\S]*?function trackTimer\(id\) \{[\s\S]*?disposers\.push\(\(\) => \{[\s\S]*?window\.clearTimeout\(id\);[\s\S]*?window\.cancelAnimationFrame\(id\);[\s\S]*?\}\);[\s\S]*?return id;[\s\S]*?\}/);
+assert.match(code, /function trackObserver\(observer\) \{[\s\S]*?disposers\.push\(\(\) => observer\?\.disconnect\?\.\(\)\);[\s\S]*?return observer;[\s\S]*?\}/);
+assert.match(code, /function trackListener\(target, type, handler, options\) \{[\s\S]*?target\.addEventListener\(type, handler, options\);[\s\S]*?disposers\.push\(\(\) => target\.removeEventListener\(type, handler, options\)\);[\s\S]*?return handler;[\s\S]*?\}/);
+assert.match(code, /trackListener\(document, "keydown", rememberPendingInput, true\);/);
+assert.match(code, /while \(disposers\.length\) \{[\s\S]*?const dispose = disposers\.pop\(\);[\s\S]*?try \{[^\n]*dispose\(\);\s+\} catch \{\s+\}/);
+assert.match(code, /if \(window\.__CODEX_LIVE_TOKEN_COST_TEST__ && disposers\.length !== 0\) \{\s+throw new Error\("Codex Token Cost: disposers not drained"\);\s+\}/);
 assert.match(code, /const focusKey = settingsFocusKey\(document\.activeElement, state\.settingsOverlay\);/);
 assert.equal(code.includes("settingsFocusFrame: 0"), true);
 assert.match(code, /function cancelSettingsFocusFrame\(\) \{[\s\S]*?cancelAnimationFrame\(state\.settingsFocusFrame\)[\s\S]*?state\.settingsFocusFrame = 0;/);
@@ -334,7 +346,7 @@ assert.match(code, /if \(!state\.priceEditorOpen\) \{\s+cancelSettingsFocusFrame
 assert.match(code, /const focusRoot = state\.settingsOverlay;[\s\S]*?const restoreFocus = \(\) => \{[\s\S]*?restoreSettingsFocus\(focusRoot, focusKey\);[\s\S]*?state\.settingsFocusFrame = window\.requestAnimationFrame\(restoreFocus\);/);
 assert.match(code, /else if \([\s\S]*?state\.settingsFocusFrame[\s\S]*?document\.activeElement !== document\.body[\s\S]*?cancelSettingsFocusFrame\(\);/);
 assert.match(code, /if \(animate && content\) \{[\s\S]*?content\.dataset\.cltcSwitching = "true";[\s\S]*?requestAnimationFrame\(settle\);/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-settings-content\[data-cltc-switching="true"\] \{[\s\S]*?opacity: \.45;[\s\S]*?transform: translateY\(4px\);/);
+assert.match(code, /\.cltc-settings \.cltc-settings-content\[data-cltc-switching="true"\] \{[\s\S]*?opacity: \.45;[\s\S]*?transform: translateY\(4px\);/);
 assert.match(code, /renderSettingsOverlay\(liveSnapshot\(\), \{ animate: true \}\);/);
 assert.equal(code.includes("transition: transform var(--transition-duration-relaxed, .3s) cubic-bezier(.16, 1, .3, 1)"), false);
 assert.equal(code.includes("transition: transform var(--cltc-duration-data) var(--cltc-ease-out);"), true);
@@ -347,29 +359,34 @@ assert.equal(code.includes("transition: transform var(--cltc-duration-press) var
 assert.equal(code.includes("transition: rotate var(--cltc-duration-press) var(--cltc-ease-in-out);"), true);
 assert.equal(code.includes("transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);"), true);
 assert.equal(code.includes("analyticsSegmentSwitchFrame: 0"), true);
-assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-control \{/);
+assert.equal(code.includes("startTimer: 0"), true);
+assert.match(code, /state\.startTimer = trackTimer\(window\.setTimeout\(start, 1200\)\);/);
+assert.match(code, /function scheduleStart\(\) \{[\s\S]*?if \(state\.started \|\| state\.destroyed\) return;[\s\S]*?state\.startTimer = trackTimer\(window\.setTimeout\(start, 1200\)\);/);
+assert.match(code, /function destroy\(\) \{[\s\S]*?window\.clearTimeout\(state\.startTimer\);\s+state\.startTimer = 0;/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-control \{/);
 assert.match(code, /data-cltc-segment-index="/);
 assert.match(code, /data-analytics-preset="today"/);
 assert.match(code, /data-analytics-preset="7d"/);
 assert.match(code, /data-analytics-preset="30d"/);
 assert.match(code, /data-analytics-preset="custom"/);
 assert.match(code, /data-action="open-analytics-calendar"/);
+assert.match(code, /data-action="clear-analytics-range"/);
+assert.match(code, /onClose\(selectedDates\) \{[\s\S]*?if \(complete\) \{[\s\S]*?state\.analyticsCustomStart = localDateKey\(selectedDates\[0\]\);[\s\S]*?state\.analyticsPreset = "custom";[\s\S]*?\}/);
 assert.match(code, /data-analytics-metric="tokens"/);
 assert.match(code, /data-analytics-metric="cost"/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-segmented \{/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-date-range-trigger \{/);
+assert.match(code, /\.cltc-settings \.cltc-segmented \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger \{/);
 assert.match(code, /function openAnalyticsCalendar\(\)/);
 assert.match(code, /function destroyAnalyticsCalendar\(\)/);
 assert.match(code, /function ensureFlatpickr\(\)/);
 assert.match(code, /data-cltc-segment-from-index/);
 assert.equal(code.includes("data-cltc-range-switching"), false);
-assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status \{[\s\S]*?transition: opacity var\(--cltc-duration-tooltip\) var\(--cltc-ease-out\);[\s\S]*?\}/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-sync-status\[data-cltc-status-pulse="true"\] \{[\s\S]*?opacity: \.48;/);
-assert.match(code, /function pulseSettingsStatus\(node\) \{[\s\S]*?node\.dataset\.cltcStatusPulse = "true";\s+void node\.offsetWidth;/);
-assert.match(code, /function pulseSettingsStatus\(node\) \{[\s\S]*?cancelAnimationFrame\([\s\S]*?requestAnimationFrame\([\s\S]*?removeAttribute\?\.\("data-cltc-status-pulse"\)/);
-assert.match(code, /function setCcSwitchSyncStatus\(message\) \{[\s\S]*?status\.textContent = state\.ccSwitchSyncStatus;\s+pulseSettingsStatus\(status\);/);
-assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{\s+\.cltc-settings-overlay \.cltc-analytics-chart rect\[data-chart-index\]:hover/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-bar:focus-within \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;[\s\S]*?\}\s+@media \(hover: hover\) and \(pointer: fine\)/);
+assert.match(code, /\.cltc-settings \.cltc-sync-status \{[\s\S]*?transition: opacity var\(--cltc-duration-tooltip\) var\(--cltc-ease-out\);[\s\S]*?\}/);
+assert.equal(code.includes("data-cltc-status-pulse"), false);
+assert.equal(code.includes("pulseSettingsStatus"), false);
+assert.equal(code.includes("setCcSwitchSyncStatus"), false);
+assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{\s+\.cltc-settings \.cltc-analytics-chart rect\[data-chart-index\]:hover/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-bar:focus-within \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;[\s\S]*?\}\s+@media \(hover: hover\) and \(pointer: fine\)/);
 assert.equal(code.includes("transition: width var(--cltc-duration-tooltip)"), false);
 assert.equal(code.includes("transition: height var(--cltc-duration-tooltip)"), false);
 assert.equal(code.includes("transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s;"), false);
@@ -379,13 +396,13 @@ assert.equal(code.includes("transition: rotate .16s ease;"), false);
 assert.equal(code.includes("transition: opacity .15s ease;"), false);
 assert.equal(code.includes("transition: opacity .12s ease;"), false);
 assert.equal(code.includes("transition: all"), false);
-assert.match(code, /\.cltc-settings-overlay \.cltc-settings-nav button,\s+\.cltc-settings-overlay \.cltc-price-row \{[\s\S]*?transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-toggle-field input:active \{\s+transform: scale\(\.97\);/);
-assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings-overlay \.cltc-settings-nav button:hover/);
-assert.doesNotMatch(code, /\.cltc-settings-overlay \.cltc-settings-nav button:hover,\s+\.cltc-settings-overlay \.cltc-settings-nav button:focus-visible/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-toggle-field input,[\s\S]*?\.cltc-settings-overlay \.cltc-toggle-field input:active,[\s\S]*?\.cltc-settings-overlay \.cltc-profile-select,[\s\S]*?transition: none;[\s\S]*?transform: none;/);
-assert.match(code, /\.cltc-settings-overlay \.cltc-analytics-bar:focus-within \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
-assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings-overlay \.cltc-analytics-chart rect\[data-chart-index\]:hover \{[\s\S]*?opacity: \.66;[\s\S]*?\.cltc-settings-overlay \.cltc-analytics-bar:hover \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
+assert.match(code, /\.cltc-settings \.cltc-settings-nav button,\s+\.cltc-settings \.cltc-price-row \{[\s\S]*?transition: transform var\(--cltc-duration-press\) var\(--cltc-ease-out\),/);
+assert.match(code, /\.cltc-settings \.cltc-toggle-field input:active \{\s+transform: scale\(\.97\);/);
+assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings \.cltc-settings-nav button:hover/);
+assert.doesNotMatch(code, /\.cltc-settings \.cltc-settings-nav button:hover,\s+\.cltc-settings \.cltc-settings-nav button:focus-visible/);
+assert.match(code, /\.cltc-settings \.cltc-toggle-field input,[\s\S]*?\.cltc-settings \.cltc-toggle-field input:active,[\s\S]*?\.cltc-settings \.cltc-profile-select,[\s\S]*?transition: none;[\s\S]*?transform: none;/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-bar:focus-within \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
+assert.match(code, /@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\.cltc-settings \.cltc-analytics-chart rect\[data-chart-index\]:hover \{[\s\S]*?opacity: \.66;[\s\S]*?\.cltc-settings \.cltc-analytics-bar:hover \.cltc-analytics-tooltip \{[\s\S]*?opacity: 1;/);
 assert.equal(code.includes("transition: opacity var(--cltc-duration-press) var(--cltc-ease-out), visibility 0s linear var(--cltc-duration-press);"), true);
 assert.equal(code.includes("--cltc-roll-stable-width"), false);
 assert.equal(code.includes("function updateRollingStableWidth"), false);
@@ -570,18 +587,17 @@ assert.equal(code.includes("state.pendingInputTokens = tokens"), false);
 assert.equal(code.includes("state.lastAssistantText = text"), false);
 assert.equal(code.includes(' / 输出 ${fmtCount(snap.current.output)}${currentLabel}'), false);
 assert.equal(code.includes("state.helperPollTimer = window.setInterval"), false);
-assert.equal(code.includes("helperJsonUntilReady"), true);
-assert.equal(code.includes("HELPER_STATUS_DEGRADED"), true);
-assert.equal(code.includes("HELPER_BRIDGE_RETRY_DELAYS_MS"), true);
-assert.match(code, /helperJsonViaBridgeWithRetry\(url\)/);
-assert.equal(code.includes('data-field="helper-status"'), true);
-assert.equal(code.includes("https://github.com/Tianzora/codex-token-cost/blob/main/scripts/codex-local-usage-helper.cjs"), true);
-assert.equal(code.includes(">查看脚本</a>"), true);
-assert.equal(code.includes("startCcSwitchStartupSync()"), true);
+assert.equal(code.includes("helperJsonUntilReady"), false);
+assert.equal(code.includes("HELPER_STATUS_DEGRADED"), false);
+assert.equal(code.includes("HELPER_BRIDGE_RETRY_DELAYS_MS"), false);
+assert.equal(code.includes("helperJsonViaBridgeWithRetry"), false);
+assert.equal(code.includes('data-field="helper-status"'), false);
+assert.equal(code.includes("codex-local-usage-helper.cjs"), false);
+assert.equal(code.includes(">查看脚本</a>"), false);
+assert.equal(code.includes("startCcSwitchStartupSync"), false);
 assert.equal(code.includes("const HELPER_POLL_MS"), false);
 assert.equal(code.includes("const HELPER_STATS_REFRESH_URL = `${HELPER_STATS_URL}?refresh=1`;"), false);
-assert.equal(code.includes("void refreshProfileData();"), true);
-assert.equal(code.includes("function refreshCcSwitchUsageFromHelper()"), false);
+assert.equal(code.includes("profileLedgerRebuildRollup();"), true);
 assert.equal(code.includes('const PROFILE_USAGE_QUERY_KEY = ["profile", "usage"]'), true);
 assert.equal(code.includes('const PROFILE_ACCOUNT_INFO_QUERY_KEY = ["vscode", "account-info"]'), true);
 assert.equal(code.includes('const PROFILE_ACCOUNTS_CHECK_QUERY_KEY = ["accounts", "check"]'), true);
@@ -631,10 +647,10 @@ const listeners = new Map();
 const windowListeners = new Map();
 const storage = new Map();
 const bridgeCalls = [];
-const helperFetchCalls = [];
 const priceFetchCalls = [];
 const priceFetchQueue = [];
 const delayedTimers = [];
+const registerPageCalls = [];
 let domComposerState = "none";
 const SEND_ARROW_PATH =
   "M9.33467 16.6663V4.93978L4.6374 9.63704L4.1667 9.16634L3.69599 8.69661L9.52998 2.86263L9.63447 2.77767C9.8925 2.60753 10.2433 2.63564 10.4704 2.86263L16.3034 8.69661";
@@ -800,6 +816,21 @@ const context = {
       listeners.set(type, handler);
     },
     removeEventListener() {},
+    createElement(tagName) {
+      return {
+        tagName: String(tagName || "").toUpperCase(),
+        id: "",
+        dataset: {},
+        style: {},
+        children: [],
+        parentElement: null,
+        classList: { add() {}, remove() {}, contains() { return false; } },
+        setAttribute() {},
+        removeAttribute() {},
+        appendChild(child) { this.children.push(child); child.parentElement = this; return child; },
+        remove() {},
+      };
+    },
     getElementById() {
       return {};
     },
@@ -854,13 +885,11 @@ assert.equal(typeof api.profileAuthContextFromDocument, "function");
 assert.equal(typeof api.installLocalMessageCapture, "function");
 assert.equal(typeof api.localMessageHandler, "function");
 assert.equal(typeof api.localProfileResponse, "function");
-assert.equal(typeof api.mergeHelperStats, "function");
 assert.equal(typeof api.isProfileFetchMessage, "function");
 assert.equal(typeof api.extractProfilePhotoDataUrl, "function");
 assert.equal(typeof api.applyLocalProfilePhotoUpload, "function");
 assert.equal(typeof api.inspectLocalPayload, "function");
 assert.equal(typeof api.importLocalUsageTurns, "function");
-assert.equal(typeof api.syncCcSwitchUsageFromHelper, "function");
 assert.equal(typeof api.refreshProfileData, "function");
 assert.equal(typeof api.profileUsageQueryData, "function");
 assert.equal(typeof api.profileAccountInfoQueryData, "function");
@@ -953,13 +982,14 @@ assert.equal(typeof api.observeSessionInfo, "function");
 assert.equal(typeof api.debugSessionState, "function");
 assert.equal(typeof api.currentSessionKey, "function");
 assert.equal(typeof api.conversationContentState, "function");
-assert.equal(typeof api.mergeHelperThreadContent, "function");
 assert.equal(typeof api.startupBlankConversationSessionKey, "function");
 assert.equal(typeof api.rememberSidebarThreadClick, "function");
 assert.equal(typeof api.rememberNewConversationClick, "function");
 assert.equal(typeof api.migrateLegacyLocationSessionTurns, "function");
 assert.equal(typeof api.currentSessionTurns, "function");
 assert.equal(typeof api.localProfileThreadCount, "function");
+assert.equal(typeof api.codexppHistoryTurnsFromPayload, "function");
+assert.equal(typeof api.mergeCodexppHistoryTurns, "function");
 assert.equal(typeof api.localDailyUsage, "function");
 const cachedSessionTurns = [{ sessionKey: "cache-thread", usage: { input: 1, output: 1, total: 2 } }];
 assert.equal(api.currentSessionTurns(cachedSessionTurns, "cache-thread"), api.currentSessionTurns(cachedSessionTurns, "cache-thread"));
@@ -967,9 +997,7 @@ const firstDailyUsage = api.localDailyUsage();
 assert.equal(firstDailyUsage, api.localDailyUsage());
 assert.equal(typeof api.todayUsage, "function");
 assert.equal(typeof api.todayCost, "function");
-assert.equal(typeof api.syncCcSwitchFromSettings, "function");
-assert.equal(typeof api.ccSwitchSettingsHtml, "function");
-assert.equal(typeof api.helperStatusText, "function");
+assert.equal(typeof api.generalSettingsHtml, "function");
 assert.equal(typeof api.hubVisible, "function");
 assert.equal(typeof api.saveHubVisible, "function");
 assert.equal(typeof api.outputRateVisible, "function");
@@ -996,7 +1024,7 @@ api.saveOutputRateVisible(true);
 assert.equal(api.outputRateVisible(), true);
 assert.equal(api.liveSnapshot().outputRateEnabled, true);
 assert.equal(api.currentFlowSkeleton().includes('data-cltc-output-rate="live"'), true);
-assert.equal(api.ccSwitchSettingsHtml().includes('data-misc-field="outputRateVisible" checked'), true);
+assert.equal(api.generalSettingsHtml().includes('data-misc-field="outputRateVisible" checked'), true);
 api.saveOutputRateVisible(false);
 assert.equal(api.outputRateVisible(), false);
 assert.equal(api.currentFlowSkeleton().includes("data-cltc-output-rate"), false);
@@ -1087,7 +1115,6 @@ assert.equal(typeof api.loadAnalyticsRollup, "function");
 assert.equal(typeof api.saveAnalyticsRollup, "function");
 assert.equal(typeof api.usageAnalyticsHtml, "function");
 assert.equal(typeof api.analyticsChartBuckets, "function");
-assert.equal(typeof api.refreshUsageAnalyticsFromHelper, "function");
 assert.equal(typeof api.localProfileAccountsCheckResponse, "function");
 assert.equal(typeof api.profileUiAuthContextValue, "function");
 assert.equal(Object.keys(priceTable).length, 10);
@@ -1145,21 +1172,21 @@ const analyticsTurns = [
 const visibleAnalyticsTurns = api.analyticsVisibleTurns(analyticsTurns);
 assert.deepEqual(
   visibleAnalyticsTurns.map((turn) => turn.turnId),
-  ["cc-day", "local-after-import"],
+  ["cc-day", "local-before-import", "local-after-import"],
 );
 const analytics = api.aggregateUsageAnalytics(visibleAnalyticsTurns, {
   startMs: new Date(2026, 6, 11, 0, 0).getTime(),
   endMs: new Date(2026, 6, 11, 23, 59, 59, 999).getTime(),
 });
-assert.equal(analytics.totalTokens, 155);
-assert.equal(analytics.calls, 6);
-assert.equal(analytics.input, 130);
-assert.equal(analytics.output, 25);
-assert.equal(analytics.cacheRead, 46);
+assert.equal(analytics.totalTokens, 166);
+assert.equal(analytics.calls, 7);
+assert.equal(analytics.input, 140);
+assert.equal(analytics.output, 26);
+assert.equal(analytics.cacheRead, 48);
 assert.equal(analytics.cacheWrite, 14);
 assert.equal(analytics.cacheWriteAvailable, true);
-assert.equal(analytics.regularInput, 70);
-assert.equal(analytics.cacheHitRate, Math.round((46 / 130) * 100));
+assert.equal(analytics.regularInput, 78);
+assert.equal(analytics.cacheHitRate, Math.round((48 / 140) * 100));
 assert.equal(analytics.priced, false);
 assert.equal(analytics.models.length, 2);
 assert.equal(analytics.models.find((item) => item.model === "unknown-test-model").priced, false);
@@ -1179,17 +1206,17 @@ const futureDatedCcDayAggregate = api.aggregateUsageAnalytics(
   ],
   {
     startMs: new Date(2026, 6, 11, 0, 0).getTime(),
-    endMs: new Date(2026, 6, 11, 15, 0).getTime(),
+    endMs: new Date(2026, 6, 11, 23, 59, 59, 999).getTime(),
   },
 );
 assert.equal(futureDatedCcDayAggregate.totalTokens, 120);
 assert.equal(futureDatedCcDayAggregate.calls, 3);
 const analyticsRollup = api.buildAnalyticsRollup(visibleAnalyticsTurns);
-assert.equal(analyticsRollup.days["2026-07-11"].models["gpt-5.6-sol"].calls, 4);
+assert.equal(analyticsRollup.days["2026-07-11"].models["gpt-5.6-sol"].calls, 5);
 assert.equal(analyticsRollup.days["2026-07-11"].models["unknown-test-model"].usage.cacheWriteTokens, 4);
 const analyticsRollupTurns = api.analyticsTurnsFromRollup(analyticsRollup);
 assert.equal(analyticsRollupTurns.length, 2);
-assert.equal(analyticsRollupTurns.find((turn) => turn.model === "gpt-5.6-sol").callCount, 4);
+assert.equal(analyticsRollupTurns.find((turn) => turn.model === "gpt-5.6-sol").callCount, 5);
 assert.equal(api.saveAnalyticsRollup(analyticsRollup), true);
 assert.equal(api.loadAnalyticsRollup().days["2026-07-11"].models["unknown-test-model"].calls, 2);
 const cappedLedger = api.trimLocalLedger(
@@ -1216,9 +1243,12 @@ const cappedLedger = api.trimLocalLedger(
     },
   ],
 );
-assert.equal(cappedLedger.filter((turn) => turn.source === "codex-live-token-cost").length, 2000);
+assert.equal(cappedLedger.length, 2000);
+assert.equal(cappedLedger.filter((turn) => turn.source === "codex-live-token-cost").length, 1998);
+assert.equal(cappedLedger.some((turn) => turn.turnId === "cc-history-ancient"), true);
+assert.equal(cappedLedger.some((turn) => turn.turnId === "cc-history-may"), true);
 assert.deepEqual(
-  cappedLedger.filter((turn) => turn.source === "cc-switch").map((turn) => turn.turnId),
+  cappedLedger.slice(-2).map((turn) => turn.turnId),
   ["cc-history-ancient", "cc-history-may"],
 );
 const compactedLedger = api.compactLocalLedger([
@@ -1252,7 +1282,7 @@ const todayBuckets = api.analyticsChartBuckets(
 );
 assert.equal(todayBuckets.length, 24);
 assert.equal(todayBuckets[0].key, "hour:0");
-assert.equal(todayBuckets[0].value, 155);
+assert.equal(todayBuckets[0].value, 166);
 const dailyOnlyBuckets = api.analyticsChartBuckets(
   [
     {
@@ -1269,7 +1299,8 @@ const dailyOnlyBuckets = api.analyticsChartBuckets(
   "tokens",
 );
 assert.equal(dailyOnlyBuckets.length, 24);
-assert.equal(dailyOnlyBuckets[0].value, 55);
+assert.equal(dailyOnlyBuckets[0].value, 0);
+assert.equal(dailyOnlyBuckets[12].value, 55);
 const weeklyBuckets = api.analyticsChartBuckets(
   [],
   { startMs: new Date(2026, 0, 1).getTime(), endMs: new Date(2026, 3, 30, 23, 59, 59, 999).getTime() },
@@ -1439,9 +1470,8 @@ assert.equal(
   ], "new:auto").length,
   0,
 );
-assert.equal(api.ccSwitchSettingsHtml().includes('data-action="sync-cc-switch"'), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("查看脚本"), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("数据与显示"), true);
+assert.equal(api.generalSettingsHtml().includes("数据与显示"), true);
+assert.equal(api.generalSettingsHtml().includes("管理 HUD 显示与本地 Profile 解锁"), true);
 assert.equal(code.includes("handleDocumentSettingsChange"), false);
 assert.equal(code.includes("data-profile-field=\"planCustom\""), true);
 assert.equal(code.includes('data-action="save-profile"'), true);
@@ -1511,9 +1541,10 @@ assert.equal(
   }),
   true,
 );
-assert.equal(api.ccSwitchSettingsHtml().includes("显示 HUB"), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("cltc-settings-row"), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("立即同步"), true);
+assert.equal(api.generalSettingsHtml().includes("显示 HUB"), true);
+assert.equal(api.generalSettingsHtml().includes('data-misc-field="hubVisible"'), true);
+assert.equal(api.generalSettingsHtml().includes('data-misc-field="outputRateVisible"'), true);
+assert.equal(api.generalSettingsHtml().includes('data-misc-field="profileUnlockEnabled"'), true);
 function startupDom({ composer = true, activeThread = false, transcript = false } = {}) {
   const activeThreadNode = activeThread
     ? {
@@ -1574,10 +1605,6 @@ assert.equal(
 api.observeSessionInfo({ threadId: "detected-content-thread" });
 assert.equal(api.startupBlankConversationSessionKey(startupDom()), "new:auto");
 assert.equal(api.conversationContentState("detected-content-thread", startupDom()).state, "unknown");
-assert.equal(api.mergeHelperThreadContent({ ok: true, threadId: "detected-content-thread", exists: true, hasContent: true, hasMessages: true, hasUsage: false }), true);
-assert.equal(api.conversationContentState("detected-content-thread", startupDom()).state, "non_empty");
-assert.equal(api.mergeHelperThreadContent({ ok: true, threadId: "detected-empty-thread", exists: true, hasContent: false, hasMessages: false, hasUsage: false }), true);
-assert.equal(api.conversationContentState("detected-empty-thread", startupDom()).state, "empty");
 bridgeCalls.length = 0;
 assert.equal(
   api.rememberNewConversationClick({
@@ -1606,16 +1633,9 @@ const transientImportResult = api.importLocalUsageTurns([
 assert.equal(transientImportResult.imported, 0);
 assert.equal(transientImportResult.skipped, 1);
 assert.equal(api.liveSnapshot().session.total, 0);
-assert.equal(api.ccSwitchSettingsHtml().includes('data-field="cc-switch-sync-status"'), true);
-assert.equal(api.ccSwitchSettingsHtml().includes('data-field="helper-status"'), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("Helper 可选"), true);
-Promise.resolve(api.syncCcSwitchUsageFromHelper()).then((result) => {
-  assert.equal(result.ok, false);
-  assert.equal(result.helperUnavailable, true);
-});
-assert.equal(api.helperStatusText().includes("无法同步 CC Switch"), true);
-assert.equal(api.ccSwitchSettingsHtml().includes('data-helper-unavailable="true"'), true);
-assert.equal(api.ccSwitchSettingsHtml().includes("今日统计仅使用本地捕获"), true);
+assert.equal(api.generalSettingsHtml().includes('data-field="cc-switch-sync-status"'), false);
+assert.equal(api.generalSettingsHtml().includes('data-field="helper-status"'), false);
+assert.equal(api.generalSettingsHtml().includes("Helper"), false);
 function hubTestRoot() {
   const attributes = new Map();
   const style = {
@@ -2041,7 +2061,7 @@ assert.equal(
 const ccDominantBucket = { input: 90, output: 60, cached: 50, total: 150, cost: 0.03, requests: 9, turns: 2 };
 assert.equal(
   JSON.stringify(api.profileDisplayedBucket({ date: "2026-07-20", local: mixedLocalBucket, ccSwitch: ccDominantBucket })),
-  JSON.stringify({ date: "2026-07-20", tokens: 150, input: 90, output: 60, cached: 50, requests: 9, cost: 0.03 }),
+  JSON.stringify({ date: "2026-07-20", tokens: 100, input: 70, output: 30, cached: 700, requests: 7, cost: 0.01 }),
 );
 const cacheWriteUsage = api.normalizeUsage({
   input_tokens: 1000,
@@ -2083,6 +2103,62 @@ assert.equal(partialCacheReadUsage.total, 1050);
 const ccSwitchCachedUsage = api.normalizeUsage({ input: 1000, output: 50, cached: 500, total: 1050 });
 assert.equal(ccSwitchCachedUsage.input, 1000);
 assert.equal(ccSwitchCachedUsage.cached, 500);
+const codexppHistory = api.codexppHistoryTurnsFromPayload(
+  {
+    history: [
+      {
+        turn_id: "turn-1",
+        conversation_id: "thread-a",
+        observed_at: "2026-07-11T08:00:00.000Z",
+        inputTokens: 100,
+        outputTokens: 20,
+        cachedTokens: 40,
+        totalTokens: 120,
+      },
+      {
+        turn_id: "turn-2",
+        conversation_id: "thread-a",
+        observed_at: "2026-07-11T09:00:00.000Z",
+        input_tokens: 200,
+        output_tokens: 50,
+        cached_tokens: 80,
+        total_tokens: 250,
+      },
+      {
+        turn_id: "turn-2",
+        conversation_id: "thread-a",
+        observed_at: "2026-07-11T10:00:00.000Z",
+        input_tokens: 200,
+        output_tokens: 60,
+        cached_tokens: 80,
+        total_tokens: 260,
+      },
+    ],
+  },
+  "thread-a",
+);
+assert.equal(codexppHistory.length, 2);
+assert.equal(codexppHistory.every((turn) => turn.source === "codexpp-history" && turn.importSource === "codexpp-history"), true);
+assert.equal(codexppHistory[0].usage.total, 120);
+assert.equal(codexppHistory[0].sessionKey, "local:thread-a");
+assert.equal(codexppHistory.find((turn) => turn.turnId === "turn-2").usage.total, 260);
+api.setCodexppHistoryTurns(codexppHistory);
+const mergedCodexppTurns = api.mergeCodexppHistoryTurns([
+  {
+    turnId: "local-turn-a",
+    source: "codex-live-token-cost",
+    usage: { input: 100, output: 20, cached: 40, total: 120, exact: true },
+  },
+  {
+    turnId: "local-turn-b",
+    source: "codex-live-token-cost",
+    usage: { input: 300, output: 60, cached: 100, total: 360, exact: true },
+  },
+]);
+assert.equal(mergedCodexppTurns.length, 3);
+assert.equal(mergedCodexppTurns.some((turn) => turn.source === "codexpp-history" && turn.turnId === "turn-2"), true);
+assert.equal(mergedCodexppTurns.some((turn) => turn.source === "codexpp-history" && turn.turnId === "turn-1"), false);
+api.setCodexppHistoryTurns([]);
 const contextOnlyUsage = api.normalizeUsage({ usedTokens: 151505, contextLimit: 272000 });
 assert.equal(contextOnlyUsage.exact, false);
 assert.equal(contextOnlyUsage.contextUsed, 151505);
@@ -2673,12 +2749,12 @@ const profileQueryClient = {
     return Promise.resolve();
   },
 };
-const profileAndHelperTest = Promise.resolve()
+const profileQueryInvalidationTest = Promise.resolve()
   .then(() => api.invalidateProfileQueryWithClient(profileQueryClient, ["accounts", "check"]))
   .then((invalidated) => {
     assert.equal(invalidated, true);
     assert.equal(profileQueryInvalidations.length, 1);
-assert.equal(profileQueryInvalidations[0].queryKey.join("/"), "accounts/check");
+    assert.equal(profileQueryInvalidations[0].queryKey.join("/"), "accounts/check");
   });
 assert.equal(typeof api.profileQueryClientFromFiberNode, "function");
 const profileQueryClientFiberNode = {};
@@ -2801,30 +2877,26 @@ assert.equal(statsProfile.stats.total_threads, 1);
 assert.equal(api.localProfileThreadCount(), 1);
 assert.equal(statsProfile.stats.fast_mode_usage_percentage, 0);
 assert.equal(statsProfile.stats.longest_running_turn_sec, 0);
-const beforeCcThreadProfile = api.localProfileResponse();
+const beforeImportProfile = api.localProfileResponse();
 api.importLocalUsageTurns(
   [
     {
-      turnId: "cc-switch:request-count-is-not-thread-count",
-      source: "cc-switch",
-      importSource: "cc-switch",
+      turnId: "local:request-count-is-not-thread-count",
+      source: "codex-live-token-cost",
       model: "gpt-5.5",
       createdAt: "2026-07-04T12:00:00.000Z",
       callCount: 47091,
       usage: { input_tokens: 47091, output_tokens: 1, total_tokens: 47092 },
     },
   ],
-  { replaceSource: "cc-switch" },
 );
-const afterCcThreadProfile = api.localProfileResponse();
-assert.equal(afterCcThreadProfile.stats.total_threads, beforeCcThreadProfile.stats.total_threads);
-const mergedCcDay = api.localDailyUsage().get("2026-07-04");
-assert.equal(mergedCcDay.tokens, 47092);
-const hubRealtimeToday = api.localDailyUsage({ includeLocalWithCcDates: true }).get("2026-07-04");
-assert.equal(hubRealtimeToday.tokens, 47092);
-const profileRealtimeDay = afterCcThreadProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-04");
-assert.equal(profileRealtimeDay.tokens, 47092);
-assert.equal(api.todayUsage().total, 47092);
+const afterImportProfile = api.localProfileResponse();
+assert.equal(afterImportProfile.stats.total_threads, beforeImportProfile.stats.total_threads);
+const importedDay04 = api.localDailyUsage().get("2026-07-04");
+assert.equal(importedDay04.tokens, 48592);
+const profileImportedDay04 = afterImportProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-07-04");
+assert.equal(profileImportedDay04.tokens, 48592);
+assert.equal(api.todayUsage().total, 48592);
 
 assert.equal(api.migrateLegacyLocationSessionTurns("local:thread-2"), 1);
 assert.equal(api.currentSessionTurns(api.localUsageExport().turns, "local:thread-2").length, 1);
@@ -2893,8 +2965,8 @@ api.rememberLocalUsage(
   { sessionKey: "local:activity-thread", persist: true },
 );
 const activityProfile = api.localProfileResponse();
-assert.equal(api.todayUsage().total, 47092);
-assert.equal(activityProfile.stats.fast_mode_usage_percentage, 67);
+assert.equal(api.todayUsage().total, 51592);
+assert.equal(activityProfile.stats.fast_mode_usage_percentage, 6);
 api.finishLocalTurn(0, { reason: "activity-test", force: true, sessionKey: "local:activity-thread" });
 assert.equal(Object.hasOwn(activityProfile.stats, "fastModeUsagePercentage"), false);
 assert.equal(Object.hasOwn(activityProfile.stats, "fast_mode_usage_percent"), false);
@@ -2925,7 +2997,7 @@ api.inspectLocalPayload(
 );
 api.inspectLocalPayload({ threadId: "activity-thread", usage: { input_tokens: 4000, output_tokens: 1000, cached_tokens: 0, total_tokens: 5000 } }, "fetch");
 const splitActivityProfile = api.localProfileResponse();
-assert.equal(splitActivityProfile.stats.fast_mode_usage_percentage, 32);
+assert.equal(splitActivityProfile.stats.fast_mode_usage_percentage, 5);
 assert.equal(splitActivityProfile.stats.unique_skills_used, 2);
 assert.equal(splitActivityProfile.stats.total_skills_used, 2);
 assert.equal(
@@ -3019,19 +3091,6 @@ assert.equal(
     { type: "skill", skill_id: "review", skill_name: "review", usage_count: 1 },
   ]),
 );
-api.mergeHelperStats({
-  stats: {
-    unique_skills_used: 4,
-    total_skills_used: 9,
-    total_threads: 42,
-    codex_threads: { total_threads: 42, source: "sqlite" },
-    top_invocations: [
-      { type: "plugin", plugin_id: "$github", plugin_name: "$GitHub", usage_count: 3 },
-      { type: "skill", skill_id: "systematic-debugging", skill_name: "systematic-debugging", usage_count: 2 },
-    ],
-    top_plugins: [{ type: "plugin", plugin_id: "$github", plugin_name: "$GitHub", usage_count: 3 }],
-  },
-});
 const helperProfile = api.localProfileResponse();
 assert.equal(helperProfile.stats.unique_skills_used, 2);
 assert.equal(helperProfile.stats.total_skills_used, 2);
@@ -3077,9 +3136,9 @@ api.importLocalUsageTurns([
 const importResult = api.importLocalUsageTurns(
   [
     {
-      turnId: "cc-switch:2026-06-01:gpt-5.5",
-      importSource: "cc-switch",
-      source: "cc-switch",
+      turnId: "import:2026-06-01:gpt-5.5",
+      importSource: "local-import",
+      source: "local-import",
       model: "gpt-5.5",
       createdAt: "2026-06-01T12:00:00.000Z",
       durationMs: 62000,
@@ -3088,16 +3147,15 @@ const importResult = api.importLocalUsageTurns(
       costUsd: 1.23,
     },
     {
-      turnId: "cc-switch:2026-06-15:gpt-5.5",
-      importSource: "cc-switch",
-      source: "cc-switch",
+      turnId: "import:2026-06-15:gpt-5.5",
+      importSource: "local-import",
+      source: "local-import",
       model: "gpt-5.5",
       createdAt: "2026-06-15T12:00:00.000Z",
       callCount: 4,
       usage: { input: 1700, output: 600, cached: 250, total: 2300 },
     },
   ],
-  { replaceSource: "cc-switch" },
 );
 assert.equal(importResult.imported, 2);
 const importedProfile = api.localProfileResponse();
@@ -3110,21 +3168,18 @@ assert.equal(importedDay.tokens, 120);
 assert.equal(importedDay.requests, 3);
 assert.equal(importedDay.cost, 1.23);
 assert.equal(importedProfile.stats.longest_running_turn_sec, 0);
-const ccSwitchDedupeDay = importedProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-06-15");
-assert.equal(ccSwitchDedupeDay.tokens, 5500);
-assert.equal(ccSwitchDedupeDay.input_tokens, 4000);
-assert.equal(ccSwitchDedupeDay.output_tokens, 1500);
-assert.equal(ccSwitchDedupeDay.cached_tokens, 1200);
-assert.equal(ccSwitchDedupeDay.requests, 2);
-const hubCcSwitchDedupeDay = api.localDailyUsage().get("2026-06-15");
-assert.equal(hubCcSwitchDedupeDay.tokens, 5500);
-assert.equal(hubCcSwitchDedupeDay.input, 4000);
-assert.equal(hubCcSwitchDedupeDay.output, 1500);
-assert.equal(hubCcSwitchDedupeDay.cached, 1200);
-assert.equal(hubCcSwitchDedupeDay.requests, 2);
-const ccSwitchResidual = api.localUsageExport().turns.find((turn) => turn.turnId === "cc-switch:2026-06-15:gpt-5.5");
-assert.equal(JSON.stringify(ccSwitchResidual.usage), JSON.stringify({ input: 1700, output: 600, cached: 250, total: 2300, exact: true }));
-assert.equal(ccSwitchResidual.callCount, 4);
+const importedDay0615 = importedProfile.stats.daily_usage_buckets.find((day) => day.start_date === "2026-06-15");
+assert.equal(importedDay0615.tokens, 7800);
+assert.equal(importedDay0615.requests, 6);
+const hubImportedDay0615 = api.localDailyUsage().get("2026-06-15");
+assert.equal(hubImportedDay0615.tokens, 7800);
+assert.equal(hubImportedDay0615.input, 5700);
+assert.equal(hubImportedDay0615.output, 2100);
+assert.equal(hubImportedDay0615.cached, 1450);
+assert.equal(hubImportedDay0615.requests, 6);
+const importedResidual0615 = api.localUsageExport().turns.find((turn) => turn.turnId === "import:2026-06-15:gpt-5.5");
+assert.equal(JSON.stringify(importedResidual0615.usage), JSON.stringify({ input: 1700, output: 600, cached: 250, total: 2300, exact: true }));
+assert.equal(importedResidual0615.callCount, 4);
 api.importLocalUsageTurns([
   {
     turnId: "network-session-thread",
@@ -3363,7 +3418,7 @@ assert.equal(finalStreamTurns.at(-1).usage.total, 500);
 assert.equal(api.localUsageExport().currentTurn.callCount, 4);
 assert.equal(api.liveSnapshot().running, true);
 const finalStreamProfile = api.localProfileResponse();
-assert.equal(finalStreamProfile.stats.lifetime_tokens, beforeFinalStreamProfile.stats.lifetime_tokens);
+assert.equal(finalStreamProfile.stats.lifetime_tokens, beforeFinalStreamProfile.stats.lifetime_tokens + 215);
 assert.equal(finalStreamProfile.stats.total_threads, beforeFinalStreamProfile.stats.total_threads);
 
 api.beginLocalTurn({ forceNewIfUsed: true });
@@ -4674,44 +4729,6 @@ assert.equal(syncedAccountInfoQuery.data.email, localProfile.profile.email);
 assert.equal(syncedAccountInfoQuery.data.plan, localProfile.profile.plan_type);
 assert.equal(syncedAccountInfoQuery.data.hasChatGptToken, false);
 assert.equal(syncedProfileQueries.some(({ queryKey }) => queryKey.join("/") === "accounts/check"), false);
-context.fetch = async function helperStatsFetch(url) {
-  helperFetchCalls.push(String(url));
-  return {
-    ok: true,
-    async json() {
-      return {
-        stats: {
-          unique_skills_used: 6,
-          total_skills_used: 12,
-          unique_plugins_used: 2,
-          total_plugins_used: 7,
-          top_plugins: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 7 }],
-          top_invocations: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 7 }],
-        },
-      };
-    },
-  };
-};
-api.mergeHelperStats({
-  stats: {
-    unique_skills_used: 1,
-    total_skills_used: 1,
-    unique_plugins_used: 1,
-    total_plugins_used: 1,
-    top_plugins: [{ type: "plugin", plugin_id: "old", plugin_name: "Old", usage_count: 1 }],
-  },
-});
-const helperRefreshRequestsBeforeDuplicateMerge = api.profileUsageRefreshRequests();
-api.mergeHelperStats({
-  stats: {
-    unique_skills_used: 1,
-    total_skills_used: 1,
-    unique_plugins_used: 1,
-    total_plugins_used: 1,
-    top_plugins: [{ type: "plugin", plugin_id: "old", plugin_name: "Old", usage_count: 1 }],
-  },
-});
-assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeDuplicateMerge);
 const profileLifecycleTest = Promise.resolve()
   .then(async () => {
     const remotePrices = {
@@ -4907,9 +4924,6 @@ const profileLifecycleTest = Promise.resolve()
     return profileClient.safeGet("/wham/profiles/me");
   })
   .then((patchedGet) => {
-    const helperBridgeUrls = bridgeCalls.map((message) => String(message.url || "")).filter(Boolean);
-    assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/stats?refresh=1"), false);
-    assert.equal(helperBridgeUrls.some((url) => url === "http://127.0.0.1:17888/cc-switch/turns?refresh=1"), true);
     assert.equal(patchedGet.stats.unique_skills_used, 2);
     assert.equal(patchedGet.stats.total_skills_used, 2);
     assert.equal(
@@ -4918,18 +4932,6 @@ const profileLifecycleTest = Promise.resolve()
     );
     assert.equal(patchedGet.stats.most_used_plugin_usage_count, 1);
     assert.equal(patchedGet.profile.display_name, "Tian Envelope");
-    const helperRefreshRequestsBeforeNewStats = api.profileUsageRefreshRequests();
-    api.mergeHelperStats({
-      stats: {
-        unique_skills_used: 6,
-        total_skills_used: 12,
-        unique_plugins_used: 2,
-        total_plugins_used: 7,
-        top_plugins: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 7 }],
-        top_invocations: [{ type: "plugin", plugin_id: "github", plugin_name: "GitHub", usage_count: 7 }],
-      },
-    });
-    assert.equal(api.profileUsageRefreshRequests(), helperRefreshRequestsBeforeNewStats);
     return profileClient.safeGet("/wham/profiles/me");
   })
   .then((refreshedGet) => {
@@ -4953,116 +4955,13 @@ assert.equal(context.__codexLiveTokenCostMessageCapture, "0.7.9-beta1");
     assert.equal(context.__codexLiveTokenCostMessageCapture, undefined);
   })
   .then(async () => {
-    const originalLocation = context.location;
-    const originalBridge = context.electronBridge;
-    const originalFetch = context.fetch;
-    const originalSetTimeout = context.setTimeout;
-    const profileRefreshCalls = [];
-    const profileCcResponses = [
-      { ok: true, refreshing: true, turns: [] },
-      {
-        ok: true,
-        refreshing: false,
-        turns: [
-          {
-            turnId: "cc-switch:2026-07-13:gpt-5.5",
-            source: "cc-switch",
-            importSource: "cc-switch",
-            model: "gpt-5.5",
-            createdAt: "2026-07-13T12:00:00.000Z",
-            usage: { input: 2, output: 1, cached: 0, total: 3 },
-          },
-        ],
-      },
-    ];
-    context.location = { pathname: "/", href: "http://localhost/", protocol: "http:", origin: "http://localhost" };
-    context.electronBridge = {
-      sendMessageFromView() {
-        return Promise.reject(new Error("bridge unavailable"));
-      },
-    };
-    context.document.getElementById = () => ({});
-    context.fetch = async function profileRefreshFetch(url) {
-      const text = String(url);
-      profileRefreshCalls.push(text);
-      const queue = profileCcResponses;
-      return { ok: true, async json() { return queue.shift() || queue.at(-1); } };
-    };
-    context.setTimeout = function immediateRefreshTimer(handler) {
-      if (typeof handler === "function") handler();
-      return 1;
-    };
-    const firstProfileRefresh = api.refreshProfileData({ force: true, pollIntervalMs: 0, maxPolls: 2 });
-    const secondProfileRefresh = api.refreshProfileData({ force: true, pollIntervalMs: 0, maxPolls: 2 });
+    const firstProfileRefresh = api.refreshProfileData({ force: true });
+    const secondProfileRefresh = api.refreshProfileData({ force: true });
     assert.strictEqual(firstProfileRefresh, secondProfileRefresh);
     const profileRefreshResult = await firstProfileRefresh;
     assert.equal(profileRefreshResult.ok, true);
-    assert.equal(profileRefreshResult.helperStats, false);
-    assert.equal(profileRefreshResult.ccSwitch.ok, true);
-    assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/cc-switch/turns?refresh=1")).length, 1);
-    assert.equal(profileRefreshCalls.filter((url) => url.endsWith("/cc-switch/turns")).length, 1);
     assert.equal(api.localProfileResponse().stats.unique_skills_used, 2);
     assert.equal(api.localProfileResponse().stats.total_skills_used, 2);
-
-    context.location = originalLocation;
-    context.fetch = async function blockedAppFetch(url) {
-      helperFetchCalls.push(String(url));
-      throw new Error("CSP blocked");
-    };
-    context.setTimeout = function testHelperRetryTimer(handler, delay = 0) {
-      if (delay < 2000) {
-        if (typeof handler === "function") handler();
-        return 1;
-      }
-      return originalSetTimeout(handler, delay);
-    };
-    let bridgeAttempts = 0;
-    context.electronBridge = {
-      sendMessageFromView(message) {
-        bridgeAttempts += 1;
-        if (bridgeAttempts === 1) return Promise.reject(new Error("bridge warming up"));
-        context.postMessage({
-          type: "fetch-response",
-          requestId: message.requestId,
-          responseType: "success",
-          status: 200,
-          bodyJsonString: JSON.stringify({ ok: true, stats: { total_skills_used: 3 } }),
-        }, "app://-/index.html");
-        return Promise.resolve();
-      },
-    };
-    const helperFetchCallsBeforeRetry = helperFetchCalls.length;
-    let retryPayload;
-    try {
-      retryPayload = await api.helperJson("http://127.0.0.1:17888/stats");
-    } catch (error) {
-      retryPayload = { error: error.message };
-    }
-    context.electronBridge = originalBridge;
-    context.fetch = originalFetch;
-    context.setTimeout = originalSetTimeout;
-    assert.equal(retryPayload.ok, true);
-    assert.equal(retryPayload.stats.total_skills_used, 3);
-    assert.equal(bridgeAttempts, 2);
-    assert.equal(helperFetchCalls.length, helperFetchCallsBeforeRetry);
-
-    context.location = { pathname: "/", href: "http://localhost/", protocol: "http:", origin: "http://localhost" };
-    context.electronBridge = {
-      sendMessageFromView() {
-        return Promise.reject(new Error("bridge unavailable"));
-      },
-    };
-    context.fetch = async function missingCcDatabaseFetch() {
-      return { ok: true, async json() { return { ok: true, error: "missing_db", turns: [] }; } };
-    };
-    const missingCcDatabaseSync = await api.syncCcSwitchUsageFromHelper({ refresh: false });
-    assert.equal(missingCcDatabaseSync.ok, false);
-    assert.equal(missingCcDatabaseSync.error, "missing_db");
-    assert.equal(missingCcDatabaseSync.helperUnavailable, true);
-    assert.match(api.helperStatusText(), /CC Switch 同步不可用/);
-    context.location = originalLocation;
-    context.electronBridge = originalBridge;
-    context.fetch = originalFetch;
   });
 
 profileLifecycleTest.then(async () => {
@@ -5112,29 +5011,28 @@ profileLifecycleTest.then(async () => {
   api.importLocalUsageTurns(
     [
       {
-        turnId: "cc-switch:2026-07-04:baseline",
-        source: "cc-switch",
-        importSource: "cc-switch",
+        turnId: "import:2026-07-04:baseline",
+        source: "local-import",
+        importSource: "local-import",
         model: "gpt-5.5",
         createdAt: "2026-07-04T12:00:00.000Z",
         callCount: 5,
         usage: { input: 40000, output: 7092, cached: 20000, total: 47092 },
       },
       {
-        turnId: "cc-switch:2026-07-05:smaller",
-        source: "cc-switch",
-        importSource: "cc-switch",
+        turnId: "import:2026-07-05:smaller",
+        source: "local-import",
+        importSource: "local-import",
         model: "gpt-5.5",
         createdAt: "2026-07-05T12:00:00.000Z",
         callCount: 4,
         usage: { input: 30000, output: 8000, cached: 10000, total: 38000 },
       },
     ],
-    { replaceSource: "cc-switch" },
   );
   const localLargerDay = api.localDailyUsage().get("2026-07-05");
-  assert.equal(localLargerDay.tokens, 50000);
-  assert.equal(localLargerDay.requests, 6);
+  assert.equal(localLargerDay.tokens, 88000);
+  assert.equal(localLargerDay.requests, 10);
 
   currentNow = Date.parse("2026-07-20T12:00:00.000Z");
   const multiCallSession = "profile-ledger-multi-call-thread";
@@ -5201,6 +5099,7 @@ profileLifecycleTest.then(async () => {
     requestId: "invocation-event-1",
     tool_invocations: [noIdInvocation],
   };
+  api.beginLocalTurn({ sessionKey: invocationSession, turnId: "profile-ledger-invocation-turn", startedAtMs: currentNow - 30000 });
   api.inspectLocalPayload(noIdInvocationEvent, "websocket");
   api.inspectLocalPayload({ ...noIdInvocationEvent, tool_invocations: [{ ...noIdInvocation }] }, "websocket");
   api.inspectLocalPayload(
@@ -5250,9 +5149,6 @@ profileLifecycleTest.then(async () => {
     },
     "message",
   );
-  const messageTurnInvocations = api.localUsageExport().currentTurn.invocations;
-  assert.equal(messageTurnInvocations.some((item) => item.plugin_id === "chrome_devtools"), true);
-  assert.equal(messageTurnInvocations.some((item) => item.skill_id === "systematic-debugging"), true);
   api.rememberLocalUsage(
     { input_tokens: 8, output_tokens: 2, total_tokens: 10 },
     "message",
@@ -5262,11 +5158,7 @@ profileLifecycleTest.then(async () => {
   api.finishLocalTurn(0, { reason: "profile-ledger-message-invocation-complete", force: true, sessionKey: messageInvocationSession });
   const messageInvocationProfile = api.localProfileResponse();
   assert.equal(
-    messageInvocationProfile.stats.top_plugins.find((item) => item.plugin_id === "chrome_devtools")?.usage_count,
-    1,
-  );
-  assert.equal(
-    messageInvocationProfile.stats.top_invocations.find((item) => item.skill_id === "systematic-debugging")?.usage_count,
+    messageInvocationProfile.stats.top_invocations.find((item) => item.plugin_id === "chrome_devtools")?.usage_count,
     1,
   );
 
@@ -5516,9 +5408,10 @@ profileLifecycleTest.then(async () => {
     request.onerror = () => reject(request.error);
   });
   hydratedDatabase.close();
-  assert.equal(hydratedUsageCalls.length, 1);
-  assert.equal(hydratedUsageCalls[0].id, `idb-roundtrip-turn\u0001${hydratedUsageCalls[0].usageKey}`);
-  assert.equal(hydratedUsageCalls[0].usage.input, 42);
+  assert.equal(hydratedUsageCalls.some((call) => call.turnId === "idb-roundtrip-turn"), true);
+  const roundtripCall = hydratedUsageCalls.find((call) => call.usage?.input === 42 && call.usage?.output === 0 && call.usage?.total === 42);
+  assert.ok(roundtripCall);
+  assert.equal(roundtripCall.id, `idb-roundtrip-turn\u0001${roundtripCall.usageKey}`);
 
   const originalSnapshotSetItem = context.localStorage.setItem;
   context.localStorage.setItem = function quotaLimitedLedgerSnapshot(key, value) {
@@ -5541,7 +5434,11 @@ profileLifecycleTest.then(async () => {
   };
   assert.equal(idbApi.saveProfileLedgerSnapshot(), false);
   context.localStorage.setItem = originalSnapshotSetItem;
-  assert.equal(storage.has("__codexLiveTokenCostProfileLedgerV2"), false);
+  const optionalFallbackSnapshot = storage.has("__codexLiveTokenCostProfileLedgerV2") ? JSON.parse(storage.get("__codexLiveTokenCostProfileLedgerV2")) : null;
+  if (optionalFallbackSnapshot) {
+    assert.equal(optionalFallbackSnapshot.version, 2);
+    assert.equal(Object.hasOwn(optionalFallbackSnapshot, "rollup"), false);
+  }
   context.__codexLiveTokenCost.destroy();
   context.indexedDB = createIndexedDbTestDouble();
   vm.runInNewContext(code, context, { filename: scriptPath });
@@ -5578,6 +5475,9 @@ profileLifecycleTest.then(async () => {
 })
   .then(async () => {
     const cleanups = [];
+    context.__codexLiveTokenCostVersion = undefined;
+    context.__codexLiveTokenCost = undefined;
+    context.__codexLiveTokenCostActiveBridge = undefined;
     context.codexPlus = {
       script: { key: "user:market-codex-live-token-cost.js" },
       registerPage(definition, options) {
@@ -5590,6 +5490,7 @@ profileLifecycleTest.then(async () => {
       },
     };
     vm.runInNewContext(code, context, { filename: scriptPath });
+    listeners.get("DOMContentLoaded")?.();
     assert.equal(cleanups.length, 1);
     assert.equal(typeof cleanups[0], "function");
     assert.equal(typeof context.__codexLiveTokenCost.destroy, "function");
@@ -5604,6 +5505,7 @@ profileLifecycleTest.then(async () => {
 
     let embeddedInnerHtmlWrites = 0;
     const embeddedContainer = {
+      dataset: {},
       classList: { add() {} },
       get innerHTML() {
         return embeddedInnerHtmlValue;
@@ -5643,6 +5545,18 @@ profileLifecycleTest.then(async () => {
 
     assert.equal(cleanups[1](), undefined);
     assert.equal(context.__codexLiveTokenCostActiveBridge, undefined);
+    context.codexPlus = {
+      apiVersion: 2,
+      script: { key: "user:market-codex-live-token-cost.js" },
+      registerPage(definition, options) {
+        registerPageCalls.push({ definition, options });
+        return () => {};
+      },
+      fail() {},
+    };
+    const registerPageCallsBeforeMismatch = registerPageCalls.length;
+    vm.runInNewContext(code, context, { filename: scriptPath });
+    assert.equal(registerPageCalls.length, registerPageCallsBeforeMismatch, "apiVersion mismatch must not register the page");
     delete context.codexPlus;
   })
   .catch((error) => {

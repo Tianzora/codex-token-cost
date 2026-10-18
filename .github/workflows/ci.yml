@@ -27,7 +27,9 @@ jobs:
         run: |
           set -euo pipefail
           node tests/codex-live-token-cost.test.cjs
-          node tests/codex-local-usage-helper.test.cjs
+          node tests/codex-live-token-cost-reload.test.cjs
+          node tests/codex-live-token-cost-backfill.test.cjs
+          node tests/codex-live-token-cost-idb.test.cjs
           find scripts tests -type f \( -name '*.js' -o -name '*.cjs' \) -print0 | xargs -0 -r -n1 node --check
           find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
           if [[ -n "$DIFF_BASE" && "$DIFF_BASE" != "0000000000000000000000000000000000000000" ]]; then

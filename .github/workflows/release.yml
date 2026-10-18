@@ -29,7 +29,6 @@ jobs:
         run: |
           set -euo pipefail
           node tests/codex-live-token-cost.test.cjs
-          node tests/codex-local-usage-helper.test.cjs
           find scripts tests -type f \( -name '*.js' -o -name '*.cjs' \) -print0 | xargs -0 -r -n1 node --check
           find scripts -type f -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
           git diff --check "${GITHUB_SHA}^" "$GITHUB_SHA"
@@ -101,11 +100,8 @@ jobs:
             README.md \
             docs/images \
             scripts/codex-live-token-cost.js \
-            scripts/codex-local-usage-helper.cjs \
             scripts/deploy-userscript.ps1 \
-            scripts/deploy-userscript.sh \
-            scripts/start-helper.ps1 \
-            scripts/start-helper.sh
+            scripts/deploy-userscript.sh
           sha256sum "$archive" > "${archive}.sha256"
           unzip -l "$archive"
           cat "${archive}.sha256"

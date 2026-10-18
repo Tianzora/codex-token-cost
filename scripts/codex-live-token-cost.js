@@ -13,6 +13,7 @@
 const VERSION = "0.7.9-beta1";
   const ROOT_ID = "codex-live-token-cost";
   const STYLE_ID = "codex-live-token-cost-style";
+  const FLATPICKR_STYLE_ID = "codex-live-token-cost-flatpickr-style";
   // Matches Codex++'s own rail icons: 24 viewBox, 1.8 stroke, currentColor, 19px rendered by CSS.
   const SETTINGS_BUTTON_ICON =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
@@ -48,6 +49,24 @@ const VERSION = "0.7.9-beta1";
   const PROFILE_LEDGER_STORE_USAGE_CALLS = "profileUsageCalls";
   const PROFILE_LEDGER_STORE_INVOCATIONS = "profileInvocations";
   const PROFILE_LEDGER_STORE_DAILY_ROLLUPS = "profileDailyRollups";
+  const USAGE_SYNC_DB_NAME = "codex-live-token-cost-usage-sync";
+  const USAGE_SYNC_DB_VERSION = 2;
+  const USAGE_SYNC_STORE_HANDLES = "handles";
+  const USAGE_SYNC_STORE_FILE_STAMPS = "fileStamps";
+  const USAGE_SYNC_DIR_HANDLE_KEY = "codex-data-root";
+  const USAGE_SYNC_FILE_STAMPS_KEY = "rollout-files";
+  const USAGE_SYNC_PICKER_ID = "codex-live-token-cost";
+  const USAGE_SYNC_LAST_RESULT_KEY = "__codexLiveTokenCostUsageSyncLastV1";
+  const USAGE_SYNC_SOURCE = "codex-usage-backfill";
+  const USAGE_SYNC_ROLLOUT_FILE_RE = /\.(jsonl|jsonl\.zst|jsonl\.zstd)$/i;
+  const USAGE_SYNC_USAGE_FIELDS = [
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "total_tokens",
+  ];
   let profileUnlockEnabledRuntime;
   const PROJECT_CONTEXT_ROW_SELECTOR =
     "[data-codex-composer-root] [data-composer-utility-bar-scroll-area] [data-composer-navigation-target='workspace-project']";
@@ -78,6 +97,9 @@ const VERSION = "0.7.9-beta1";
   const PROFILE_HEATMAP_BASE_START = "2025-07-13";
   const PROFILE_HEATMAP_MAX_COLUMNS = 52;
   const LOCAL_LEDGER_LIMIT = 2000;
+  const LOCAL_LEDGER_QUOTA_TRIM_LIMITS = [LOCAL_LEDGER_LIMIT, 1000, 500, 200, 50];
+  const DAILY_LEDGER_QUOTA_TRIM_LIMITS = [500, 200, 80, 20, 0];
+  const ANALYTICS_ROLLUP_QUOTA_TRIM_DAYS = [ANALYTICS_MAX_DAYS, 180, 90, 30, 7];
   const LOCAL_LIVE_TURN_RESTORE_MAX_AGE_MS = 15 * 60 * 1000;
   const UNKNOWN_MODEL = "未知";
   const FAST_MODE_ICON_PATH =
@@ -86,17 +108,7 @@ const VERSION = "0.7.9-beta1";
   const RENDER_THROTTLE_MS = 250;
   const SETTINGS_MODAL_EXIT_MS = 160;
   const PROFILE_SAVE_STATUS_DURATION_MS = 1800;
-  const CC_SWITCH_TURNS_URL = "http://127.0.0.1:17888/cc-switch/turns";
-  const CC_SWITCH_TURNS_REFRESH_URL = `${CC_SWITCH_TURNS_URL}?refresh=1`;
   const PROFILE_DATA_REFRESH_MIN_INTERVAL_MS = 60000;
-  const HELPER_REFRESH_POLL_INTERVAL_MS = 500;
-  const HELPER_REFRESH_MAX_POLLS = 60;
-  const HELPER_BRIDGE_RETRY_DELAYS_MS = [0, 250, 1000];
-  const HELPER_GITHUB_URL = "https://github.com/Tianzora/codex-token-cost/blob/main/scripts/codex-local-usage-helper.cjs";
-  const HELPER_STATUS_DEFAULT = "Helper 可选：未连接时使用本地 Profile ledger；CC Switch 同步不可用。";
-  const HELPER_STATUS_CONNECTED = "Helper 已连接：CC Switch bridge 可用；Profile activity 仍以本地 ledger 为准。";
-  const HELPER_STATUS_DEGRADED = "Helper 未运行：本地 Profile ledger 继续工作；CC Switch 同步不可用。";
-  const HELPER_STATUS_CC_SWITCH_DEGRADED = "Helper 未运行：无法同步 CC Switch；今日统计仅使用本地捕获与已有本地记录。";
   const SHIMMER_ACTIVE_MS = 1000;
   const SHIMMER_INTERVAL_MS = 4000;
   const FAST_MODE_COST_MULTIPLIERS = [
@@ -204,6 +216,24 @@ const VERSION = "0.7.9-beta1";
 
     return window.flatpickr;
   }
+
+  // ---------------------------------------------------------------------------
+  // Bundled fzstd (zstd decoder). Codex compresses older rollout logs into
+  // `*.jsonl.zst`; the page's DecompressionStream has no zstd codec on
+  // Chromium 155 (verified 2026-10-16), so the decoder ships in-script.
+  // Source: https://github.com/101arrowz/fzstd (MIT). The UMD build is
+  // embedded verbatim below; upgrades replace the blob only.
+  // ---------------------------------------------------------------------------
+  function installBundledFzstd() {
+    const globalScope = globalThis;
+    if (globalScope.fzstd && typeof globalScope.fzstd.decompress === "function") return globalScope.fzstd;
+    const exports = undefined;
+    const module = undefined;
+    const define = undefined;
+    const self = globalScope;
+    !function(f){typeof module!='undefined'&&typeof exports=='object'?module.exports=f():typeof define!='undefined'&&define.amd?define(['fzstd',f]):(typeof self!='undefined'?self:this).fzstd=f()}(function(){var _e={};"use strict";var r=ArrayBuffer,t=Uint8Array,e=Uint16Array,n=Int16Array,a=Uint32Array,s=Int32Array,i=function(r,e,n){if(t.prototype.slice)return t.prototype.slice.call(r,e,n);(null==e||e<0)&&(e=0),(null==n||n>r.length)&&(n=r.length);var a=new t(n-e);return a.set(r.subarray(e,n)),a},o=function(r,e,n,a){if(t.prototype.fill)return t.prototype.fill.call(r,e,n,a);for((null==n||n<0)&&(n=0),(null==a||a>r.length)&&(a=r.length);n<a;++n)r[n]=e;return r},u=function(r,e,n,a){if(t.prototype.copyWithin)return t.prototype.copyWithin.call(r,e,n,a);for((null==n||n<0)&&(n=0),(null==a||a>r.length)&&(a=r.length);n<a;)r[e++]=r[n++]};_e.ZstdErrorCode={InvalidData:0,WindowSizeTooLarge:1,InvalidBlockType:2,FSEAccuracyTooHigh:3,DistanceTooFarBack:4,UnexpectedEOF:5};var h=["invalid zstd data","window size too large (>2046MB)","invalid block type","FSE accuracy too high","match distance too far back","unexpected EOF"],f=function(r,t,e){var n=Error(t||h[r]);if(n.code=r,Error.captureStackTrace&&Error.captureStackTrace(n,f),!e)throw n;return n},l=function(r,t,e){for(var n=0,a=0;n<e;++n)a|=r[t++]<<(n<<3);return a},v=function(r,t){return(r[t]|r[t+1]<<8|r[t+2]<<16|r[t+3]<<24)>>>0},c=function(r,e){var n=r[0]|r[1]<<8|r[2]<<16;if(3126568==n&&253==r[3]){var a=r[4],i=a>>5&1,o=a>>2&1,u=3&a,h=a>>6;8&a&&f(0);var c=6-i,b=3==u?4:u,y=l(r,c,b),p=h?1<<h:i,w=l(r,c+=b,p)+(1==h&&256),g=w;if(!i){var d=1<<10+(r[5]>>3);g=d+(d>>3)*(7&r[5])}g>2145386496&&f(1);var m=new t((1==e?w||g:e?0:g)+12);return m[0]=1,m[4]=4,m[8]=8,{b:c+p,y:0,l:0,d:y,w:e&&1!=e?e:m.subarray(12),e:g,o:new s(m.buffer,0,3),u:w,c:o,m:Math.min(131072,g)}}if(25481893==(n>>4|r[3]<<20))return v(r,4)+8;f(0)},b=function(r){for(var t=0;1<<t<=r;++t);return t-1},y=function(a,s,i){var o=4+(s<<3),u=5+(15&a[s]);u>i&&f(3);for(var h=1<<u,l=h,v=-1,c=-1,y=-1,p=h,w=new r(512+(h<<2)),g=new n(w,0,256),d=new e(w,0,256),m=new e(w,512,h),z=512+(h<<1),E=new t(w,z,h),k=new t(w,z+h);v<255&&l>0;){var A=b(l+1),T=o>>3,x=(1<<A+1)-1,F=(a[T]|a[T+1]<<8|a[T+2]<<16)>>(7&o)&x,S=(1<<A)-1,B=x-l-1,I=F&S;if(I<B?(o+=A,F=I):(o+=A+1,F>S&&(F-=B)),g[++v]=--F,-1==F?(l+=F,E[--p]=v):l-=F,!F)do{var U=o>>3;c=(a[U]|a[U+1]<<8)>>(7&o)&3,o+=2,v+=c}while(3==c)}(v>255||l)&&f(0);for(var D=0,M=(h>>1)+(h>>3)+3,W=h-1,O=0;O<=v;++O){var j=g[O];if(j<1)d[O]=-j;else for(y=0;y<j;++y){E[D]=O;do{D=D+M&W}while(D>=p)}}for(D&&f(0),y=0;y<h;++y){var C=d[E[y]]++,H=k[y]=u-b(C);m[y]=(C<<H)-h}return[o+7>>3,{b:u,s:E,n:k,t:m}]},p=function(r,n){var a=0,s=-1,i=new t(292),u=r[n],h=i.subarray(0,256),l=i.subarray(256,268),v=new e(i.buffer,268);if(u<128){var c=y(r,n+1,6),p=c[1],w=c[0]<<3,g=r[n+=u];g||f(0);for(var d=0,m=0,z=p.b,E=z,k=(++n<<3)-8+b(g);!((k-=z)<w);){var A=k>>3;if(h[++s]=p.s[d+=(r[A]|r[A+1]<<8)>>(7&k)&(1<<z)-1],(k-=E)<w)break;h[++s]=p.s[m+=(r[A=k>>3]|r[A+1]<<8)>>(7&k)&(1<<E)-1],z=p.n[d],d=p.t[d],E=p.n[m],m=p.t[m]}++s>255&&f(0)}else{for(s=u-127;a<s;a+=2){var T=r[++n];h[a]=T>>4,h[a+1]=15&T}++n}var x=0;for(a=0;a<s;++a)(I=h[a])>11&&f(0),x+=I&&1<<I-1;var F=b(x)+1,S=1<<F,B=S-x;for(B&B-1&&f(0),h[s++]=b(B)+1,a=0;a<s;++a){var I;++l[h[a]=(I=h[a])&&F+1-I]}var U=new t(S<<1),D=U.subarray(0,S),M=U.subarray(S);for(v[F]=0,a=F;a>0;--a){var W=v[a];o(M,a,W,v[a-1]=W+l[a]*(1<<F-a))}for(v[0]!=S&&f(0),a=0;a<s;++a){var O=h[a];if(O){var j=v[O];o(D,a,j,v[O]=j+(1<<F-O))}}return[n,{n:M,b:F,s:D}]},w=y(new t([81,16,99,140,49,198,24,99,12,33,196,24,99,102,102,134,70,146,4]),0,6)[1],g=y(new t([33,20,196,24,99,140,33,132,16,66,8,33,132,16,66,8,33,68,68,68,68,68,68,68,68,36,9]),0,6)[1],d=y(new t([32,132,16,66,102,70,68,68,68,68,36,73,2]),0,5)[1],m=function(r,t){for(var e=r.length,n=new s(e),a=0;a<e;++a)n[a]=t,t+=1<<r[a];return n},z=new t(new s([0,0,0,0,16843009,50528770,134678020,202050057,269422093]).buffer,0,36),E=m(z,0),k=new t(new s([0,0,0,0,0,0,0,0,16843009,50528770,117769220,185207048,252579084,16]).buffer,0,53),A=m(k,3),T=function(r,t,e){var n=r.length,a=t.length,s=r[n-1],i=(1<<e.b)-1,o=-e.b;s||f(0);for(var u=0,h=e.b,l=(n<<3)-8+b(s)-h,v=-1;l>o&&v<a;){var c=l>>3;t[++v]=e.s[u=(u<<h|(r[c]|r[c+1]<<8|r[c+2]<<16)>>(7&l))&i],l-=h=e.n[u]}l==o&&v+1==a||f(0)},x=function(r,t,e){var n=6,a=t.length+3>>2,s=a<<1,i=a+s;T(r.subarray(n,n+=r[0]|r[1]<<8),t.subarray(0,a),e),T(r.subarray(n,n+=r[2]|r[3]<<8),t.subarray(a,s),e),T(r.subarray(n,n+=r[4]|r[5]<<8),t.subarray(s,i),e),T(r.subarray(n),t.subarray(i),e)},F=function(r,n,a){var s,u=n.b,h=r[u],l=h>>1&3;n.l=1&h;var v=h>>3|r[u+1]<<5|r[u+2]<<13,c=(u+=3)+v;if(1==l){if(u>=r.length)return;return n.b=u+1,a?(o(a,r[u],n.y,n.y+=v),a):o(new t(v),r[u])}if(!(c>r.length)){if(0==l)return n.b=c,a?(a.set(r.subarray(u,c),n.y),n.y+=v,a):i(r,u,c);if(2==l){var m=r[u],F=3&m,S=m>>2&3,B=m>>4,I=0,U=0;F<2?1&S?B|=r[++u]<<4|(2&S&&r[++u]<<12):B=m>>3:(U=S,S<2?(B|=(63&r[++u])<<4,I=r[u]>>6|r[++u]<<2):2==S?(B|=r[++u]<<4|(3&r[++u])<<12,I=r[u]>>2|r[++u]<<6):(B|=r[++u]<<4|(63&r[++u])<<12,I=r[u]>>6|r[++u]<<2|r[++u]<<10)),++u;var D=a?a.subarray(n.y,n.y+n.m):new t(n.m),M=D.length-B;if(0==F)D.set(r.subarray(u,u+=B),M);else if(1==F)o(D,r[u++],M);else{var W=n.h;if(2==F){var O=p(r,u);I+=u-(u=O[0]),n.h=W=O[1]}else W||f(0);(U?x:T)(r.subarray(u,u+=I),D.subarray(M),W)}var j=r[u++];if(j){255==j?j=32512+(r[u++]|r[u++]<<8):j>127&&(j=j-128<<8|r[u++]);var C=r[u++];3&C&&f(0);for(var H=[g,d,w],L=2;L>-1;--L){var Z=C>>2+(L<<1)&3;if(1==Z){var q=new t([0,0,r[u++]]);H[L]={s:q.subarray(2,3),n:q.subarray(0,1),t:new e(q.buffer,0,1),b:0}}else 2==Z?(u=(s=y(r,u,9-(1&L)))[0],H[L]=s[1]):3==Z&&(n.t||f(0),H[L]=n.t[L])}var G=n.t=H,J=G[0],K=G[1],N=G[2],P=r[c-1];P||f(0);var Q=(c<<3)-8+b(P)-N.b,R=Q>>3,V=0,X=(r[R]|r[R+1]<<8)>>(7&Q)&(1<<N.b)-1,Y=(r[R=(Q-=K.b)>>3]|r[R+1]<<8)>>(7&Q)&(1<<K.b)-1,$=(r[R=(Q-=J.b)>>3]|r[R+1]<<8)>>(7&Q)&(1<<J.b)-1;for(++j;--j;){var _=N.s[X],rr=N.n[X],tr=J.s[$],er=J.n[$],nr=K.s[Y],ar=K.n[Y],sr=1<<nr,ir=sr+((r[R=(Q-=nr)>>3]|r[R+1]<<8|r[R+2]<<16|r[R+3]<<24)>>>(7&Q)&sr-1);R=(Q-=k[tr])>>3;var or=A[tr]+((r[R]|r[R+1]<<8|r[R+2]<<16)>>(7&Q)&(1<<k[tr])-1);R=(Q-=z[_])>>3;var ur=E[_]+((r[R]|r[R+1]<<8|r[R+2]<<16)>>(7&Q)&(1<<z[_])-1);if(R=(Q-=rr)>>3,X=N.t[X]+((r[R]|r[R+1]<<8)>>(7&Q)&(1<<rr)-1),R=(Q-=er)>>3,$=J.t[$]+((r[R]|r[R+1]<<8)>>(7&Q)&(1<<er)-1),R=(Q-=ar)>>3,Y=K.t[Y]+((r[R]|r[R+1]<<8)>>(7&Q)&(1<<ar)-1),ir>3)n.o[2]=n.o[1],n.o[1]=n.o[0],n.o[0]=ir-=3;else{var hr=ir-(0!=ur);hr?(ir=3==hr?n.o[0]-1:n.o[hr],hr>1&&(n.o[2]=n.o[1]),n.o[1]=n.o[0],n.o[0]=ir):ir=n.o[0]}for(L=0;L<ur;++L)D[V+L]=D[M+L];M+=ur;var fr=(V+=ur)-ir;if(fr<0){var lr=-fr,vr=n.e+fr;for(lr>or&&(lr=or),L=0;L<lr;++L)D[V+L]=n.w[vr+L];V+=lr,or-=lr,fr=0}for(L=0;L<or;++L)D[V+L]=D[fr+L];V+=or}if(V!=M)for(;M<D.length;)D[V++]=D[M++];else V=D.length;a?n.y+=V:D=i(D,0,V)}else if(a){if(n.y+=B,M)for(L=0;L<B;++L)D[L]=D[M+L]}else M&&(D=i(D,M));return n.b=c,D}f(2)}},S=function(r,e){if(1==r.length)return r[0];for(var n=new t(e),a=0,s=0;a<r.length;++a){var i=r[a];n.set(i,s),s+=i.length}return n};function B(r,t){for(var e=[],n=+!t,a=0,s=0;r.length;){var i=c(r,n||t);if("object"==typeof i){for(n?(t=null,i.w.length==i.u&&(e.push(t=i.w),s+=i.u)):(e.push(t),i.e=0);!i.l;){var o=F(r,i,t);o||f(5),t?i.e=i.y:(e.push(o),s+=o.length,u(i.w,0,o.length),i.w.set(o,i.w.length-o.length))}a=i.b+4*i.c}else a=i;r=r.subarray(a)}return S(e,s)}_e.decompress=B;var I=function(){function r(r){this.ondata=r,this.c=[],this.l=0,this.z=0}return r.prototype.push=function(r,e){if("number"==typeof this.s){var n=Math.min(r.length,this.s);r=r.subarray(n),this.s-=n}var a=r.length+this.l;if(!this.s){if(e){if(!a)return void this.ondata(new t(0),!0);a<5&&f(5)}else if(a<18)return this.c.push(r),void(this.l=a);if(this.l&&(this.c.push(r),r=S(this.c,a),this.c=[],this.l=0),"number"==typeof(this.s=c(r)))return this.push(r,e)}if("number"!=typeof this.s){if(a<(this.z||3))return e&&f(5),this.c.push(r),void(this.l=a);if(this.l&&(this.c.push(r),r=S(this.c,a),this.c=[],this.l=0),!this.z&&a<(this.z=2&r[this.s.b]?4:3+(r[this.s.b]>>3|r[this.s.b+1]<<5|r[this.s.b+2]<<13)))return e&&f(5),this.c.push(r),void(this.l=a);for(this.z=0;;){var s=F(r,this.s);if(!s){e&&f(5);var i=r.subarray(this.s.b);return this.s.b=0,this.c.push(i),void(this.l+=i.length)}if(this.ondata(s,!1),u(this.s.w,0,s.length),this.s.w.set(s,this.s.w.length-s.length),this.s.l){var o=r.subarray(this.s.b);return this.s=4*this.s.c,void this.push(o,e)}}}else e&&f(5)},r}();_e.Decompress=I;return _e})
+    return globalScope.fzstd && typeof globalScope.fzstd.decompress === "function" ? globalScope.fzstd : null;
+  }
   const FLATPICKR_CSS_GZIP_BASE64 = "H4sIAAAAAAACCtUby5LbuPHur2DW5VrLFrXUazQjXjaxK1V78GWzqT1s9kCR4IgZimSR1DzM0r+n8SLxFiV7korl0ohAo9Hd6Bca4CzNo7bK4ofaj6McFUlUd7sofrivy2ORbNs6KpoqqlHRhmUVxVn7sg3CJGuqPHrZFmWBwhY9t36UZ/fFNgYwVIePWZPtshzD7rMkQUVYRUmSFfcw1H9Cu4cMBhTZIWqzsqBIlMckq1FMHvO2DndlnaAaBqdl0fpN9hVt56vqOcyzAvl7lN3v2+0CN1BAv46S7Nhs19BSlU1G8ES7psyPLQqfsqTdb5fBZna7wRCcoF35jFFjKhkaaAnNrf6h8dvyGO/9iFJ5APqrY044CO09gmDfpmkqz72PkvJpO6+evQA+b9EN/kx9tSHwaMvw7KsNS3ie46/6fhe9D6bkMwtuJ+F/a6LTTFerWVmhYmrqyAq8kh3Xr3l4iJ75ut6sAlgkQaPIzxxZZ+i4clKs/i4v44fwq58VCXre3uF/xrFUAxHFoWtpWv09StAvxefyqfCWQXBovPi4y2J/h75mqH4/Wyyn8+lsuZjOJ+F1w04O2XCmKDe9VtcIa9YjGGFZbRfVsxFF0wJM3OmmgAcBVPx+HgTvvI8eIJg4MFDRCJIMJaqMIw/HvM2+gNnuPaE7iV4abwbfn6AnAv7qLUD48T7Lk/fFx/lEAQYp/BoV90iA2hQfN5POYEDYf3h/yQ5VWbcReC171/cjeDGO4LmRYH+hGN5afg4vgDWx5M32UfM7Qg8KB1Mb7G/ZAcmgXe/72rY8gCOWnv0aWyr3umpnjtKh7xL6+KQYgXnkQOzQ18Jzx3wHcR0MC9Z17L5A9bPEJa5ZUX4aiT86tqUJxXaH0rJGJgFvoxQipMEWVQPPcCT10SNE1IbGRBYFKQNiXI5BYvB3++OPISMsYFEuCInwFjbPQBbuS9m0DopnUV2XT78SvA6oARXh8BwmKgZCHZZiWNMgbiOUjPxEsouzpDIwYYZ18I5NAL8cC8Y1jgoPJweHqL7Pii2EvrWZMjaNNHAlDVy5WPoNtPIcPxiGz0LMD3vrMShlq/XjMi/rrUvztekMwyFtsY/9GyXwHEcMjM5CDNPJkYS1G+x5LEfSdPpwC0fbtIyPTVceWxyAZQf0VEdVJZpxH4dNyYc48oAjS9OHcyEchGpbmiOhETJO3CAC4mcdt6e22NJ5yr6Uud1NwjTLc62RuZWlmnTPDcm/LhPO0LEBwTcoh8yeejSg76uptdEbtYbyEdVpDiGR7TDEwIoFA7SJgsSPTITwk/5xy66q0SNtnjrhCiwBKuhXYZRIOEFxWQv7o/hYN7B4LEyE5tQukNaNb8HmOCjyJG55gRaMFZeYCWVNBLl6MlaChqGduNccS4KXjZ3Ry3QjvoLRy5XFOLj76cMbj/z76UPd5uDycBAB4wLH9+EnmggpIOCreoCTc/gbx8g3l7M8sHIFy4LROGmmUft/y/N2j33NWCYpdMdiy936DkV3p4tm8prH+8tmwyM6YrJv05vVZrUZbScXTEUmoQkOKb7wEKDkN+em86povMb0A3rXSgIYNVfMsDebN6GpjUgjK/aozmCfVxwPvxTVsf3dGreljF4B9zL8MNWaIZCaqw0WDFx6JNkxQmxJnI9zBEU42e/ZwJlYIEvBYaPKCn93hGynmJ4bkRWFPKLjKetQooNxEcg2RhYiiAD02FNLe5C5GHwCb0U2rItBgXByLuYU+HmoNCqBju2Bho0ciVHrzZT+D2bz9eSaip6ZN2bLQv4khURcsTEOw6W/R2Qdt7COIxmqvBPkm7sfftCjvBkNTXr/WXU0B1C27u4xcpJMAs6ql7WYPPJKK91nu0DYxCvrkt1MaPXq5p2LNlxAIxytg7Nwr8AFnvksCysbaYLvZD7J7XD4GOr79GRsrWvQGV0NrEOoFfe1V2krdKyxDFigForvy7Vss5wpAvLEks4gYMkl77XV4jcYG16k+WIGP7mv2MxWt6y6FSi7DjGvNZZ79W2JFEBgI3mgeyHgFS0TKqZJ6Oq0CoYqHzSJckqjQ5a/GAWz0QRjZIG6Y6q9s3W8H3zoWErGqIQNkxYy6VLdAB1s0eL9v4Kz2103UofrkYoOjo3I6Al0vzCUAEbjJzGUCPgF2c/JrjlRkhWCRT2sxULoxB+iCX2kNirOYKeS9jk0EpuqyZwFHzWcwclnbEEIKgZnA1HOzC0rwMaj3JREYHbSDOUJ3Q8be0yNY9fDVbFxjfuD7zX/nF48gtmY4BshuzNtqiEvsaiLodbr0HAlcf5clxUcDBS8sCTI74CKY541rW1etqJCbVks4Y9WUp6aXad2ooqZVJCpen84GYR8eQndBuPQc/szGmo54tX1txeoqr59B3WN2rHAJStIlXh69XCWe4pSup6WbwkgbtRn+oU5mY+WLiIYVUAq0MJxEj6zs7loPT9Q64nDXi38bsVaSeWM2Qlp9LMWHZq+iyGTBxgA+UWIW3lDzkXh6W1xf9T2OiyOrcOSKK1R1zEHk6A0gkNZwcHcwaKML2qvVxMlfezjp64G8ubrCmYkD7crc/AnJ+uxK+a06frKLPdxJ+Xk2VCvUNX1NXUUTv/r1qiiRC9Zt6ymtNECq1zBUdnV47h0LDzcJeohxIXECbN2yecAmbTWBpdMvsdlIGMS5hLz6DWS1oPIDx88bfFXqDz24jc0wdbuYfvvY9Nm6UuPjj37vL4ABhQjPyIWFTo7v3knFQqbTXFl4QaKvNKmyxJzx+WIuf0yBPYngssQD9TnztIAzYjm6+BK7WCF4OUd/hhzpid+WWGomM0Wt+vNfLV8J6/+LmqyRu7u17hGKYL4m/DrcQOMZaig/ndDNY78Fr0laXBvOOwnflgkRPuUMKfqlxrqxDEWWM11n8w3cKZKM65Gk+s9n+0wuAB9DqYtx07ihJSmckHqpxDqRGYIcQIjhJ5waoiNEBJi6rEV7R7cs3jvsbdbYiLWI/xexp0MqZ+o9JBmAdAuSqAJlUQcazLfDMDY6MmsfKJJ2nFgM64wHDkZ2zkmm2YMGG0QHLMVA5vBvH4DfnM/x24ZzXEbZS7gNvb3uM2juWREJXSIxwXWy8iJi08o6rRjQhdYP6EIJIaet+ubuzTdhJari+p9RUEXFZuheGwK6tBIgZPzaiuAdMr16oCFW/zDSoZV/QcibCA9CfyHQgCdmX4FI+SA84te84qyfa/ezpyMktTlaAyyPI/EnP1wmXMtcnWOEMmY5blkpQywBq2xhGp1eU0m4q8vuCy7Hn9ZFpPhvrdihjgfll1xU+sr27/msKvTZx563MgHMMn/CNti4dhqOXHXBg2lF3lP/v0kyHMHYACyOsJBaCZaviePceJddK/clykRNZTp2mFVZ2BVYuh+vNNegTnNaqzjX8oEKXfF2cE7v6Gs1m74XUPY7Uct2d1aIDxrYQHe5Fio2xfjSyCO90NGTor5oZSS4CVU0aSXdW6tfHpKMSiRldwNyXRJLuIINAx7HiG0jrcKpSAlFNBFZsjNik9aaU2pC3zXOs3YzahSNRKpNlAsb/K0N7guul6hXKA31F/7zYIssP5Gu6g/5GK/8JLQ6trd+auV0VSO2dGjcJuDQ7fYC4bkzg9Q1u7VkfpR7DVVSXYzHWxAFJnZpxhnHXtWyyodl+BzHc1a0OE3M/4Bd2KLpLEdVZP7JMoo/LVY7WvbmNWdNoZd3Rpz1OtI4q2np7oh9LWWweKUMzHTOZlcZlLek3QXaEa/9Pg6J7qDkIXGfXlkh6pCJf3sKKjywq2S6TmwhihOpxTfzNjVWnS/krqCy88wC+hI1Jb11AEZHfzq0Km3aHqrHLvUgpCYpS/evc61e/kUAHpSrXiHy/2mwyoB+HRWJIPAWfi+facWT3XTGbeiWsZupMACJijFeRSs6CQWv5CSKgC2P2oEjqLIX/5UCminn7m0H9BLWkcH1Hji+6RdWpeHbrgrea4w7y/A57uK8xzg1JbCy7jffnPq9PP/OwP/ATTgCv4mPwAA";
 
   // Standard short-context USD / 1M tokens, synced from scripts/prices.json on 2026-07-31.
@@ -231,7 +261,26 @@ const VERSION = "0.7.9-beta1";
   if (window.__codexLiveTokenCostVersion === VERSION) return;
   window.__codexLiveTokenCostVersion = VERSION;
 
+  const disposers = [];
+  function trackTimer(id) {
+    disposers.push(() => {
+      window.clearTimeout(id);
+      window.cancelAnimationFrame(id);
+    });
+    return id;
+  }
+  function trackObserver(observer) {
+    disposers.push(() => observer?.disconnect?.());
+    return observer;
+  }
+  function trackListener(target, type, handler, options) {
+    target.addEventListener(type, handler, options);
+    disposers.push(() => target.removeEventListener(type, handler, options));
+    return handler;
+  }
+
   const state = {
+    startTimer: 0,
     root: null,
     settingsOverlay: null,
     settingsOverlayCloseTimer: 0,
@@ -271,6 +320,8 @@ const VERSION = "0.7.9-beta1";
     localTurnSeq: 0,
     localSeenUsage: new Map(),
     localPersistedUsage: new Map(),
+    localLedgerSaveError: "",
+    dailyLedgerSaveError: "",
     profileLedger: null,
     profileLedgerTurnIndex: new Map(),
     profileLedgerTurnIndexLedger: null,
@@ -279,6 +330,7 @@ const VERSION = "0.7.9-beta1";
     profileLedgerDb: null,
     profileLedgerDbPromise: null,
     profileLedgerWriteQueue: Promise.resolve(),
+    profileLedgerWriteWarned: false,
     profileLedgerMigrationChecked: false,
     profileInvocationSeq: 0,
     legacySessionMigrations: new Set(),
@@ -300,10 +352,20 @@ const VERSION = "0.7.9-beta1";
     analyticsMetric: "tokens",
     analyticsCustomStart: "",
     analyticsCustomEnd: "",
+    usageSyncBusy: false,
+    usageSyncStatus: "",
+    usageSyncResult: null,
+    usageSyncDirHandle: null,
+    usageSyncDbPromise: null,
     analyticsModel: "",
     analyticsModelsExpanded: false,
     analyticsRollup: null,
     analyticsRollupLoaded: false,
+    analyticsRollupSaveError: "",
+    codexppHistoryTurns: [],
+    codexppHistoryAt: 0,
+    codexppHistoryFetching: false,
+    codexppHistorySessionId: "",
     analyticsTimer: 0,
     analyticsCalendar: null,
     flatpickrPromise: null,
@@ -339,25 +401,9 @@ const VERSION = "0.7.9-beta1";
     officialModelTrigger: null,
     taskRunningObserver: null,
     taskRunningDom: false,
-    helperStats: null,
-    helperStatsSignature: "",
-    helperStatsAt: 0,
     profileDataRefreshAttemptAt: 0,
     profileDataRefreshAt: 0,
     profileDataRefreshPromise: null,
-    helperStatus: HELPER_STATUS_DEFAULT,
-    helperUnavailable: false,
-    helperCheckedAt: 0,
-    helperPollInFlight: false,
-    helperPollPromise: null,
-    helperThreadContent: new Map(),
-    helperThreadContentInFlight: new Set(),
-    ccSwitchSyncInFlight: false,
-    ccSwitchSyncPromise: null,
-    ccSwitchSyncGeneration: 0,
-    ccSwitchStartupSyncStarted: false,
-    ccSwitchSyncStatus: "",
-    settingsStatusPulseFrame: 0,
     settingsFocusFrame: 0,
     analyticsSegmentSwitchFrame: 0,
     hubValueCache: new Map(),
@@ -479,12 +525,6 @@ const VERSION = "0.7.9-beta1";
 
   function profileLedgerTurnIndex(ledger) {
     return state.profileLedgerTurnIndexLedger === ledger ? state.profileLedgerTurnIndex : profileLedgerRebuildTurnIndex(ledger);
-  }
-
-  function isCcSwitchProfileTurn(turn) {
-    const source = normalizeText(turn?.source, 80);
-    const importSource = normalizeText(turn?.importSource, 80);
-    return source === "cc-switch" || importSource === "cc-switch";
   }
 
   function profileDurationRank(status) {
@@ -702,13 +742,16 @@ const VERSION = "0.7.9-beta1";
         [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS],
         "readwrite",
       );
-      [PROFILE_LEDGER_STORE_TURNS, PROFILE_LEDGER_STORE_USAGE_CALLS, PROFILE_LEDGER_STORE_INVOCATIONS, PROFILE_LEDGER_STORE_DAILY_ROLLUPS].forEach((store) =>
-        tx.objectStore(store).clear(),
-      );
+      // Append-only stores: turns / calls / invocations are upserted, never cleared.
+      // A stale in-memory ledger (leftover hot-reload instance, second window) must
+      // not be able to delete records that already reached IndexedDB.
       ledger.turns.forEach((turn) => tx.objectStore(PROFILE_LEDGER_STORE_TURNS).put(turn));
       Object.values(ledger.usageCalls || {}).forEach((call) => tx.objectStore(PROFILE_LEDGER_STORE_USAGE_CALLS).put(call));
       Object.values(ledger.invocations || {}).forEach((invocation) => tx.objectStore(PROFILE_LEDGER_STORE_INVOCATIONS).put(invocation));
-      rollupDays.forEach((day) => tx.objectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS).put(day));
+      // Rollups are derived data (rebuilt from turns when the DB is opened) and stay full-rewrite.
+      const rollupStore = tx.objectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS);
+      rollupStore.clear();
+      rollupDays.forEach((day) => rollupStore.put(day));
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error || new Error("profile ledger IndexedDB snapshot write failed"));
       tx.onabort = () => reject(tx.error || new Error("profile ledger IndexedDB snapshot transaction aborted"));
@@ -768,12 +811,24 @@ const VERSION = "0.7.9-beta1";
         scheduleRender();
         return db;
       })
-      .catch(() => {
+      .catch((error) => {
         state.profileLedgerStorage = "localStorage-fallback";
         state.profileLedgerDb = null;
+        warnProfileLedgerWriteFailure(error);
         saveProfileLedgerSnapshot();
         return null;
       });
+  }
+
+  function warnProfileLedgerWriteFailure(error) {
+    if (state.profileLedgerWriteWarned) return;
+    state.profileLedgerWriteWarned = true;
+    try {
+      const detail = error?.name ? `${error.name}: ${error.message || ""}` : String(error || "unknown error");
+      console.warn(`[codex-live-token-cost] profile ledger IndexedDB write degraded to localStorage: ${detail}`);
+    } catch {
+      // The console may be unavailable in sandboxed contexts.
+    }
   }
 
   function profileLedgerQueueWrite(turn, calls = [], invocations = []) {
@@ -799,9 +854,10 @@ const VERSION = "0.7.9-beta1";
           tx.onabort = () => reject(tx.error || new Error("profile ledger IndexedDB write transaction aborted"));
         });
       })
-      .catch(() => {
+      .catch((error) => {
         state.profileLedgerStorage = "localStorage-fallback";
         state.profileLedgerDb = null;
+        warnProfileLedgerWriteFailure(error);
         saveProfileLedgerSnapshot();
       });
   }
@@ -814,9 +870,10 @@ const VERSION = "0.7.9-beta1";
         if (!db || state.profileLedgerStorage !== "indexeddb") return null;
         return profileLedgerWriteSnapshot(db);
       })
-      .catch(() => {
+      .catch((error) => {
         state.profileLedgerStorage = "localStorage-fallback";
         state.profileLedgerDb = null;
+        warnProfileLedgerWriteFailure(error);
         saveProfileLedgerSnapshot();
       });
   }
@@ -846,7 +903,6 @@ const VERSION = "0.7.9-beta1";
     const day = (rollup.days[date] ||= {
       date,
       local: profileEmptyBucket(),
-      ccSwitch: profileEmptyBucket(),
       tokens: 0,
       input: 0,
       output: 0,
@@ -875,27 +931,16 @@ const VERSION = "0.7.9-beta1";
     bucket.turns += 1;
   }
 
-  function dailyBucketAuthority(local, ccSwitch) {
-    const total = (bucket) => toCount(bucket?.total ?? bucket?.tokens);
-    const compare = (left, right) =>
-      total(left) - total(right) ||
-      (Number(left?.cost) || 0) - (Number(right?.cost) || 0) ||
-      toCount(left?.requests) - toCount(right?.requests);
-    return compare(ccSwitch, local) >= 0 ? ccSwitch : local;
-  }
-
   function profileDisplayedBucket(day) {
     const local = day?.local || profileEmptyBucket();
-    const cc = day?.ccSwitch || profileEmptyBucket();
-    const selected = dailyBucketAuthority(local, cc);
     return {
       date: day?.date || "",
-      tokens: toCount(selected?.total),
-      input: toCount(selected?.input),
-      output: toCount(selected?.output),
-      cached: toCount(selected?.cached),
-      requests: toCount(selected?.requests),
-      cost: Number(selected?.cost) || 0,
+      tokens: toCount(local?.total),
+      input: toCount(local?.input),
+      output: toCount(local?.output),
+      cached: toCount(local?.cached),
+      requests: toCount(local?.requests),
+      cost: Number(local?.cost) || 0,
     };
   }
 
@@ -963,17 +1008,14 @@ const VERSION = "0.7.9-beta1";
       if (!date) continue;
       const day = profileRollupDay(rollup, date);
       const durationMs = Math.max(0, toCount(turn.durationMs));
-      if (!isCcSwitchProfileTurn(turn)) {
-        day.maxObservedDurationMs = Math.max(day.maxObservedDurationMs, durationMs);
-        day.maxCompletedDurationMs = Math.max(day.maxCompletedDurationMs, turn.durationStatus === "completed" ? durationMs : 0);
-        if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
-        rollup.activity.longestObservedDurationMs = Math.max(rollup.activity.longestObservedDurationMs, durationMs);
-        if (turn.durationStatus === "completed") rollup.activity.longestCompletedDurationMs = Math.max(rollup.activity.longestCompletedDurationMs, durationMs);
-      }
+      day.maxObservedDurationMs = Math.max(day.maxObservedDurationMs, durationMs);
+      day.maxCompletedDurationMs = Math.max(day.maxCompletedDurationMs, turn.durationStatus === "completed" ? durationMs : 0);
+      if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
+      rollup.activity.longestObservedDurationMs = Math.max(rollup.activity.longestObservedDurationMs, durationMs);
+      if (turn.durationStatus === "completed") rollup.activity.longestCompletedDurationMs = Math.max(rollup.activity.longestCompletedDurationMs, durationMs);
       if (!usage.exact || !toCount(usage.total || usage.input + usage.output)) continue;
       const cost = turnCost(turn, turn.model).value;
-      profileAddBucket(isCcSwitchProfileTurn(turn) ? day.ccSwitch : day.local, turn, usage, cost);
-      if (isCcSwitchProfileTurn(turn)) continue;
+      profileAddBucket(day.local, turn, usage, cost);
       day.totalTurns += 1;
       day.totalTokens += toCount(usage.total || usage.input + usage.output);
       if (turn.fastMode === true) {
@@ -1327,6 +1369,15 @@ const VERSION = "0.7.9-beta1";
   function stickyBridge() {
     const bridge = window.__codexLiveTokenCostActiveBridge;
     return bridge && typeof bridge.profileSyntheticEnabled === "function" ? bridge : null;
+  }
+
+  const CODEX_PLUS_SUPPORTED_API = 1;
+  function codexPlusApiReady() {
+    const api = window.codexPlus;
+    if (!api) return false;
+    const version = api.apiVersion;
+    if (typeof version !== "number") return true;
+    return version === CODEX_PLUS_SUPPORTED_API;
   }
 
   function reportFailure(error) {
@@ -2753,43 +2804,6 @@ const VERSION = "0.7.9-beta1";
     return false;
   }
 
-  function helperThreadContentKey(sessionKey) {
-    return normalizeText(sessionKey, 240).replace(/^local:/, "");
-  }
-
-  function normalizeHelperThreadContentPayload(payload) {
-    if (!payload?.ok) return null;
-    const threadId = normalizeText(payload.threadId || payload.thread_id, 240);
-    const key = helperThreadContentKey(threadId);
-    if (!key) return null;
-    return {
-      threadId,
-      key,
-      exists: Boolean(payload.exists),
-      hasMessages: Boolean(payload.hasMessages || payload.has_messages),
-      hasUsage: Boolean(payload.hasUsage || payload.has_usage),
-      hasContent: Boolean(payload.hasContent || payload.has_content || payload.hasMessages || payload.has_messages || payload.hasUsage || payload.has_usage),
-      lastEventAt: normalizeText(payload.lastEventAt || payload.last_event_at, 80),
-      observedAt: Date.now(),
-    };
-  }
-
-  function mergeHelperThreadContent(payload) {
-    const normalized = normalizeHelperThreadContentPayload(payload);
-    if (!normalized) return false;
-    const previous = state.helperThreadContent.get(normalized.key);
-    const changed =
-      !previous ||
-      previous.exists !== normalized.exists ||
-      previous.hasMessages !== normalized.hasMessages ||
-      previous.hasUsage !== normalized.hasUsage ||
-      previous.hasContent !== normalized.hasContent ||
-      previous.lastEventAt !== normalized.lastEventAt;
-    state.helperThreadContent.set(normalized.key, normalized);
-    if (changed) scheduleRender(0);
-    return true;
-  }
-
   function hasLocalThreadContentEvidence(sessionKey) {
     const key = localStateSessionKey(sessionKey);
     if (!key || isTransientSessionKey(key)) return false;
@@ -2802,10 +2816,7 @@ const VERSION = "0.7.9-beta1";
     if (!key || isTransientSessionKey(key)) return { state: "unknown", sessionKey: key, source: "none" };
     if (hasLocalThreadContentEvidence(key)) return { state: "non_empty", sessionKey: key, source: "local" };
     if (hasConversationTranscriptDom(doc)) return { state: "non_empty", sessionKey: key, source: "dom" };
-    const helper = state.helperThreadContent.get(helperThreadContentKey(key));
-    if (helper?.hasContent) return { state: "non_empty", sessionKey: key, source: "helper", helper };
-    if (helper?.exists && !helper.hasContent) return { state: "empty", sessionKey: key, source: "helper", helper };
-    return { state: "unknown", sessionKey: key, source: helper ? "helper" : "none", helper: helper || null };
+    return { state: "unknown", sessionKey: key, source: "none" };
   }
 
   function hasStartupComposerSurface(doc = document) {
@@ -2861,7 +2872,6 @@ const VERSION = "0.7.9-beta1";
     const runningCandidates = [detectedKey, selectedKey].filter(Boolean);
     if (hasRunningConversationState(runningCandidates.length ? runningCandidates : null)) return "";
     if (!isStructurallyBlankConversationDom(doc)) return "";
-    if (detectedKey && conversationContentState(detectedKey, doc).state === "unknown") requestHelperThreadContent(detectedKey);
     return "new:auto";
   }
 
@@ -2965,6 +2975,59 @@ const VERSION = "0.7.9-beta1";
     return a.replace(/^local:/, "") === b.replace(/^local:/, "");
   }
 
+  function codexppHistoryTurnsFromPayload(payload, sessionKey = "") {
+    const entries = Array.isArray(payload?.history) ? payload.history : [];
+    const key = normalizeText(sessionKey, 240).replace(/^local:/, "");
+    const byTurn = new Map();
+    for (const entry of entries) {
+      const usage = normalizeUsage(entry?.usage || {
+        inputTokens: entry?.inputTokens ?? entry?.input_tokens,
+        outputTokens: entry?.outputTokens ?? entry?.output_tokens,
+        cachedTokens: entry?.cachedTokens ?? entry?.cached_tokens,
+        totalTokens: entry?.totalTokens ?? entry?.total_tokens,
+      });
+      if (!usage.exact) continue;
+      const conversationId = normalizeText(entry?.conversation_id ?? entry?.conversationId ?? entry?.sessionId ?? entry?.session_id ?? key, 240);
+      const turnId = normalizeText(entry?.turn_id ?? entry?.turnId ?? entry?.id, 240);
+      if (!turnId && !conversationId) continue;
+      const observedAt = toTimestampMs(entry?.observed_at ?? entry?.observedAt) || Date.now();
+      const turn = {
+        turnId: turnId || `codexpp-history:${conversationId}:${usageKey(usage)}`,
+        source: "codexpp-history",
+        importSource: "codexpp-history",
+        sessionKey: conversationId ? `local:${conversationId}` : "",
+        threadKey: conversationId ? `local:${conversationId}` : "",
+        model: normalizeText(entry?.model ?? entry?.request_model ?? activeModelInfo().model, 120) || UNKNOWN_MODEL,
+        createdAt: new Date(observedAt).toISOString(),
+        observedAt,
+        usage,
+        callCount: 1,
+        timeGranularity: "hour",
+      };
+      // 上游按轮次累积 token_count，同一 turn 只保留最后一条，避免中间值重复计入。
+      const groupKey = `${conversationId}\u0001${turnId || turn.turnId}`;
+      byTurn.set(groupKey, turn);
+    }
+    return Array.from(byTurn.values());
+  }
+
+  function codexppTokenKey(turn) {
+    const usage = normalizeUsage(turn?.usage);
+    return `${toCount(usage.input)}:${toCount(usage.output)}:${toCount(usage.cached)}:${toCount(usage.total)}`;
+  }
+
+  // 本地优先，codexpp 历史只补本地没有的 token 构成，避免重复计数。
+  function mergeCodexppHistoryTurns(localTurns) {
+    const seen = new Set((Array.isArray(localTurns) ? localTurns : []).map(codexppTokenKey));
+    const extra = (Array.isArray(state.codexppHistoryTurns) ? state.codexppHistoryTurns : []).filter((turn) => {
+      const key = codexppTokenKey(turn);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    return [...(Array.isArray(localTurns) ? localTurns : []), ...extra];
+  }
+
   function currentSessionTurns(turns, key = currentSessionKey()) {
     const sessionKey = normalizeText(key, 240);
     if (isTransientSessionKey(sessionKey) || !Array.isArray(turns)) return [];
@@ -2988,12 +3051,34 @@ const VERSION = "0.7.9-beta1";
     return { date, items: [] };
   }
 
+  function isQuotaStorageError(error) {
+    const name = String(error?.name || "");
+    const message = String(error?.message || "");
+    return (
+      error?.code === 22 ||
+      error?.code === 1014 ||
+      /quota|exceeded/i.test(name) ||
+      /quota|exceeded/i.test(message)
+    );
+  }
+
   function saveDailyLedger(ledger) {
-    try {
-      localStorage.setItem(DAILY_USAGE_KEY, JSON.stringify({ date: ledger.date, items: ledger.items.slice(-500) }));
-    } catch {
-      // Ignore quota or privacy-mode failures.
+    const items = Array.isArray(ledger?.items) ? ledger.items.slice(-500) : [];
+    let saved = false;
+    for (const limit of DAILY_LEDGER_QUOTA_TRIM_LIMITS) {
+      try {
+        localStorage.setItem(DAILY_USAGE_KEY, JSON.stringify({ date: ledger.date, items: limit > 0 ? items.slice(-limit) : [] }));
+        saved = true;
+        break;
+      } catch (error) {
+        if (!isQuotaStorageError(error)) {
+          state.dailyLedgerSaveError = "storage";
+          break;
+        }
+      }
     }
+    state.dailyLedgerSaveError = saved ? "" : state.dailyLedgerSaveError || "quota";
+    return saved;
   }
 
   function loadLocalLedger() {
@@ -3020,26 +3105,45 @@ const VERSION = "0.7.9-beta1";
   }
 
   function saveLocalLedger() {
-    try {
-      const compacted = compactLocalLedger(state.localLedger, state.localUsageArchive);
-      state.localLedger = compacted.turns;
-      state.localUsageArchive = compacted.archive;
+    const compacted = compactLocalLedger(state.localLedger, state.localUsageArchive);
+    state.localLedger = compacted.turns;
+    state.localUsageArchive = compacted.archive;
     invalidateLocalUsageCache();
-      if (isTransientSessionKey(turnSessionKey(state.localLast))) state.localLast = state.localLedger[state.localLedger.length - 1] || null;
-      localStorage.setItem(
-        LOCAL_USAGE_KEY,
-        JSON.stringify({
-          turns: state.localLedger,
-          archive: state.localUsageArchive,
-          last: state.localLast,
-          seq: state.localTurnSeq,
-          sessionAliases: Object.fromEntries(state.sessionAliases),
-        }),
-      );
-      refreshAnalyticsRollupDates([...compacted.dates, localDateKey(turnTimestampMs(state.localLast))]);
-    } catch {
-      // Ignore quota or privacy-mode failures.
+    if (isTransientSessionKey(turnSessionKey(state.localLast))) state.localLast = state.localLedger[state.localLedger.length - 1] || null;
+    let saved = false;
+    let evictedDates = [];
+    for (const limit of LOCAL_LEDGER_QUOTA_TRIM_LIMITS) {
+      const candidate =
+        limit < LOCAL_LEDGER_LIMIT
+          ? compactLocalLedger(state.localLedger, state.localUsageArchive, limit)
+          : { turns: state.localLedger, archive: state.localUsageArchive, dates: [] };
+      try {
+        localStorage.setItem(
+          LOCAL_USAGE_KEY,
+          JSON.stringify({
+            turns: candidate.turns,
+            archive: candidate.archive,
+            last: state.localLast,
+            seq: state.localTurnSeq,
+            sessionAliases: Object.fromEntries(state.sessionAliases),
+          }),
+        );
+        state.localLedger = candidate.turns;
+        state.localUsageArchive = candidate.archive;
+        evictedDates = candidate.dates || [];
+        saved = true;
+        break;
+      } catch (error) {
+        if (!isQuotaStorageError(error)) {
+          state.localLedgerSaveError = "storage";
+          break;
+        }
+      }
     }
+    state.localLedgerSaveError = saved ? "" : state.localLedgerSaveError || "quota";
+    if (saved && state.localLedger !== compacted.turns) invalidateLocalUsageCache();
+    refreshAnalyticsRollupDates([...compacted.dates, ...evictedDates, localDateKey(turnTimestampMs(state.localLast))]);
+    return saved;
   }
 
   function normalizedDurationMs(raw, startedAt = 0, finishedAt = 0) {
@@ -3058,9 +3162,9 @@ const VERSION = "0.7.9-beta1";
     if (!usage.exact) return null;
     const createdAt = normalizeText(raw.createdAt || raw.created_at || raw.date, 40);
     const date = new Date(createdAt || Date.now());
-    const observedAt = toCount(raw.observedAt || raw.observed_at || date.getTime());
-    const startedAt = toCount(raw.startedAt || raw.started_at || raw.startTime || raw.start_time || date.getTime()) || observedAt || Date.now();
-    const finishedAt = toCount(raw.finishedAt || raw.finished_at || raw.completedAt || raw.completed_at || raw.endTime || raw.end_time || observedAt) || startedAt;
+    const observedAt = toTimestampMs(raw.observedAt || raw.observed_at) || date.getTime();
+    const startedAt = toTimestampMs(raw.startedAt || raw.started_at || raw.startTime || raw.start_time || date.getTime()) || observedAt || Date.now();
+    const finishedAt = toTimestampMs(raw.finishedAt || raw.finished_at || raw.completedAt || raw.completed_at || raw.endTime || raw.end_time || observedAt) || startedAt;
     const durationMs = normalizedDurationMs(raw, startedAt, finishedAt);
     const sessionKey = resolveSessionKey(raw.sessionKey || raw.session_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || raw.sessionId || raw.session_id);
     const threadKey = resolveSessionKey(raw.threadKey || raw.thread_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || sessionKey);
@@ -3079,7 +3183,22 @@ const VERSION = "0.7.9-beta1";
       model: normalizeText(raw.model || raw.request_model || raw.pricing_model, 120) || UNKNOWN_MODEL,
       effort: normalizeReasoningEffort(raw.effort),
       fastMode: typeof raw.fastMode === "boolean" ? raw.fastMode : null,
-      invocations: Array.isArray(raw.invocations) ? raw.invocations.map(normalizeProfileInvocation).filter(Boolean) : [],
+      invocations: Array.isArray(raw.invocations) ? raw.invocations.filter((item) => normalizeProfileInvocation(item)) : [],
+      calls: Array.isArray(raw.calls)
+        ? raw.calls
+            .map((call) => {
+              const callUsage = normalizeUsage(call?.usage || call);
+              return callUsage.exact
+                ? {
+                    usage: callUsage,
+                    usageKey: usageKey(callUsage),
+                    observedAt: toTimestampMs(call?.observedAt || call?.observed_at) || observedAt,
+                    source: normalizeText(call?.source, 80),
+                  }
+                : null;
+            })
+            .filter(Boolean)
+        : [],
       createdAt: Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(),
       observedAt: observedAt || Date.now(),
       ...(toCount(raw.importedAt || raw.imported_at || options.importedAt) ? { importedAt: toCount(raw.importedAt || raw.imported_at || options.importedAt) } : {}),
@@ -3098,20 +3217,11 @@ const VERSION = "0.7.9-beta1";
     };
   }
 
-  function trimLocalLedger(turns) {
+  function trimLocalLedger(turns, limit = LOCAL_LEDGER_LIMIT) {
     const exact = (Array.isArray(turns) ? turns : [])
       .filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item)));
-    const local = exact.filter((turn) => {
-      const source = normalizeText(turn?.source, 80);
-      const importSource = normalizeText(turn?.importSource, 80);
-      return source !== "cc-switch" && importSource !== "cc-switch";
-    });
-    const retainedLocal = new Set(local.slice(-LOCAL_LEDGER_LIMIT));
-    return exact.filter((turn) => {
-      const source = normalizeText(turn?.source, 80);
-      const importSource = normalizeText(turn?.importSource, 80);
-      return source === "cc-switch" || importSource === "cc-switch" || retainedLocal.has(turn);
-    });
+    if (!(limit > 0)) return [];
+    return exact.slice(-limit);
   }
 
   function normalizeLocalUsageArchive(raw) {
@@ -3140,16 +3250,12 @@ const VERSION = "0.7.9-beta1";
     return { version: 1, updatedAt: Date.now(), days: rollup.days };
   }
 
-  function compactLocalLedger(turns, archive = null) {
+  function compactLocalLedger(turns, archive = null, limit = LOCAL_LEDGER_LIMIT) {
     const exact = (Array.isArray(turns) ? turns : [])
       .filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item)));
-    const retained = trimLocalLedger(exact);
+    const retained = trimLocalLedger(exact, limit);
     const retainedSet = new Set(retained);
-    const evicted = exact.filter((turn) => {
-      const source = normalizeText(turn?.source, 80);
-      const importSource = normalizeText(turn?.importSource, 80);
-      return source !== "cc-switch" && importSource !== "cc-switch" && !retainedSet.has(turn);
-    });
+    const evicted = exact.filter((turn) => !retainedSet.has(turn));
     return {
       turns: retained,
       archive: mergeLocalUsageArchive(archive, evicted),
@@ -3159,28 +3265,106 @@ const VERSION = "0.7.9-beta1";
     };
   }
 
+  function importUsageSignature(usage) {
+    const normalized = normalizeUsage(usage);
+    return normalized.exact ? `${normalized.input}\u0001${normalized.output}\u0001${normalized.cached}\u0001${normalized.total}` : "";
+  }
+
+  function buildImportDedupeIndex(ledger, replaceSource = "") {
+    const index = new Map();
+    for (const turn of ledger?.turns || []) {
+      if (replaceSource && (turn.importSource === replaceSource || turn.source === replaceSource)) continue;
+      const threadKey = normalizeText(turn.threadKey, 240);
+      const signature = importUsageSignature(turn.usage);
+      if (!threadKey || !signature) continue;
+      const timestamp = toTimestampMs(turn.startedAt || turn.capturedAt);
+      if (!timestamp) continue;
+      const list = index.get(threadKey);
+      if (list) list.push({ timestamp, signature });
+      else index.set(threadKey, [{ timestamp, signature }]);
+    }
+    return index;
+  }
+
+  function importTurnMatchesLedger(index, turn, windowMs) {
+    const threadKey = normalizeText(turn.threadKey, 240);
+    const list = threadKey ? index.get(threadKey) : null;
+    if (!list?.length) return false;
+    const signature = importUsageSignature(turn.usage);
+    if (!signature) return false;
+    const timestamp = toTimestampMs(turn.startedAt || turn.observedAt);
+    if (!timestamp) return false;
+    return list.some((entry) => entry.signature === signature && Math.abs(entry.timestamp - timestamp) <= windowMs);
+  }
+
   function importLocalUsageTurns(rows, options = {}) {
     ensureLocalLedgerLoaded();
     const items = Array.isArray(rows) ? rows : [];
     const replaceSource = normalizeText(options.replaceSource, 80);
+    const idbOnly = options.idbOnly === true;
     const importedAt = toCount(options.importedAt) || Date.now();
-    const existing = replaceSource ? state.localLedger.filter((turn) => turn.importSource !== replaceSource && turn.source !== replaceSource) : state.localLedger.slice();
-    const byId = new Map(existing.map((turn) => [turn.turnId, turn]));
+    const ledger = ensureProfileLedgerLoaded();
+    const dedupeIndex = options.dedupeAgainstLedger === true ? buildImportDedupeIndex(ledger, replaceSource) : null;
+    const dedupeWindowMs = toCount(options.dedupeWindowMs) || 90_000;
+    const addedTurns = [];
     let imported = 0;
     let skipped = 0;
+    let deduped = 0;
     items.forEach((row, index) => {
       const turn = normalizeImportedUsageTurn(row, index, { importedAt });
       if (!turn) {
         skipped++;
         return;
       }
-      byId.set(turn.turnId, turn);
-      profileLedgerUpsertTurn({
+      if (dedupeIndex && importTurnMatchesLedger(dedupeIndex, turn, dedupeWindowMs)) {
+        deduped++;
+        return;
+      }
+      const invocationIds = [];
+      for (const rawInvocation of turn.invocations || []) {
+        const invocation = normalizeProfileInvocation(rawInvocation);
+        if (!invocation) continue;
+        const explicitId = profileInvocationEventId(rawInvocation) || `import:${normalizeText(rawInvocation?.key, 120) || index}`;
+        const invocationId = `${turn.turnId}\u0001${explicitId}`;
+        if (!ledger.invocations[invocationId]) {
+          ledger.invocations[invocationId] = {
+            ...invocation,
+            invocationId,
+            turnId: turn.turnId,
+            occurrence: toCount(rawInvocation?.occurrence) || 1,
+            observedAt: toTimestampMs(rawInvocation?.observedAt) || importedAt,
+            source: normalizeText(rawInvocation?.source, 80) || turn.source,
+          };
+        }
+        invocationIds.push(invocationId);
+      }
+      for (const call of turn.calls || []) {
+        const callUsage = normalizeUsage(call?.usage);
+        if (!callUsage.exact) continue;
+        const canonicalUsageKey = usageKey(callUsage);
+        const id = `${turn.turnId}\u0001${canonicalUsageKey}`;
+        if (ledger.usageCalls[id]) continue;
+        ledger.usageCalls[id] = {
+          id,
+          turnId: turn.turnId,
+          usageKey: canonicalUsageKey,
+          usage: callUsage,
+          observedAt: toTimestampMs(call?.observedAt) || importedAt,
+          source: normalizeText(call?.source, 80) || turn.source,
+        };
+      }
+      const upserted = profileLedgerUpsertTurn({
         ...turn,
+        invocationIds,
         durationStatus: "incomplete",
         persistReason: "import",
         capturedAt: importedAt,
       }, { deferRollup: true, deferSnapshot: true, deferWrite: true });
+      if (!upserted) {
+        skipped++;
+        return;
+      }
+      addedTurns.push(turn);
       imported++;
     });
     if (imported) {
@@ -3188,16 +3372,638 @@ const VERSION = "0.7.9-beta1";
       saveProfileLedgerSnapshot();
       profileLedgerQueueSnapshotWrite();
     }
-    invalidateLocalUsageCache();
-    state.localLedger = Array.from(byId.values()).sort(
-      (a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")),
-    );
-    state.localLast = state.localLedger[state.localLedger.length - 1] || null;
-    saveLocalLedger();
-    if (replaceSource) rebuildAnalyticsRollup();
+    if (!idbOnly) {
+      const existing = replaceSource ? state.localLedger.filter((turn) => turn.importSource !== replaceSource && turn.source !== replaceSource) : state.localLedger.slice();
+      const byId = new Map(existing.map((turn) => [turn.turnId, turn]));
+      for (const turn of addedTurns) byId.set(turn.turnId, turn);
+      invalidateLocalUsageCache();
+      state.localLedger = Array.from(byId.values()).sort(
+        (a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")) || String(a.turnId || "").localeCompare(String(b.turnId || "")),
+      );
+      state.localLast = state.localLedger[state.localLedger.length - 1] || null;
+      saveLocalLedger();
+      if (replaceSource) rebuildAnalyticsRollup();
+    }
     scheduleProfileUsageRefresh();
     scheduleRender();
-    return { imported, skipped, total: state.localLedger.length };
+    return { imported, deduped, skipped, total: idbOnly ? imported + deduped + skipped : state.localLedger.length };
+  }
+
+  // --- 历史数据同步（File System Access 目录读取 + rollout 逐请求解析） ------
+  //
+  // 与 scripts/codex-usage-backfill.cjs 的 rollout 解析同源：页面读取用户一次性
+  // 授权的 .codex 目录（sessions / archived_sessions，含 *.jsonl.zst），解析
+  // token_count 逐请求记录并按 turn 聚合，再经 importLocalUsageTurns(idbOnly)
+  // 幂等入库。CLI 扫描器的 sqlite 兜底不在此路径（无 rollout 的旧线程缺口已由
+  // 引导导入补齐；新线程始终产生 rollout 文件）。
+
+  function usageSyncText(value, max = 400) {
+    if (typeof value !== "string") return "";
+    const text = value.trim();
+    if (!text || text.length > max) return "";
+    return text;
+  }
+
+  function usageSyncUnixToMs(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.round(n < 10_000_000_000 ? n * 1000 : n);
+  }
+
+  function usageSyncIsoOrNull(ms) {
+    return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
+  }
+
+  function usageSyncRawUsageShape(info) {
+    if (!info || typeof info !== "object") return null;
+    const usage = {};
+    let sum = 0;
+    for (const field of USAGE_SYNC_USAGE_FIELDS) {
+      const value = toCount(info[field]);
+      if (value) usage[field] = value;
+      sum += value;
+    }
+    return sum > 0 ? usage : null;
+  }
+
+  function usageSyncSumRawUsage(target, usage) {
+    for (const field of USAGE_SYNC_USAGE_FIELDS) target[field] = (target[field] || 0) + (usage[field] || 0);
+    return target;
+  }
+
+  function usageSyncCollectStrings(node, out, depth = 0) {
+    if (node == null || depth > 6) return out;
+    if (typeof node === "string") {
+      if (node.length <= 20000) out.push(node);
+      return out;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) usageSyncCollectStrings(item, out, depth + 1);
+      return out;
+    }
+    if (typeof node === "object") {
+      for (const value of Object.values(node)) usageSyncCollectStrings(value, out, depth + 1);
+    }
+    return out;
+  }
+
+  function usageSyncBumpSkill(record, name, count = 1) {
+    const skill = usageSyncText(name, 120);
+    if (!skill) return;
+    record.skillCounts.set(skill, (record.skillCounts.get(skill) || 0) + count);
+  }
+
+  function usageSyncBumpPlugin(record, server, count = 1) {
+    const plugin = usageSyncText(server, 120).replace(/^\$+/, "");
+    if (!plugin) return;
+    record.pluginCounts.set(plugin, (record.pluginCounts.get(plugin) || 0) + count);
+  }
+
+  function usageSyncCollectSkillReads(text, record) {
+    const matches = String(text || "").match(/[\\/]skills[\\/][^"'\r\n]{0,300}?SKILL\.md/gi);
+    if (!matches) return;
+    for (const match of matches) {
+      const parts = match.split(/[\\/]+/).filter(Boolean);
+      const name = parts[parts.length - 2];
+      if (name && name.toLowerCase() !== "skill.md") usageSyncBumpSkill(record, name);
+    }
+  }
+
+  function usageSyncCollectToolInvocations(payload, record) {
+    if (!record) return;
+    const type = usageSyncText(payload?.type, 40);
+    if (type === "function_call" || type === "custom_tool_call") {
+      const name = usageSyncText(payload?.name, 120);
+      const mcpMatch = /^mcp__([A-Za-z0-9_$.-]+?)__/.exec(name);
+      if (mcpMatch) usageSyncBumpPlugin(record, mcpMatch[1]);
+      const strings = usageSyncCollectStrings(payload?.arguments ?? payload?.input ?? payload?.action, []);
+      for (const text of strings) usageSyncCollectSkillReads(text, record);
+    }
+  }
+
+  function usageSyncCreateTurnRecord(turnId) {
+    return {
+      turnId,
+      model: "",
+      effort: "",
+      startedAtMs: 0,
+      finishedAtMs: 0,
+      durationMs: 0,
+      calls: [],
+      skillCounts: new Map(),
+      pluginCounts: new Map(),
+    };
+  }
+
+  function usageSyncParseRolloutLines(lines, fileSummary = { lineErrors: 0 }) {
+    const thread = {
+      threadId: "",
+      turns: new Map(),
+      orphanCalls: [],
+      fallbackModel: "",
+      fallbackEffort: "",
+    };
+    let lastTurnId = "";
+    let lastTurn = null;
+    const ensureTurn = (turnId) => {
+      if (!turnId) return null;
+      let record = thread.turns.get(turnId);
+      if (!record) {
+        record = usageSyncCreateTurnRecord(turnId);
+        thread.turns.set(turnId, record);
+      }
+      return record;
+    };
+    const attachCall = (call) => {
+      const record = lastTurnId ? ensureTurn(lastTurnId) : null;
+      if (record) record.calls.push(call);
+      else thread.orphanCalls.push(call);
+    };
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        fileSummary.lineErrors += 1;
+        continue;
+      }
+      const type = obj?.type;
+      const payload = obj?.payload || {};
+      if (type === "session_meta") {
+        thread.threadId = thread.threadId || usageSyncText(payload.session_id || payload.id, 120);
+        continue;
+      }
+      if (type === "turn_context") {
+        const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
+        const record = ensureTurn(turnId);
+        const model = usageSyncText(payload.model, 120);
+        const effort = usageSyncText(payload.effort, 40);
+        if (model) {
+          thread.fallbackModel = model;
+          if (record) record.model = record.model || model;
+        }
+        if (effort) {
+          thread.fallbackEffort = effort;
+          if (record) record.effort = record.effort || effort;
+        }
+        continue;
+      }
+      if (type === "event_msg") {
+        const ptype = usageSyncText(payload.type, 60);
+        if (ptype === "task_started") {
+          const turnId = usageSyncText(payload.turn_id || payload.turn_attribution?.turn_id, 120);
+          if (turnId) {
+            lastTurnId = turnId;
+            lastTurn = ensureTurn(turnId);
+            const startedAtMs = usageSyncUnixToMs(payload.started_at);
+            if (startedAtMs) lastTurn.startedAtMs = lastTurn.startedAtMs || startedAtMs;
+          }
+          continue;
+        }
+        if (ptype === "task_complete") {
+          const turnId = usageSyncText(payload.turn_id || payload.root_turn_id, 120) || lastTurnId;
+          const record = ensureTurn(turnId);
+          if (record) {
+            const durationMs = toCount(payload.duration_ms);
+            if (durationMs) record.durationMs = Math.max(record.durationMs, durationMs);
+            const finishedAtMs = usageSyncUnixToMs(payload.completed_at);
+            if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
+            const startedAtMs = usageSyncUnixToMs(payload.started_at);
+            if (startedAtMs) record.startedAtMs = record.startedAtMs || startedAtMs;
+          }
+          continue;
+        }
+        if (ptype === "token_count") {
+          const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
+          if (usage) {
+            const observedAtMs = toTimestampMs(obj.timestamp);
+            attachCall({ usage, observedAtMs });
+          }
+          continue;
+        }
+        if (ptype === "mcp_tool_call_end") {
+          const record = lastTurnId ? ensureTurn(lastTurnId) : null;
+          if (record) usageSyncBumpPlugin(record, usageSyncText(payload.invocation?.server || payload.server, 120));
+          continue;
+        }
+        continue;
+      }
+      if (type === "response_item") {
+        usageSyncCollectToolInvocations(payload, lastTurnId ? ensureTurn(lastTurnId) : null);
+        continue;
+      }
+    }
+
+    if (!thread.threadId) return null;
+    return thread;
+  }
+
+  function usageSyncFinalizeTurnRow(threadId, record) {
+    if (!record.calls.length) return null;
+    const calls = record.calls
+      .map((call) => ({ usage: call.usage, observedAtMs: call.observedAtMs || 0 }))
+      .sort((left, right) => left.observedAtMs - right.observedAtMs);
+    const usage = calls.reduce((acc, call) => usageSyncSumRawUsage(acc, call.usage), {});
+    const firstMs = record.startedAtMs || calls[0].observedAtMs;
+    const lastMs = record.finishedAtMs || calls[calls.length - 1].observedAtMs || firstMs;
+    const durationMs = record.durationMs || Math.max(0, lastMs - firstMs);
+    const invocations = [];
+    for (const [name, count] of record.skillCounts) {
+      invocations.push({ type: "skill", skill_id: name, skill_name: name, invocationId: `skill:${name}`, occurrence: count });
+    }
+    for (const [server, count] of record.pluginCounts) {
+      invocations.push({ type: "plugin", plugin_id: server, plugin_name: server, invocationId: `plugin:${server}`, occurrence: count });
+    }
+    return {
+      turnId: record.turnId,
+      sessionKey: `local:${threadId}`,
+      threadKey: `local:${threadId}`,
+      threadAttributionStatus: "reliable",
+      model: record.model || "unknown",
+      ...(record.effort ? { effort: record.effort } : {}),
+      createdAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+      startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+      finishedAt: usageSyncIsoOrNull(lastMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+      durationMs,
+      callCount: calls.length,
+      usage,
+      calls: calls.map((call) => ({ usage: call.usage, observedAt: usageSyncIsoOrNull(call.observedAtMs) || undefined })),
+      ...(invocations.length ? { invocations } : {}),
+      source: USAGE_SYNC_SOURCE,
+      importSource: USAGE_SYNC_SOURCE,
+    };
+  }
+
+  function usageSyncDecodeBytes(bytes) {
+    const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const isZstd = view.length >= 4 && view[0] === 0x28 && view[1] === 0xb5 && view[2] === 0x2f && view[3] === 0xfd;
+    let data = view;
+    if (isZstd) {
+      const lib = installBundledFzstd();
+      if (!lib || typeof lib.decompress !== "function") throw new Error("zstd 解码器不可用");
+      data = lib.decompress(view);
+    }
+    const Decoder = globalThis.TextDecoder;
+    if (typeof Decoder !== "function") throw new Error("TextDecoder 不可用");
+    return new Decoder("utf-8").decode(data);
+  }
+
+  async function usageSyncWalkDirectory(dirHandle, prefix, out) {
+    if (!dirHandle || typeof dirHandle.entries !== "function") return;
+    for await (const entry of dirHandle.entries()) {
+      const pair = Array.isArray(entry) ? entry : [entry?.name, entry];
+      const name = pair[0];
+      const handle = pair[1];
+      if (!name || !handle) continue;
+      if (handle.kind === "directory") await usageSyncWalkDirectory(handle, `${prefix}${name}/`, out);
+      else if (handle.kind === "file" && USAGE_SYNC_ROLLOUT_FILE_RE.test(name)) out.push({ path: `${prefix}${name}`, handle });
+    }
+  }
+
+  async function usageSyncReadRolloutFile(fileHandle) {
+    const file = typeof fileHandle.getFile === "function" ? await fileHandle.getFile() : fileHandle;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const text = usageSyncDecodeBytes(bytes);
+    return { text, size: toCount(file.size) || bytes.length, lastModified: toCount(file.lastModified) };
+  }
+
+  async function usageSyncCollectRows(rootHandle, options = {}) {
+    const files = [];
+    let sessionsHandle = null;
+    let archivedHandle = null;
+    if (rootHandle && typeof rootHandle.getDirectoryHandle === "function") {
+      try {
+        sessionsHandle = await rootHandle.getDirectoryHandle("sessions");
+      } catch {
+        sessionsHandle = null;
+      }
+      try {
+        archivedHandle = await rootHandle.getDirectoryHandle("archived_sessions");
+      } catch {
+        archivedHandle = null;
+      }
+    }
+    const rootIsSessions = !sessionsHandle && !archivedHandle;
+    if (rootIsSessions) sessionsHandle = rootHandle;
+    const walk = async (handle, prefix) => {
+      try {
+        await usageSyncWalkDirectory(handle, prefix, files);
+      } catch {
+        /* 目录读取失败的子树视为空 */
+      }
+    };
+    await walk(sessionsHandle, rootIsSessions ? "" : "sessions/");
+    await walk(archivedHandle, "archived_sessions/");
+    files.sort((left, right) => left.path.localeCompare(right.path));
+
+    const stampIndex = options.stamps && typeof options.stamps === "object" ? options.stamps : null;
+    const threads = new Map();
+    const readErrors = [];
+    const nextStamps = {};
+    let parsedFiles = 0;
+    let skippedFiles = 0;
+    let lineErrors = 0;
+    for (let index = 0; index < files.length; index += 1) {
+      const item = files[index];
+      if (typeof options.onProgress === "function") options.onProgress({ index: index + 1, total: files.length, path: item.path });
+      try {
+        const loaded = await usageSyncReadRolloutFile(item.handle);
+        const previous = stampIndex ? stampIndex[item.path] : null;
+        if (previous && previous.lastModified === loaded.lastModified && previous.size === loaded.size) {
+          skippedFiles += 1;
+          nextStamps[item.path] = previous;
+          continue;
+        }
+        nextStamps[item.path] = { lastModified: loaded.lastModified, size: loaded.size };
+        const fileSummary = { lineErrors: 0 };
+        const thread = usageSyncParseRolloutLines(String(loaded.text).split(/\r?\n/), fileSummary);
+        lineErrors += fileSummary.lineErrors;
+        if (!thread) continue;
+        const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [] };
+        for (const [turnId, record] of thread.turns) {
+          if (!target.turns.has(turnId)) target.turns.set(turnId, record);
+        }
+        if (thread.orphanCalls.length) target.orphanCalls.push(...thread.orphanCalls);
+        threads.set(thread.threadId, target);
+        parsedFiles += 1;
+      } catch (error) {
+        readErrors.push(`${item.path}: ${(error && error.message) || error}`);
+      }
+    }
+
+    const rows = [];
+    for (const [threadId, info] of threads) {
+      for (const record of info.turns.values()) {
+        const row = usageSyncFinalizeTurnRow(threadId, record);
+        if (row) rows.push(row);
+      }
+      if (info.orphanCalls.length) {
+        const orphanRow = usageSyncFinalizeTurnRow(threadId, {
+          turnId: `${threadId}:orphan`,
+          model: "",
+          effort: "",
+          startedAtMs: 0,
+          finishedAtMs: 0,
+          durationMs: 0,
+          calls: info.orphanCalls,
+          skillCounts: new Map(),
+          pluginCounts: new Map(),
+        });
+        if (orphanRow) rows.push(orphanRow);
+      }
+    }
+    rows.sort(
+      (left, right) =>
+        String(left.startedAt).localeCompare(String(right.startedAt)) || String(left.turnId).localeCompare(String(right.turnId)),
+    );
+    const days = new Set();
+    let calls = 0;
+    let tokens = 0;
+    for (const row of rows) {
+      calls += row.callCount || 0;
+      tokens += row.usage?.total_tokens || 0;
+      const day = localDateKey(toTimestampMs(row.startedAt));
+      if (day) days.add(day);
+    }
+    const sortedDays = Array.from(days).sort();
+    return {
+      rows,
+      scannedFiles: files.length,
+      parsedFiles,
+      skippedFiles,
+      readErrors,
+      lineErrors,
+      calls,
+      tokens,
+      firstDay: sortedDays[0] || "",
+      lastDay: sortedDays[sortedDays.length - 1] || "",
+      nextStamps,
+    };
+  }
+
+  function openUsageSyncDatabase() {
+    if (state.usageSyncDbPromise) return state.usageSyncDbPromise;
+    if (!globalThis.indexedDB) return Promise.resolve(null);
+    state.usageSyncDbPromise = new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = 0;
+      const finish = (value, error) => {
+        if (settled) return false;
+        settled = true;
+        if (timer) globalThis.clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(value);
+        return true;
+      };
+      const request = globalThis.indexedDB.open(USAGE_SYNC_DB_NAME, USAGE_SYNC_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(USAGE_SYNC_STORE_HANDLES)) db.createObjectStore(USAGE_SYNC_STORE_HANDLES);
+        if (!db.objectStoreNames.contains(USAGE_SYNC_STORE_FILE_STAMPS)) db.createObjectStore(USAGE_SYNC_STORE_FILE_STAMPS);
+      };
+      request.onblocked = () => {
+        /* 旧连接占用旧版本：等待其释放，超时后按不可用降级（handle/印章不持久化，同步本身照常） */
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        const usable =
+          db.objectStoreNames.contains(USAGE_SYNC_STORE_HANDLES) && db.objectStoreNames.contains(USAGE_SYNC_STORE_FILE_STAMPS);
+        if (!finish(usable ? db : null)) {
+          try {
+            db.close();
+          } catch {
+            /* 已放弃的连接直接关闭 */
+          }
+          return;
+        }
+        if (!usable) {
+          try {
+            db.close();
+          } catch {
+            /* ignore */
+          }
+        }
+      };
+      request.onerror = () => finish(null, request.error || new Error("usage sync IndexedDB open failed"));
+      timer = globalThis.setTimeout(() => finish(null), 5000);
+    }).catch(() => null);
+    return state.usageSyncDbPromise;
+  }
+
+  async function usageSyncStoreGet(storeName, key) {
+    const db = await openUsageSyncDatabase();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(storeName, "readonly");
+        const request = tx.objectStore(storeName).get(key);
+        request.onsuccess = () => resolve(request.result ?? null);
+        request.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  async function usageSyncStorePut(storeName, key, value) {
+    const db = await openUsageSyncDatabase();
+    if (!db) return false;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction(storeName, "readwrite");
+        tx.objectStore(storeName).put(value, key);
+        tx.oncomplete = () => resolve(true);
+        tx.onerror = () => resolve(false);
+        tx.onabort = () => resolve(false);
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  async function usageSyncLoadStoredHandle() {
+    if (state.usageSyncDirHandle) return state.usageSyncDirHandle;
+    const stored = await usageSyncStoreGet(USAGE_SYNC_STORE_HANDLES, USAGE_SYNC_DIR_HANDLE_KEY);
+    state.usageSyncDirHandle = stored || null;
+    return state.usageSyncDirHandle;
+  }
+
+  async function usageSyncStoreHandle(handle) {
+    await usageSyncStorePut(USAGE_SYNC_STORE_HANDLES, USAGE_SYNC_DIR_HANDLE_KEY, handle);
+  }
+
+  async function usageSyncLoadFileStamps() {
+    const stored = await usageSyncStoreGet(USAGE_SYNC_STORE_FILE_STAMPS, USAGE_SYNC_FILE_STAMPS_KEY);
+    return stored && typeof stored === "object" ? stored : {};
+  }
+
+  async function usageSyncStoreFileStamps(stamps) {
+    if (!stamps || typeof stamps !== "object") return false;
+    return usageSyncStorePut(USAGE_SYNC_STORE_FILE_STAMPS, USAGE_SYNC_FILE_STAMPS_KEY, stamps);
+  }
+
+  function usageSyncLastResult() {
+    if (state.usageSyncResult) return state.usageSyncResult;
+    const stored = loadJson(USAGE_SYNC_LAST_RESULT_KEY, null);
+    return stored && typeof stored === "object" && toCount(stored.at) ? stored : null;
+  }
+
+  function saveUsageSyncLastResult(result) {
+    try {
+      localStorage.setItem(USAGE_SYNC_LAST_RESULT_KEY, JSON.stringify(result));
+    } catch {
+      /* 存储配额失败不影响同步结果 */
+    }
+  }
+
+  function usageSyncDirectoryPicker() {
+    if (typeof globalThis.showDirectoryPicker === "function") return globalThis.showDirectoryPicker.bind(globalThis);
+    const win = globalThis.window;
+    if (win && typeof win.showDirectoryPicker === "function") return win.showDirectoryPicker.bind(win);
+    return null;
+  }
+
+  async function runUsageSync(options = {}) {
+    if (state.usageSyncBusy) return usageSyncTestState();
+    state.usageSyncBusy = true;
+    state.usageSyncStatus = "正在同步…";
+    renderSettingsOverlay(liveSnapshot(), { animate: false });
+    try {
+      let dirHandle = options.dirHandle || (await usageSyncLoadStoredHandle());
+      if (dirHandle && typeof dirHandle.queryPermission === "function") {
+        let permission = "granted";
+        try {
+          permission = await dirHandle.queryPermission({ mode: "read" });
+        } catch {
+          permission = "granted";
+        }
+        if (permission !== "granted") {
+          try {
+            permission = await dirHandle.requestPermission({ mode: "read" });
+          } catch {
+            permission = "denied";
+          }
+        }
+        if (permission !== "granted") dirHandle = null;
+      }
+      if (!dirHandle) {
+        const picker = usageSyncDirectoryPicker();
+        if (!picker) throw new Error("当前环境不支持读取本地会话目录");
+        state.usageSyncStatus = "请选择本机 .codex 数据文件夹…";
+        renderSettingsOverlay(liveSnapshot(), { animate: false });
+        dirHandle = await picker({ id: USAGE_SYNC_PICKER_ID, mode: "read" });
+      }
+      const stamps = options.stamps && typeof options.stamps === "object" ? options.stamps : await usageSyncLoadFileStamps();
+      const collected = await usageSyncCollectRows(dirHandle, {
+        stamps,
+        onProgress: ({ index, total }) => {
+          state.usageSyncStatus = `正在同步：读取会话文件 ${index}/${total}…`;
+          if (index === 1 || index === total || index % 8 === 0) renderSettingsOverlay(liveSnapshot(), { animate: false });
+        },
+      });
+      if (!collected.scannedFiles) {
+        state.usageSyncStatus = "未找到会话记录：请选择 .codex 文件夹（通常位于用户主目录）";
+      } else {
+        state.usageSyncDirHandle = dirHandle;
+        void usageSyncStoreHandle(dirHandle);
+        if (!collected.rows.length) {
+          if (collected.readErrors.length) {
+            state.usageSyncStatus = `同步失败：${collected.readErrors.length} 个会话文件读取失败（${String(collected.readErrors[0]).slice(0, 120)}）`;
+          } else {
+            await usageSyncStoreFileStamps(collected.nextStamps);
+            state.usageSyncResult = {
+              imported: 0,
+              deduped: 0,
+              skipped: 0,
+              files: collected.scannedFiles,
+              skippedFiles: collected.skippedFiles,
+              turns: 0,
+              firstDay: "",
+              lastDay: "",
+              at: Date.now(),
+            };
+            state.usageSyncStatus = collected.skippedFiles
+              ? `已是最新：${collected.skippedFiles} 个会话文件自上次同步后无变化`
+              : "已是最新：没有新的会话记录";
+            saveUsageSyncLastResult(state.usageSyncResult);
+          }
+        } else {
+          const imported = importLocalUsageTurns(collected.rows, {
+            replaceSource: USAGE_SYNC_SOURCE,
+            idbOnly: true,
+            dedupeAgainstLedger: true,
+          });
+          await usageSyncStoreFileStamps(collected.nextStamps);
+          state.usageSyncResult = {
+            imported: imported.imported,
+            deduped: imported.deduped,
+            skipped: imported.skipped,
+            files: collected.scannedFiles,
+            skippedFiles: collected.skippedFiles,
+            turns: collected.rows.length,
+            firstDay: collected.firstDay,
+            lastDay: collected.lastDay,
+            at: Date.now(),
+          };
+          const range = collected.firstDay ? ` · 覆盖 ${collected.firstDay} ~ ${collected.lastDay}` : "";
+          const failures = collected.readErrors.length ? ` · ${collected.readErrors.length} 个文件读取失败` : "";
+          state.usageSyncStatus = `同步完成：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${failures}`;
+          saveUsageSyncLastResult(state.usageSyncResult);
+        }
+      }
+    } catch (error) {
+      const name = (error && error.name) || "";
+      if (name === "AbortError") state.usageSyncStatus = "已取消选择数据目录";
+      else if (name === "NotFoundError") state.usageSyncStatus = "数据目录不可用（可能已移动），请重新点「同步」并选择 .codex 文件夹";
+      else if (name === "NotAllowedError" || name === "SecurityError") state.usageSyncStatus = `目录访问被拒绝：${(error && error.message) || ""}`;
+      else state.usageSyncStatus = `同步失败：${(error && error.message) || error}`;
+    } finally {
+      state.usageSyncBusy = false;
+      renderSettingsOverlay(liveSnapshot(), { animate: false });
+    }
+    return usageSyncTestState();
   }
 
   function rememberDailyUsage(metric) {
@@ -3500,6 +4306,7 @@ const VERSION = "0.7.9-beta1";
     state.detectedSessionKeyAt = Date.now();
     state.newConversationSessionKey = "";
     state.newConversationSessionKeyAt = 0;
+    refreshCodexppHistory({ sessionId: key });
     syncActiveLocalCurrentTurn();
     syncActiveTurnShimmerState();
     return true;
@@ -4125,16 +4932,31 @@ const VERSION = "0.7.9-beta1";
   function todayUsage() {
     const localBucket = localDailyUsage().get(todayKey());
     if (toCount(localBucket?.tokens) > 0) {
-      return {
-        input: toCount(localBucket.input),
-        output: toCount(localBucket.output),
-        cached: toCount(localBucket.cached),
-        total: toCount(localBucket.tokens),
-        exact: true,
-      };
+      const merged = mergeCodexppHistoryTurns(
+        [{
+          turnId: `today-local:${todayKey()}`,
+          model: UNKNOWN_MODEL,
+          createdAt: new Date().toISOString(),
+          observedAt: Date.now(),
+          usage: { input: toCount(localBucket.input), output: toCount(localBucket.output), cached: toCount(localBucket.cached), total: toCount(localBucket.tokens), exact: true },
+          callCount: toCount(localBucket.requests) || 1,
+        }],
+      );
+      const total = merged.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn.usage)), { input: 0, output: 0, cached: 0, total: 0, exact: true });
+      return { input: toCount(total.input), output: toCount(total.output), cached: toCount(total.cached), total: toCount(total.total), exact: true };
     }
     const ledger = loadDailyLedger();
-    return ledger.items.reduce((sum, item) => addUsage(sum, normalizeUsage(item.usage)), { input: 0, output: 0, cached: 0, total: 0, exact: true });
+    const merged = mergeCodexppHistoryTurns(
+      ledger.items.map((item, index) => ({
+        turnId: item.turnId || `today-ledger:${index}`,
+        model: item.model,
+        createdAt: new Date(toCount(item.observedAt) || Date.now()).toISOString(),
+        observedAt: toCount(item.observedAt) || Date.now(),
+        usage: normalizeUsage(item.usage),
+        callCount: 1,
+      })),
+    );
+    return merged.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn.usage)), { input: 0, output: 0, cached: 0, total: 0, exact: true });
   }
 
   function normalizeReasoningEffort(value) {
@@ -4308,83 +5130,6 @@ const VERSION = "0.7.9-beta1";
       }
     }
     return profileActivityStats(activity);
-  }
-
-  function normalizeHelperStatsPayload(payload) {
-    const stats = payload?.stats && typeof payload.stats === "object" ? payload.stats : payload;
-    if (!stats || typeof stats !== "object") return null;
-    const normalizeInvocations = (items) =>
-      (Array.isArray(items) ? items : [])
-      .map((item) => {
-        const invocation = normalizeProfileInvocation(item);
-        const usageCount = toCount(item?.usage_count ?? item?.usageCount ?? item?.count);
-        return invocation && usageCount ? { ...invocation, usage_count: usageCount } : null;
-      })
-      .filter(Boolean)
-      .sort((left, right) => right.usage_count - left.usage_count || profileInvocationKey(left).localeCompare(profileInvocationKey(right)))
-      .slice(0, 5);
-    const rawInvocations = Array.isArray(stats.top_invocations) ? stats.top_invocations : Array.isArray(stats.topInvocations) ? stats.topInvocations : [];
-    const rawPlugins = Array.isArray(stats.top_plugins) ? stats.top_plugins : Array.isArray(stats.topPlugins) ? stats.topPlugins : [];
-    const topInvocations = normalizeInvocations(rawInvocations);
-    const topPlugins = normalizeInvocations(rawPlugins).filter((item) => item.type === "plugin");
-    return {
-      uniqueSkillsUsed: toCount(stats.unique_skills_used ?? stats.uniqueSkillsUsed),
-      totalSkillsUsed: toCount(stats.total_skills_used ?? stats.totalSkillsUsed),
-      uniquePluginsUsed: toCount(stats.unique_plugins_used ?? stats.uniquePluginsUsed),
-      totalPluginsUsed: toCount(stats.total_plugins_used ?? stats.totalPluginsUsed),
-      totalThreads: toCount(stats.total_threads ?? stats.totalThreads ?? stats.codex_total_threads ?? stats.codexThreadCount ?? stats.codex_threads?.total_threads),
-      codexThreads: stats.codex_threads && typeof stats.codex_threads === "object" ? stats.codex_threads : null,
-      topInvocations,
-      topPlugins,
-      source: normalizeText(payload?.source || stats.source || "local-helper", 80),
-      updatedAt: normalizeText(payload?.updated_at || payload?.updatedAt || stats.updated_at || stats.updatedAt, 40),
-    };
-  }
-
-  function helperStatsSignature(stats) {
-    return JSON.stringify({
-      uniqueSkillsUsed: toCount(stats?.uniqueSkillsUsed),
-      totalSkillsUsed: toCount(stats?.totalSkillsUsed),
-      uniquePluginsUsed: toCount(stats?.uniquePluginsUsed),
-      totalPluginsUsed: toCount(stats?.totalPluginsUsed),
-      totalThreads: toCount(stats?.totalThreads),
-      topInvocations: Array.isArray(stats?.topInvocations) ? stats.topInvocations : [],
-      topPlugins: Array.isArray(stats?.topPlugins) ? stats.topPlugins : [],
-      updatedAt: normalizeText(stats?.updatedAt, 40),
-    });
-  }
-
-  function mergeHelperStats(payload) {
-    const normalized = normalizeHelperStatsPayload(payload);
-    if (!normalized) return false;
-    const signature = helperStatsSignature(normalized);
-    const changed = signature !== state.helperStatsSignature;
-    state.helperStats = normalized;
-    state.helperStatsSignature = signature;
-    state.helperStatsAt = Date.now();
-    setHelperStatus(HELPER_STATUS_CONNECTED, false);
-    scheduleRender();
-    return true;
-  }
-
-  function helperStatusText() {
-    return state.helperStatus || HELPER_STATUS_DEFAULT;
-  }
-
-  function setHelperStatus(message, unavailable = false) {
-    state.helperStatus = normalizeText(message, 220) || HELPER_STATUS_DEFAULT;
-    state.helperUnavailable = Boolean(unavailable);
-    state.helperCheckedAt = Date.now();
-    const status = settingsEditorRoot()?.querySelector("[data-field='helper-status']");
-    if (status) {
-      status.textContent = helperStatusText();
-      status.setAttribute("data-helper-unavailable", state.helperUnavailable ? "true" : "false");
-    }
-    scheduleRender();
-  }
-
-  function mergeActivityWithHelperStats(activity) {
-    return activity;
   }
 
   function observeModelInfo(payload) {
@@ -4928,7 +5673,6 @@ const VERSION = "0.7.9-beta1";
       startupBlankConversationSessionKey: startupBlankConversationSessionKey(),
       lastClickedSidebarThreadKey: state.lastClickedSidebarThreadKey,
       officialThreadRuntime: Array.from(state.officialThreadRuntimeStates.entries()).map(([sessionKey, item]) => ({ sessionKey, ...item })),
-      helperThreadContent: Array.from(state.helperThreadContent.values()),
       ledgerSessions: Array.from(counts.values()).sort((a, b) => b.total - a.total || a.sessionKey.localeCompare(b.sessionKey)).slice(0, 20),
     };
   }
@@ -5000,47 +5744,11 @@ const VERSION = "0.7.9-beta1";
   }
 
   function analyticsVisibleTurns(turns) {
-    const items = (Array.isArray(turns) ? turns : []).filter((turn) => normalizeUsage(turn?.usage).exact);
-    const groups = new Map();
-    for (const turn of items) {
-      const date = localDateKey(turnTimestampMs(turn));
-      const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
-      const key = `${date}\u0001${model}`;
-      const source = normalizeText(turn?.source, 80);
-      const importSource = normalizeText(turn?.importSource, 80);
-      const isCcSwitch = source === "cc-switch" || importSource === "cc-switch";
-      const group = groups.get(key) || {
-        local: [],
-        ccSwitch: [],
-        localBucket: emptyDailyUsageBucket(date),
-        ccBucket: emptyDailyUsageBucket(date),
-      };
-      if (isCcSwitch) {
-        group.ccSwitch.push(turn);
-        addTurnToDailyBucket(group.ccBucket, turn, normalizeUsage(turn.usage));
-      } else {
-        group.local.push(turn);
-        addTurnToDailyBucket(group.localBucket, turn, normalizeUsage(turn.usage));
-      }
-      groups.set(key, group);
-    }
-    const visible = items.slice(0, 0);
-    for (const group of groups.values()) {
-      if (group.ccSwitch.length && group.local.length) {
-        visible.push(...(group.ccBucket.tokens >= group.localBucket.tokens ? group.ccSwitch : group.local));
-      } else {
-        visible.push(...group.ccSwitch, ...group.local);
-      }
-    }
-    return visible;
+    return (Array.isArray(turns) ? turns : []).filter((turn) => normalizeUsage(turn?.usage).exact);
   }
 
   function analyticsTurnTimestampMs(turn) {
-    const timestamp = turnTimestampMs(turn);
-    const source = normalizeText(turn?.source, 80);
-    const importSource = normalizeText(turn?.importSource, 80);
-    const isCcSwitch = source === "cc-switch" || importSource === "cc-switch";
-    return isCcSwitch && turn?.timeGranularity !== "hour" ? startOfLocalDay(timestamp) : timestamp;
+    return turnTimestampMs(turn);
   }
 
   function emptyUsageAnalytics() {
@@ -5074,6 +5782,7 @@ const VERSION = "0.7.9-beta1";
       const cacheWrite = Math.min(Math.max(0, toCount(usage.input) - cacheRead), toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
       const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
       const cost = turnCost(turn, model);
+      const tokenOnly = (normalizeText(turn?.source, 80) === "codexpp-history" || normalizeText(turn?.importSource, 80) === "codexpp-history");
       const item =
         models.get(model) ||
         {
@@ -5084,9 +5793,11 @@ const VERSION = "0.7.9-beta1";
           priced: true,
         };
       item.usage = addUsage(item.usage, usage);
-      item.calls += toCount(turn?.callCount) || 1;
-      item.cost += cost.value;
-      item.priced = item.priced && cost.priced;
+      if (!tokenOnly) {
+        item.calls += toCount(turn?.callCount) || 1;
+        item.cost += cost.value;
+        item.priced = item.priced && cost.priced;
+      }
       models.set(model, item);
       totals.totalTokens += toCount(usage.total || usage.input + usage.output);
       totals.input += toCount(usage.input);
@@ -5095,9 +5806,11 @@ const VERSION = "0.7.9-beta1";
       totals.cacheWrite += cacheWrite;
       totals.cacheWriteAvailable = totals.cacheWriteAvailable || turn?.cacheWriteAvailable === true || cacheWrite > 0;
       totals.regularInput += Math.max(0, toCount(usage.input) - cacheRead - cacheWrite);
-      totals.calls += toCount(turn?.callCount) || 1;
-      totals.cost += cost.value;
-      totals.priced = totals.priced && cost.priced;
+      if (!tokenOnly) {
+        totals.calls += toCount(turn?.callCount) || 1;
+        totals.cost += cost.value;
+        totals.priced = totals.priced && cost.priced;
+      }
     }
     totals.cacheHitRate = totals.input ? Math.round((totals.cacheRead / totals.input) * 100) : null;
     totals.models = Array.from(models.values())
@@ -5135,10 +5848,10 @@ const VERSION = "0.7.9-beta1";
     return rollup;
   }
 
-  function pruneAnalyticsRollup(rollup, now = Date.now()) {
+  function pruneAnalyticsRollup(rollup, now = Date.now(), maxDays = ANALYTICS_MAX_DAYS) {
     const source = rollup && typeof rollup === "object" ? rollup : { version: 1, updatedAt: Date.now(), days: {} };
     const cutoff = new Date(startOfLocalDay(now));
-    cutoff.setDate(cutoff.getDate() - (ANALYTICS_MAX_DAYS - 1));
+    cutoff.setDate(cutoff.getDate() - (Math.max(1, maxDays) - 1));
     const days = {};
     for (const [date, value] of Object.entries(source.days || {})) {
       const timestamp = Date.parse(`${date}T00:00:00`);
@@ -5165,12 +5878,23 @@ const VERSION = "0.7.9-beta1";
     const next = pruneAnalyticsRollup(rollup);
     state.analyticsRollup = next;
     state.analyticsRollupLoaded = true;
-    try {
-      localStorage.setItem(ANALYTICS_ROLLUP_KEY, JSON.stringify(next));
-      return true;
-    } catch {
-      return false;
+    let saved = false;
+    for (const maxDays of ANALYTICS_ROLLUP_QUOTA_TRIM_DAYS) {
+      const candidate = maxDays >= ANALYTICS_MAX_DAYS ? next : pruneAnalyticsRollup(next, Date.now(), maxDays);
+      try {
+        localStorage.setItem(ANALYTICS_ROLLUP_KEY, JSON.stringify(candidate));
+        state.analyticsRollup = candidate;
+        saved = true;
+        break;
+      } catch (error) {
+        if (!isQuotaStorageError(error)) {
+          state.analyticsRollupSaveError = "storage";
+          break;
+        }
+      }
     }
+    state.analyticsRollupSaveError = saved ? "" : state.analyticsRollupSaveError || "quota";
+    return saved;
   }
 
   function rebuildAnalyticsRollup() {
@@ -5321,9 +6045,11 @@ const VERSION = "0.7.9-beta1";
     const sourceTurns =
       Array.isArray(options.turns)
         ? options.turns
-        : preset === "today"
-          ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
-          : analyticsTurnsFromRollup(loadAnalyticsRollup());
+        : mergeCodexppHistoryTurns(
+            preset === "today"
+              ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
+              : [...localUsageArchiveTurns(), ...state.localLedger],
+          );
     const turns = analyticsVisibleTurns(sourceTurns);
     const model = options.model ?? state.analyticsModel;
     const filtered = model ? turns.filter((turn) => normalizeText(turn?.model, 120) === model) : turns;
@@ -5359,7 +6085,7 @@ const VERSION = "0.7.9-beta1";
     return `
       <section class="cltc-settings-section cltc-analytics" data-analytics-preset="${preset}" data-analytics-model-filter="${escapeHtml(model)}">
         <div class="cltc-settings-section-heading cltc-analytics-heading">
-          <div><h2>使用统计</h2><p>基于 HUD、Profile 与 CC Switch 相同的本地去重口径。</p></div>
+          <div><h2>使用统计</h2><p>基于 HUD、Profile 与本地 ledger 的同一去重口径。</p></div>
           ${model ? `<button type="button" class="cltc-analytics-filter" data-action="clear-analytics-model">${escapeHtml(model)} ×</button>` : ""}
         </div>
         <div class="cltc-analytics-toolbar">
@@ -5372,9 +6098,9 @@ const VERSION = "0.7.9-beta1";
           <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar"${preset === "custom" ? "" : " hidden"}>
             ${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}
           </button>
+          ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
           <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
         </div>
-        ${state.helperUnavailable ? `<button type="button" class="cltc-analytics-degraded" data-settings-panel="general">Helper 未运行，部分历史来源不可用 · 前往数据与显示</button>` : ""}
         <div class="cltc-analytics-metrics">
           ${metricRow("总 Token", fmtCount(current.totalTokens), { current: current.totalTokens, previous: previous.totalTokens })}
           ${metricRow("总花费", current.priced ? fmtMoney(current.cost) : `${fmtMoney(current.cost)} · 部分统计`, { current: current.cost, previous: previous.cost }, !current.priced || !previous.priced)}
@@ -5581,29 +6307,6 @@ const VERSION = "0.7.9-beta1";
     return bucket;
   }
 
-  function addDailyBucket(target, source) {
-    target.tokens += toCount(source?.tokens);
-    target.input += toCount(source?.input);
-    target.output += toCount(source?.output);
-    target.cached += toCount(source?.cached);
-    target.requests += toCount(source?.requests);
-    target.cost += Number(source?.cost) || 0;
-    target.priced = target.priced !== false && source?.priced !== false;
-    return target;
-  }
-
-  function maxDailyBucket(target, source) {
-    const selected = dailyBucketAuthority(target, source);
-    target.tokens = toCount(selected?.tokens);
-    target.input = toCount(selected?.input);
-    target.output = toCount(selected?.output);
-    target.cached = toCount(selected?.cached);
-    target.requests = toCount(selected?.requests);
-    target.cost = Number(selected?.cost) || 0;
-    target.priced = selected?.priced !== false;
-    return target;
-  }
-
   function turnTimestampMs(turn) {
     const direct = toCount(turn?.observedAt || turn?.startedAt || turn?.finishedAt || turn?.createdAt);
     if (direct) return direct;
@@ -5617,7 +6320,7 @@ const VERSION = "0.7.9-beta1";
     const cached = state.localDailyUsageCache;
     if (cached?.revision === state.localLedgerRevision && !activeCurrentTurn && cached.value) return cached.value;
     const byDayModel = cached?.revision === state.localLedgerRevision
-      ? new Map(Array.from(cached.groups.entries(), ([date, group]) => [date, { date, local: { ...group.local }, ccSwitch: { ...group.ccSwitch } }]))
+      ? new Map(Array.from(cached.groups.entries(), ([date, group]) => [date, { date, bucket: { ...group.bucket } }]))
       : new Map();
     const ledgerTurnIds = cached?.revision === state.localLedgerRevision ? cached.turnIds : new Set();
     if (!cached || cached.revision !== state.localLedgerRevision) {
@@ -5627,11 +6330,8 @@ const VERSION = "0.7.9-beta1";
         const turnId = normalizeText(turn?.turnId || turn?.id, 120);
         if (turnId) ledgerTurnIds.add(turnId);
         const date = localDateKey(turnTimestampMs(turn) || Date.now());
-        const source = normalizeText(turn.source, 80);
-        const importSource = normalizeText(turn.importSource, 80);
-        const group = byDayModel.get(date) || { date, local: emptyDailyUsageBucket(date), ccSwitch: emptyDailyUsageBucket(date) };
-        if (source === "cc-switch" || importSource === "cc-switch") addTurnToDailyBucket(group.ccSwitch, turn, usage);
-        else addTurnToDailyBucket(group.local, turn, usage);
+        const group = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
+        addTurnToDailyBucket(group.bucket, turn, usage);
         byDayModel.set(date, group);
       }
       state.localDailyUsageCache = { revision: state.localLedgerRevision, groups: byDayModel, turnIds: ledgerTurnIds, value: null };
@@ -5639,16 +6339,13 @@ const VERSION = "0.7.9-beta1";
     const currentMetric = localTurnMetric(activeCurrentTurn);
     if (currentMetric && !ledgerTurnIds.has(currentMetric.turnId)) {
       const date = localDateKey(turnTimestampMs(currentMetric) || Date.now());
-      const group = byDayModel.get(date) || { date, local: emptyDailyUsageBucket(date), ccSwitch: emptyDailyUsageBucket(date) };
-      addTurnToDailyBucket(group.local, currentMetric, normalizeUsage(currentMetric.usage));
+      const group = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
+      addTurnToDailyBucket(group.bucket, currentMetric, normalizeUsage(currentMetric.usage));
       byDayModel.set(date, group);
     }
     const days = new Map();
     for (const group of byDayModel.values()) {
-      const merged = emptyDailyUsageBucket(group.date);
-      maxDailyBucket(merged, group.local);
-      maxDailyBucket(merged, group.ccSwitch);
-      days.set(group.date, merged);
+      days.set(group.date, group.bucket);
     }
     if (!activeCurrentTurn && state.localDailyUsageCache) state.localDailyUsageCache.value = days;
     return days;
@@ -6374,14 +7071,8 @@ const VERSION = "0.7.9-beta1";
     return localProfileResponse();
   }
 
-  function profileFetchBodyWithHelperRefresh(method, body, url) {
-    if (String(method || "GET").toUpperCase() !== "GET" || typeof window.fetch !== "function") return profileFetchBody(method, body, url);
-    void refreshProfileData();
-    return profileFetchBody(method, body, url);
-  }
-
   async function profileFetchBodyAsync(method, body, url) {
-    return profileFetchBodyWithHelperRefresh(method, body, url);
+    return profileFetchBody(method, body, url);
   }
 
   function codexAppAssetUrls() {
@@ -6702,7 +7393,7 @@ const VERSION = "0.7.9-beta1";
       }
       window.dispatchEvent(new MessageEvent("message", { data: message, origin: location.origin, source: window }));
     };
-    const payload = profileFetchBodyWithHelperRefresh(method, body, url);
+    const payload = profileFetchBody(method, body, url);
     if (payload && typeof payload.then === "function") {
       payload.then(sendPayload);
       return;
@@ -6920,7 +7611,8 @@ const VERSION = "0.7.9-beta1";
   function renderEmbeddedSettingsPage(container, options = {}) {
     state.priceEditorOpen = true;
     state.embeddedPageContainer = container;
-    container.classList.add("cltc-settings-overlay", "cltc-settings-embedded");
+    container.classList.add("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings");
+    if (state.analyticsCalendar?.isOpen) return;
     const html = pricePopoverHtml(liveSnapshot());
     if (state.embeddedHtmlSignature === html && container.innerHTML) {
       return;
@@ -6941,11 +7633,11 @@ const VERSION = "0.7.9-beta1";
       container.addEventListener("change", handleSettingsChange, true);
       container.addEventListener("keydown", handleSettingsKeydown, true);
     }
-    if (state.settingsPanel === "usage") void refreshUsageAnalyticsFromHelper();
   }
 
   function animateAnalyticsSegments(root, options = {}) {
     if (!root) return;
+    if (prefersReducedMotion()) return;
     const animateAnalyticsSegment = options.analyticsRange === true || options.analyticsMetric === true;
     if (!animateAnalyticsSegment) return;
     const selector = options.analyticsRange ? ".cltc-analytics-toolbar .cltc-segmented" : ".cltc-analytics-section-head .cltc-segmented-compact";
@@ -6986,7 +7678,6 @@ const VERSION = "0.7.9-beta1";
     if (!["profile", "general", "usage", "pricing"].includes(panel)) return false;
     state.settingsPanel = panel;
     renderSettingsOverlay(liveSnapshot(), { animate: true });
-    if (panel === "usage") void refreshUsageAnalyticsFromHelper();
     return true;
   }
 
@@ -7013,6 +7704,10 @@ const VERSION = "0.7.9-beta1";
   function installCodexPlusEmbeddedPage() {
     if (state.embeddedPageDispose || state.destroyed) return;
     if (typeof window.codexPlus?.registerPage !== "function") return;
+    if (!codexPlusApiReady()) {
+      reportFailure(new Error("Codex++ API version mismatch: " + window.codexPlus?.apiVersion));
+      return;
+    }
     try {
       state.embeddedPageDispose = window.codexPlus.registerPage(
         {
@@ -7034,6 +7729,7 @@ const VERSION = "0.7.9-beta1";
   }
 
   function ensureStyle() {
+    // 本文件是唯一 CSS 事实源，除 Flatpickr 主题外不得在别处注入样式。
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement("style");
     style.id = STYLE_ID;
@@ -7358,6 +8054,7 @@ const VERSION = "0.7.9-beta1";
         --cltc-radius-control: var(--radius-lg, 8px);
         --cltc-radius-modal: var(--radius-2xl, 12px);
         --cltc-radius-popover: var(--radius-2xl, 10px);
+        --cltc-radius-pill: 999px;
         --cltc-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
         --cltc-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
         --cltc-duration-press: 160ms;
@@ -7382,12 +8079,12 @@ const VERSION = "0.7.9-beta1";
         letter-spacing: 0;
         -webkit-app-region: no-drag;
       }
-      .cltc-settings-overlay *,
-      .cltc-settings-overlay *::before,
-      .cltc-settings-overlay *::after {
+      .cltc-settings *,
+      .cltc-settings *::before,
+      .cltc-settings *::after {
         box-sizing: border-box;
       }
-      html.electron-dark .cltc-settings-overlay {
+      html.electron-dark .cltc-settings {
         --cltc-text: #f4f4f5;
         --cltc-muted: #a1a1aa;
         --cltc-border: #3f3f46;
@@ -7438,11 +8135,11 @@ const VERSION = "0.7.9-beta1";
         transition: opacity var(--cltc-duration-press) var(--cltc-ease-out),
           transform var(--cltc-duration-press) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-settings-content {
+      .cltc-settings .cltc-settings-content {
         transition: opacity var(--cltc-duration-popover) var(--cltc-ease-out),
           transform var(--cltc-duration-popover) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-settings-content[data-cltc-switching="true"] {
+      .cltc-settings .cltc-settings-content[data-cltc-switching="true"] {
         opacity: .45;
         transform: translateY(4px);
       }
@@ -7458,29 +8155,29 @@ const VERSION = "0.7.9-beta1";
           transform: none;
           transition: opacity var(--cltc-duration-press) var(--cltc-ease-out);
         }
-        .cltc-settings-overlay .cltc-settings-content {
+        .cltc-settings .cltc-settings-content {
           transition: opacity var(--cltc-duration-press) var(--cltc-ease-out);
         }
-        .cltc-settings-overlay .cltc-settings-content[data-cltc-switching="true"] {
+        .cltc-settings .cltc-settings-content[data-cltc-switching="true"] {
           transform: none;
         }
       }
-      .cltc-settings-overlay .cltc-settings-content::-webkit-scrollbar,
-      .cltc-settings-overlay .cltc-price-list::-webkit-scrollbar {
+      .cltc-settings .cltc-settings-content::-webkit-scrollbar,
+      .cltc-settings .cltc-price-list::-webkit-scrollbar {
         width: 6px;
         height: 6px;
       }
-      .cltc-settings-overlay .cltc-settings-content::-webkit-scrollbar-track,
-      .cltc-settings-overlay .cltc-price-list::-webkit-scrollbar-track {
+      .cltc-settings .cltc-settings-content::-webkit-scrollbar-track,
+      .cltc-settings .cltc-price-list::-webkit-scrollbar-track {
         background: transparent;
       }
-      .cltc-settings-overlay .cltc-settings-content::-webkit-scrollbar-thumb,
-      .cltc-settings-overlay .cltc-price-list::-webkit-scrollbar-thumb {
-        border-radius: 999px;
+      .cltc-settings .cltc-settings-content::-webkit-scrollbar-thumb,
+      .cltc-settings .cltc-price-list::-webkit-scrollbar-thumb {
+        border-radius: var(--cltc-radius-pill);
         background: color-mix(in srgb, var(--cltc-muted) 35%, transparent);
       }
       #${ROOT_ID} .cltc-price-head,
-      .cltc-settings-overlay .cltc-price-head {
+      .cltc-settings .cltc-price-head {
         display: flex;
         justify-content: space-between;
         gap: 10px;
@@ -7490,7 +8187,7 @@ const VERSION = "0.7.9-beta1";
         border-bottom: 1px solid var(--cltc-border-subtle);
       }
       #${ROOT_ID} .cltc-price-title,
-      .cltc-settings-overlay .cltc-price-title {
+      .cltc-settings .cltc-price-title {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -7498,7 +8195,7 @@ const VERSION = "0.7.9-beta1";
         font-weight: 600;
       }
       #${ROOT_ID} .cltc-price-head button,
-      .cltc-settings-overlay .cltc-price-head button {
+      .cltc-settings .cltc-price-head button {
         width: 30px;
         height: 30px;
         border: 0;
@@ -7509,7 +8206,7 @@ const VERSION = "0.7.9-beta1";
         font: 20px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       #${ROOT_ID} .cltc-price-head button:focus-visible,
-      .cltc-settings-overlay .cltc-price-head button:focus-visible {
+      .cltc-settings .cltc-price-head button:focus-visible {
         background: var(--cltc-hover);
         outline: 2px solid var(--cltc-focus-ring, currentColor);
         outline-offset: 2px;
@@ -7517,21 +8214,21 @@ const VERSION = "0.7.9-beta1";
       #${ROOT_ID} .cltc-button,
       #${ROOT_ID} .cltc-price-head button,
       #${ROOT_ID} .cltc-price-actions button,
-      .cltc-settings-overlay button {
+      .cltc-settings button {
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out),
           border-color var(--cltc-duration-press) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-settings-nav button,
-      .cltc-settings-overlay .cltc-price-row {
+      .cltc-settings .cltc-settings-nav button,
+      .cltc-settings .cltc-price-row {
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out),
           border-color var(--cltc-duration-press) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-profile-select,
-      .cltc-settings-overlay .cltc-price-input {
+      .cltc-settings .cltc-profile-select,
+      .cltc-settings .cltc-price-input {
         transition: background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out),
           border-color var(--cltc-duration-press) var(--cltc-ease-out);
@@ -7539,23 +8236,23 @@ const VERSION = "0.7.9-beta1";
       #${ROOT_ID} .cltc-button:active,
       #${ROOT_ID} .cltc-price-head button:active,
       #${ROOT_ID} .cltc-price-actions button:active,
-      .cltc-settings-overlay button:active {
+      .cltc-settings button:active {
         transform: scale(.97);
       }
-      .cltc-settings-overlay .cltc-settings-shell {
+      .cltc-settings .cltc-settings-shell {
         display: grid;
         grid-template-columns: max-content minmax(0, 1fr);
         min-height: 0;
         overflow: hidden;
       }
-      .cltc-settings-overlay .cltc-settings-sidebar {
+      .cltc-settings .cltc-settings-sidebar {
         display: flex;
         flex-direction: column;
         min-width: 0;
         padding: 18px 10px;
         background: var(--cltc-sidebar-surface);
       }
-      .cltc-settings-overlay .cltc-settings-footer {
+      .cltc-settings .cltc-settings-footer {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -7564,17 +8261,17 @@ const VERSION = "0.7.9-beta1";
         color: var(--cltc-muted);
         font-size: 11px;
       }
-      .cltc-settings-overlay .cltc-settings-version {
+      .cltc-settings .cltc-settings-version {
         opacity: .68;
       }
-      .cltc-settings-overlay .cltc-settings-footer span + span {
+      .cltc-settings .cltc-settings-footer span + span {
         margin-left: 8px;
       }
-      .cltc-settings-overlay .cltc-settings-nav {
+      .cltc-settings .cltc-settings-nav {
         display: grid;
         gap: 2px;
       }
-      .cltc-settings-overlay .cltc-settings-nav button {
+      .cltc-settings .cltc-settings-nav button {
         width: 100%;
         min-height: 34px;
         padding: 7px 10px;
@@ -7586,29 +8283,29 @@ const VERSION = "0.7.9-beta1";
         font: inherit;
         text-align: left;
       }
-      .cltc-settings-overlay .cltc-settings-nav button:focus-visible,
-      .cltc-settings-overlay .cltc-settings-nav button[data-active="true"] {
+      .cltc-settings .cltc-settings-nav button:focus-visible,
+      .cltc-settings .cltc-settings-nav button[data-active="true"] {
         background: var(--cltc-active);
         color: var(--cltc-text);
         outline: none;
       }
-      .cltc-settings-overlay .cltc-settings-nav button:focus-visible {
+      .cltc-settings .cltc-settings-nav button:focus-visible {
         outline: 2px solid var(--cltc-focus-ring);
         outline-offset: 2px;
       }
-      .cltc-settings-overlay .cltc-settings-nav button[data-active="true"] {
+      .cltc-settings .cltc-settings-nav button[data-active="true"] {
         font-weight: 600;
       }
-      .cltc-settings-overlay button:focus-visible {
+      .cltc-settings button:focus-visible {
         outline: 2px solid var(--cltc-focus-ring);
         outline-offset: 2px;
       }
-      .cltc-settings-overlay button:disabled {
+      .cltc-settings button:disabled {
         cursor: not-allowed;
         opacity: .5;
         pointer-events: none;
       }
-      .cltc-settings-overlay .cltc-settings-content {
+      .cltc-settings .cltc-settings-content {
         min-width: 0;
         overflow: auto;
         padding: 26px 30px 30px;
@@ -7616,7 +8313,7 @@ const VERSION = "0.7.9-beta1";
         scrollbar-color: color-mix(in srgb, var(--cltc-muted) 35%, transparent) transparent;
       }
       #${ROOT_ID} .cltc-price-list,
-      .cltc-settings-overlay .cltc-price-list {
+      .cltc-settings .cltc-price-list {
         display: grid;
         max-height: 210px;
         overflow: auto;
@@ -7626,27 +8323,27 @@ const VERSION = "0.7.9-beta1";
         scrollbar-color: color-mix(in srgb, var(--cltc-muted) 35%, transparent) transparent;
       }
       #${ROOT_ID} .cltc-settings-section,
-      .cltc-settings-overlay .cltc-settings-section {
+      .cltc-settings .cltc-settings-section {
         display: grid;
         gap: 20px;
       }
-      .cltc-settings-overlay .cltc-settings-section-heading {
+      .cltc-settings .cltc-settings-section-heading {
         display: grid;
         gap: 4px;
       }
-      .cltc-settings-overlay .cltc-settings-section-heading h2 {
+      .cltc-settings .cltc-settings-section-heading h2 {
         margin: 0;
         font-size: 20px;
         font-weight: 600;
         line-height: 28px;
       }
-      .cltc-settings-overlay .cltc-settings-section-heading p {
+      .cltc-settings .cltc-settings-section-heading p {
         margin: 0;
         color: var(--cltc-muted);
         font-size: 13px;
         line-height: 19px;
       }
-      .cltc-settings-overlay .cltc-settings-row {
+      .cltc-settings .cltc-settings-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
@@ -7655,12 +8352,12 @@ const VERSION = "0.7.9-beta1";
         padding: 14px 0;
         border-top: 1px solid var(--cltc-border-subtle);
       }
-      .cltc-settings-overlay .cltc-settings-row strong,
-      .cltc-settings-overlay .cltc-toggle-field strong {
+      .cltc-settings .cltc-settings-row strong,
+      .cltc-settings .cltc-toggle-field strong {
         display: block;
         font-weight: 500;
       }
-      .cltc-settings-overlay .cltc-toggle-field small {
+      .cltc-settings .cltc-toggle-field small {
         display: block;
         margin-top: 2px;
         color: var(--cltc-muted);
@@ -7668,21 +8365,14 @@ const VERSION = "0.7.9-beta1";
         line-height: 17px;
       }
       #${ROOT_ID} .cltc-sync-status,
-      .cltc-settings-overlay .cltc-sync-status {
+      .cltc-settings .cltc-sync-status {
         margin-top: 3px;
         color: var(--cltc-muted);
         font-size: 12px;
         line-height: 17px;
       }
-      #${ROOT_ID} .cltc-sync-status[data-helper-unavailable="true"],
-      .cltc-settings-overlay .cltc-sync-status[data-helper-unavailable="true"] {
-        color: color-mix(in srgb, var(--cltc-warning) 75%, var(--cltc-text));
-      }
-      .cltc-settings-overlay .cltc-sync-status {
+      .cltc-settings .cltc-sync-status {
         transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
-      }
-      .cltc-settings-overlay .cltc-sync-status[data-cltc-status-pulse="true"] {
-        opacity: .48;
       }
       .cltc-settings-overlay .cltc-profile-save-toast {
         position: fixed;
@@ -7722,7 +8412,7 @@ const VERSION = "0.7.9-beta1";
         color: var(--cltc-danger);
       }
       #${ROOT_ID} .cltc-price-row,
-      .cltc-settings-overlay .cltc-price-row {
+      .cltc-settings .cltc-price-row {
         display: grid;
         grid-template-columns: minmax(120px, 1fr) repeat(4, minmax(44px, .45fr));
         gap: 6px;
@@ -7738,11 +8428,11 @@ const VERSION = "0.7.9-beta1";
         text-align: left;
       }
       #${ROOT_ID} .cltc-price-row[data-active="true"],
-      .cltc-settings-overlay .cltc-price-row[data-active="true"] {
+      .cltc-settings .cltc-price-row[data-active="true"] {
         background: var(--cltc-active);
         font-weight: 650;
       }
-      .cltc-settings-overlay .cltc-price-table-head {
+      .cltc-settings .cltc-price-table-head {
         min-height: 30px;
         padding-top: 4px;
         padding-bottom: 4px;
@@ -7750,47 +8440,47 @@ const VERSION = "0.7.9-beta1";
         font-size: 11px;
         font-weight: 500;
       }
-      .cltc-settings-overlay .cltc-price-meta {
+      .cltc-settings .cltc-price-meta {
         margin-top: -12px;
         color: var(--cltc-muted);
         font-size: 12px;
       }
-      .cltc-settings-overlay .cltc-price-editor {
+      .cltc-settings .cltc-price-editor {
         display: grid;
         gap: 14px;
         padding-top: 20px;
         border-top: 1px solid var(--cltc-border-subtle);
       }
       #${ROOT_ID} .cltc-price-row span,
-      .cltc-settings-overlay .cltc-price-row span {
+      .cltc-settings .cltc-price-row span {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       #${ROOT_ID} .cltc-price-grid,
-      .cltc-settings-overlay .cltc-price-grid {
+      .cltc-settings .cltc-price-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 14px 12px;
       }
       #${ROOT_ID} .cltc-price-field-full,
-      .cltc-settings-overlay .cltc-price-field-full {
+      .cltc-settings .cltc-price-field-full {
         grid-column: 1 / -1;
       }
       #${ROOT_ID} .cltc-price-field,
-      .cltc-settings-overlay .cltc-price-field {
+      .cltc-settings .cltc-price-field {
         display: grid;
         gap: 6px;
       }
-      .cltc-settings-overlay .cltc-profile-field-note {
+      .cltc-settings .cltc-profile-field-note {
         margin-top: -2px;
         color: var(--cltc-muted);
         font-size: 11px;
         line-height: 16px;
       }
       #${ROOT_ID} .cltc-toggle-field,
-      .cltc-settings-overlay .cltc-toggle-field {
+      .cltc-settings .cltc-toggle-field {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
@@ -7802,14 +8492,14 @@ const VERSION = "0.7.9-beta1";
         cursor: pointer;
       }
       #${ROOT_ID} .cltc-toggle-field input,
-      .cltc-settings-overlay .cltc-toggle-field input {
+      .cltc-settings .cltc-toggle-field input {
         appearance: none;
         position: relative;
         width: 34px;
         height: 20px;
         margin: 0;
         border: 1px solid var(--cltc-border);
-        border-radius: 999px;
+        border-radius: var(--cltc-radius-pill);
         background: var(--cltc-surface-secondary);
         cursor: pointer;
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
@@ -7817,38 +8507,38 @@ const VERSION = "0.7.9-beta1";
           border-color var(--cltc-duration-press) var(--cltc-ease-out);
       }
       #${ROOT_ID} .cltc-toggle-field input::after,
-      .cltc-settings-overlay .cltc-toggle-field input::after {
+      .cltc-settings .cltc-toggle-field input::after {
         content: "";
         position: absolute;
         top: 2px;
         left: 2px;
         width: 14px;
         height: 14px;
-        border-radius: 50%;
+        border-radius: var(--cltc-radius-pill);
         background: var(--cltc-surface);
         box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out);
       }
       #${ROOT_ID} .cltc-toggle-field input:checked,
-      .cltc-settings-overlay .cltc-toggle-field input:checked {
+      .cltc-settings .cltc-toggle-field input:checked {
         border-color: var(--cltc-text);
         background: var(--cltc-text);
       }
       #${ROOT_ID} .cltc-toggle-field input:checked::after,
-      .cltc-settings-overlay .cltc-toggle-field input:checked::after {
+      .cltc-settings .cltc-toggle-field input:checked::after {
         transform: translateX(14px);
       }
       #${ROOT_ID} .cltc-toggle-field input:active,
-      .cltc-settings-overlay .cltc-toggle-field input:active {
+      .cltc-settings .cltc-toggle-field input:active {
         transform: scale(.97);
       }
       #${ROOT_ID} .cltc-toggle-field input:focus-visible,
-      .cltc-settings-overlay .cltc-toggle-field input:focus-visible {
+      .cltc-settings .cltc-toggle-field input:focus-visible {
         outline: 2px solid var(--cltc-muted);
         outline-offset: 2px;
       }
       #${ROOT_ID} .cltc-price-field span,
-      .cltc-settings-overlay .cltc-price-field span {
+      .cltc-settings .cltc-price-field span {
         padding: 0;
         border: 0;
         background: transparent;
@@ -7857,8 +8547,8 @@ const VERSION = "0.7.9-beta1";
       }
       #${ROOT_ID} .cltc-price-input,
       #${ROOT_ID} .cltc-profile-select,
-      .cltc-settings-overlay .cltc-price-input,
-      .cltc-settings-overlay .cltc-profile-select {
+      .cltc-settings .cltc-price-input,
+      .cltc-settings .cltc-profile-select {
         min-width: 0;
         height: 36px;
         padding: 7px 10px;
@@ -7870,24 +8560,24 @@ const VERSION = "0.7.9-beta1";
         outline: none;
       }
       #${ROOT_ID} .cltc-profile-select,
-      .cltc-settings-overlay .cltc-profile-select {
+      .cltc-settings .cltc-profile-select {
         appearance: auto;
         cursor: pointer;
       }
       #${ROOT_ID} .cltc-price-field[data-profile-locked],
-      .cltc-settings-overlay .cltc-price-field[data-profile-locked] {
+      .cltc-settings .cltc-price-field[data-profile-locked] {
         cursor: not-allowed;
       }
       #${ROOT_ID} .cltc-profile-select:disabled,
       #${ROOT_ID} .cltc-price-input:disabled,
-      .cltc-settings-overlay .cltc-profile-select:disabled,
-      .cltc-settings-overlay .cltc-price-input:disabled {
+      .cltc-settings .cltc-profile-select:disabled,
+      .cltc-settings .cltc-price-input:disabled {
         cursor: not-allowed;
         opacity: .55;
         pointer-events: none;
       }
       #${ROOT_ID} .cltc-profile-select::picker(select),
-      .cltc-settings-overlay .cltc-profile-select::picker(select) {
+      .cltc-settings .cltc-profile-select::picker(select) {
         appearance: auto;
         margin-top: 5px;
         padding: 5px;
@@ -7898,60 +8588,66 @@ const VERSION = "0.7.9-beta1";
         color: var(--cltc-text);
       }
       #${ROOT_ID} .cltc-profile-select::picker-icon,
-      .cltc-settings-overlay .cltc-profile-select::picker-icon {
+      .cltc-settings .cltc-profile-select::picker-icon {
         color: var(--cltc-muted);
         transition: rotate var(--cltc-duration-press) var(--cltc-ease-in-out);
       }
       #${ROOT_ID} .cltc-profile-select:open::picker-icon,
-      .cltc-settings-overlay .cltc-profile-select:open::picker-icon {
+      .cltc-settings .cltc-profile-select:open::picker-icon {
         rotate: 180deg;
       }
       #${ROOT_ID} .cltc-profile-select:open,
-      .cltc-settings-overlay .cltc-profile-select:open {
+      .cltc-settings .cltc-profile-select:open {
         border-color: color-mix(in srgb, var(--cltc-text) 52%, var(--cltc-border));
         background: color-mix(in srgb, var(--cltc-surface-secondary) 70%, var(--cltc-input));
       }
       #${ROOT_ID} .cltc-profile-select option,
-      .cltc-settings-overlay .cltc-profile-select option {
+      .cltc-settings .cltc-profile-select option {
         min-height: 32px;
         padding: 7px 9px;
-        border-radius: 6px;
+        border-radius: var(--cltc-radius-sm);
         background: var(--cltc-popover);
         color: var(--cltc-text);
       }
       #${ROOT_ID} .cltc-profile-select option:focus,
       #${ROOT_ID} .cltc-profile-select option:checked,
-      .cltc-settings-overlay .cltc-profile-select option:focus,
-      .cltc-settings-overlay .cltc-profile-select option:checked {
+      .cltc-settings .cltc-profile-select option:focus,
+      .cltc-settings .cltc-profile-select option:checked {
         background: var(--cltc-hover);
       }
       #${ROOT_ID} .cltc-profile-select option::checkmark,
-      .cltc-settings-overlay .cltc-profile-select option::checkmark {
+      .cltc-settings .cltc-profile-select option::checkmark {
         display: none;
       }
       #${ROOT_ID} .cltc-price-input:focus,
       #${ROOT_ID} .cltc-profile-select:focus,
-      .cltc-settings-overlay .cltc-price-input:focus,
-      .cltc-settings-overlay .cltc-profile-select:focus {
+      .cltc-settings .cltc-price-input:focus,
+      .cltc-settings .cltc-profile-select:focus {
         border-color: color-mix(in srgb, var(--cltc-text) 58%, var(--cltc-border));
         box-shadow: 0 0 0 2px var(--cltc-focus-ring, color-mix(in srgb, var(--cltc-text) 10%, transparent));
       }
       #${ROOT_ID} .cltc-price-actions,
-      .cltc-settings-overlay .cltc-price-actions {
+      .cltc-settings .cltc-price-actions {
         display: flex;
         gap: 8px;
         justify-content: flex-end;
       }
+      .cltc-settings .cltc-usage-sync-status {
+        margin: 0;
+        color: var(--cltc-muted);
+        font-size: 13px;
+        line-height: 19px;
+      }
       #${ROOT_ID} .cltc-price-actions-left,
-      .cltc-settings-overlay .cltc-price-actions-left {
+      .cltc-settings .cltc-price-actions-left {
         justify-content: flex-start;
       }
       #${ROOT_ID} .cltc-price-actions button,
       #${ROOT_ID} .cltc-price-actions .cltc-link-button,
-      .cltc-settings-overlay .cltc-price-actions button,
-      .cltc-settings-overlay .cltc-price-actions .cltc-link-button,
-      .cltc-settings-overlay .cltc-settings-row button,
-      .cltc-settings-overlay .cltc-settings-row .cltc-link-button {
+      .cltc-settings .cltc-price-actions button,
+      .cltc-settings .cltc-price-actions .cltc-link-button,
+      .cltc-settings .cltc-settings-row button,
+      .cltc-settings .cltc-settings-row .cltc-link-button {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -7964,34 +8660,34 @@ const VERSION = "0.7.9-beta1";
         font: inherit;
         text-decoration: none;
       }
-      .cltc-settings-overlay button[data-variant="primary"] {
+      .cltc-settings button[data-variant="primary"] {
         border-color: var(--cltc-primary);
         background: var(--cltc-primary);
         color: var(--cltc-primary-text);
       }
-      .cltc-settings-overlay button[data-variant="danger"] {
+      .cltc-settings button[data-variant="danger"] {
         color: var(--cltc-danger);
       }
-      .cltc-settings-overlay .cltc-analytics {
+      .cltc-settings .cltc-analytics {
         gap: 26px;
       }
-      .cltc-settings-overlay .cltc-analytics-heading {
+      .cltc-settings .cltc-analytics-heading {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 18px;
       }
-      .cltc-settings-overlay .cltc-analytics-heading > div {
+      .cltc-settings .cltc-analytics-heading > div {
         min-width: 0;
       }
-      .cltc-settings-overlay .cltc-analytics-toolbar,
-      .cltc-settings-overlay .cltc-analytics-section-head {
+      .cltc-settings .cltc-analytics-toolbar,
+      .cltc-settings .cltc-analytics-section-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 14px;
       }
-      .cltc-settings-overlay .cltc-segmented {
+      .cltc-settings .cltc-segmented {
         position: relative;
         display: inline-flex;
         align-items: center;
@@ -8001,7 +8697,7 @@ const VERSION = "0.7.9-beta1";
         background: var(--cltc-surface-secondary);
         min-width: 236px;
       }
-      .cltc-settings-overlay .cltc-segmented::before {
+      .cltc-settings .cltc-segmented::before {
         content: "";
         position: absolute;
         z-index: 0;
@@ -8016,38 +8712,38 @@ const VERSION = "0.7.9-beta1";
         transform: translateX(0);
         transition: transform var(--cltc-duration-data) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-segmented-compact::before {
+      .cltc-settings .cltc-segmented-compact::before {
         width: calc((100% - 8px) / 2);
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="1"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-index="1"]::before {
         transform: translateX(calc(100% + 2px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="2"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-index="2"]::before {
         transform: translateX(calc(200% + 4px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-index="3"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-index="3"]::before {
         transform: translateX(calc(300% + 6px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="0"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-from-index="0"]::before {
         transform: translateX(0);
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="1"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-from-index="1"]::before {
         transform: translateX(calc(100% + 2px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="2"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-from-index="2"]::before {
         transform: translateX(calc(200% + 4px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index="3"]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-from-index="3"]::before {
         transform: translateX(calc(300% + 6px));
       }
-      .cltc-settings-overlay .cltc-segmented[data-cltc-segment-from-index]::before {
+      .cltc-settings .cltc-segmented[data-cltc-segment-from-index]::before {
         transition: none;
       }
-      .cltc-settings-overlay .cltc-segmented button,
-      .cltc-settings-overlay .cltc-date-range-trigger,
-      .cltc-settings-overlay .cltc-analytics-filter,
-      .cltc-settings-overlay .cltc-analytics-expand,
-      .cltc-settings-overlay .cltc-analytics-degraded {
+      .cltc-settings .cltc-segmented button,
+      .cltc-settings .cltc-date-range-trigger,
+      .cltc-settings .cltc-analytics-filter,
+      .cltc-settings .cltc-analytics-expand,
+      .cltc-settings .cltc-analytics-degraded {
         min-height: 30px;
         padding: 5px 9px;
         border: 0;
@@ -8057,7 +8753,7 @@ const VERSION = "0.7.9-beta1";
         cursor: pointer;
         font: inherit;
       }
-      .cltc-settings-overlay .cltc-segmented button {
+      .cltc-settings .cltc-segmented button {
         position: relative;
         z-index: 1;
         flex: 1 1 0;
@@ -8068,36 +8764,46 @@ const VERSION = "0.7.9-beta1";
           background var(--cltc-duration-press) var(--cltc-ease-out),
           color var(--cltc-duration-press) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-segmented button:focus-visible {
+      .cltc-settings .cltc-segmented button:focus-visible {
         background: var(--cltc-hover);
         color: var(--cltc-text);
         outline: none;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
       }
-      .cltc-settings-overlay .cltc-segmented button[data-active="true"] {
+      .cltc-settings .cltc-segmented button[data-active="true"] {
         background: transparent;
         color: var(--cltc-text);
         outline: none;
         font-weight: 600;
       }
-      .cltc-settings-overlay .cltc-date-range-trigger:focus-visible {
+      .cltc-settings .cltc-date-range-trigger:focus-visible {
         background: var(--cltc-popover);
         color: var(--cltc-text);
         outline: none;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
       }
-      .cltc-settings-overlay .cltc-segmented-compact button {
+      .cltc-settings .cltc-segmented-compact button {
         min-width: 52px;
       }
-      .cltc-settings-overlay .cltc-segmented-compact {
+      .cltc-settings .cltc-segmented-compact {
         min-width: 116px;
       }
-      .cltc-settings-overlay .cltc-date-range-trigger {
+      .cltc-settings .cltc-date-range-trigger {
         border: 1px solid var(--cltc-border);
         color: var(--cltc-text);
       }
-      .cltc-settings-overlay .cltc-date-range-trigger[hidden] {
+      .cltc-settings .cltc-date-range-trigger[hidden] {
         display: none;
+      }
+      .cltc-settings .cltc-date-range-clear {
+        border: 1px solid var(--cltc-border);
+        color: var(--cltc-muted);
+      }
+      .cltc-settings .cltc-date-range-clear:focus-visible {
+        background: var(--cltc-popover);
+        color: var(--cltc-text);
+        outline: none;
+        box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
       }
       .cltc-settings-overlay .cltc-analytics-date-input {
         position: fixed;
@@ -8108,7 +8814,7 @@ const VERSION = "0.7.9-beta1";
         opacity: 0;
         pointer-events: none;
       }
-      .cltc-settings-overlay .cltc-analytics-control-label {
+      .cltc-settings .cltc-analytics-control-label {
         display: inline-flex;
         align-items: center;
         gap: 7px;
@@ -8116,7 +8822,7 @@ const VERSION = "0.7.9-beta1";
         font-size: 11px;
         white-space: nowrap;
       }
-      .cltc-settings-overlay .cltc-analytics-control {
+      .cltc-settings .cltc-analytics-control {
         min-height: 32px;
         min-width: 112px;
         padding: 5px 9px;
@@ -8126,25 +8832,25 @@ const VERSION = "0.7.9-beta1";
         color: var(--cltc-text);
         font: inherit;
       }
-      .cltc-settings-overlay .cltc-analytics-control:focus-visible {
+      .cltc-settings .cltc-analytics-control:focus-visible {
         outline: 2px solid var(--cltc-focus-ring);
         outline-offset: 2px;
       }
-      .cltc-settings-overlay .cltc-analytics-date-range {
+      .cltc-settings .cltc-analytics-date-range {
         display: inline-flex;
         align-items: center;
         gap: 8px;
       }
-      .cltc-settings-overlay .cltc-analytics-date-range[hidden] {
+      .cltc-settings .cltc-analytics-date-range[hidden] {
         display: none;
       }
-      .cltc-settings-overlay .cltc-analytics-date-range .cltc-analytics-control {
+      .cltc-settings .cltc-analytics-date-range .cltc-analytics-control {
         min-width: 132px;
       }
-      .cltc-settings-overlay .cltc-analytics-filter,
-      .cltc-settings-overlay .cltc-analytics-filter,
-      .cltc-settings-overlay .cltc-analytics-expand,
-      .cltc-settings-overlay .cltc-analytics-degraded {
+      .cltc-settings .cltc-analytics-filter,
+      .cltc-settings .cltc-analytics-filter,
+      .cltc-settings .cltc-analytics-expand,
+      .cltc-settings .cltc-analytics-degraded {
         min-height: 30px;
         padding: 5px 9px;
         border: 0;
@@ -8154,7 +8860,7 @@ const VERSION = "0.7.9-beta1";
         cursor: pointer;
         font: inherit;
       }
-      .cltc-settings-overlay .cltc-analytics-filter {
+      .cltc-settings .cltc-analytics-filter {
         flex: 0 1 auto;
         max-width: 230px;
         overflow: hidden;
@@ -8163,7 +8869,7 @@ const VERSION = "0.7.9-beta1";
         background: var(--cltc-surface-secondary);
         color: var(--cltc-text);
       }
-      .cltc-settings-overlay .cltc-analytics-degraded {
+      .cltc-settings .cltc-analytics-degraded {
         width: 100%;
         min-height: 34px;
         padding: 8px 10px;
@@ -8171,27 +8877,27 @@ const VERSION = "0.7.9-beta1";
         text-align: left;
         background: color-mix(in srgb, #b45309 8%, transparent);
       }
-      .cltc-settings-overlay .cltc-analytics-metrics {
+      .cltc-settings .cltc-analytics-metrics {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         border-top: 1px solid var(--cltc-border-subtle);
         border-bottom: 1px solid var(--cltc-border-subtle);
       }
-      .cltc-settings-overlay .cltc-analytics-metric {
+      .cltc-settings .cltc-analytics-metric {
         display: grid;
         min-width: 0;
         gap: 4px;
         padding: 16px 14px;
         border-right: 1px solid var(--cltc-border-subtle);
       }
-      .cltc-settings-overlay .cltc-analytics-metric:first-child {
+      .cltc-settings .cltc-analytics-metric:first-child {
         padding-left: 0;
       }
-      .cltc-settings-overlay .cltc-analytics-metric:last-child {
+      .cltc-settings .cltc-analytics-metric:last-child {
         border-right: 0;
       }
-      .cltc-settings-overlay .cltc-analytics-metric > span,
-      .cltc-settings-overlay .cltc-analytics-metric small {
+      .cltc-settings .cltc-analytics-metric > span,
+      .cltc-settings .cltc-analytics-metric small {
         overflow: hidden;
         color: var(--cltc-muted);
         font-size: 11px;
@@ -8199,7 +8905,7 @@ const VERSION = "0.7.9-beta1";
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .cltc-settings-overlay .cltc-analytics-metric strong {
+      .cltc-settings .cltc-analytics-metric strong {
         overflow: hidden;
         font-size: 18px;
         font-weight: 600;
@@ -8207,29 +8913,29 @@ const VERSION = "0.7.9-beta1";
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .cltc-settings-overlay .cltc-analytics-section {
+      .cltc-settings .cltc-analytics-section {
         display: grid;
         gap: 14px;
         padding-top: 22px;
         border-top: 1px solid var(--cltc-border-subtle);
       }
-      .cltc-settings-overlay .cltc-analytics-section-head h3 {
+      .cltc-settings .cltc-analytics-section-head h3 {
         margin: 0;
         font-size: 14px;
         font-weight: 600;
       }
-      .cltc-settings-overlay .cltc-analytics-section-head p {
+      .cltc-settings .cltc-analytics-section-head p {
         margin: 2px 0 0;
         color: var(--cltc-muted);
         font-size: 11px;
       }
-      .cltc-settings-overlay .cltc-analytics-chart {
+      .cltc-settings .cltc-analytics-chart {
         display: block;
         width: 100%;
         min-height: 190px;
         overflow: visible;
       }
-      .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index] {
+      .cltc-settings .cltc-analytics-chart rect[data-chart-index] {
         fill: color-mix(in srgb, var(--cltc-text) 78%, transparent);
         stroke: transparent !important;
         stroke-width: 2px;
@@ -8244,44 +8950,44 @@ const VERSION = "0.7.9-beta1";
         from { transform: scaleY(0); }
         to { transform: scaleY(1); }
       }
-      .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index]:focus-visible {
+      .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus-visible {
         opacity: .66;
         outline: none !important;
       }
-      .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index]:focus,
-      .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index]:focus-visible {
+      .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus,
+      .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus-visible {
         stroke: rgb(76, 78, 80) !important;
       }
-      .cltc-settings-overlay .cltc-analytics-chart text {
+      .cltc-settings .cltc-analytics-chart text {
         fill: var(--cltc-muted);
         font-size: 9px;
       }
-      .cltc-settings-overlay .cltc-analytics-tooltip {
+      .cltc-settings .cltc-analytics-tooltip {
         opacity: 0;
         pointer-events: none;
         transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
       }
-      .cltc-settings-overlay .cltc-analytics-bar:focus-within .cltc-analytics-tooltip {
+      .cltc-settings .cltc-analytics-bar:focus-within .cltc-analytics-tooltip {
         opacity: 1;
       }
       @media (hover: hover) and (pointer: fine) {
-        .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index]:hover {
+        .cltc-settings .cltc-analytics-chart rect[data-chart-index]:hover {
           opacity: .66;
           outline: none !important;
         }
-        .cltc-settings-overlay .cltc-analytics-bar:hover .cltc-analytics-tooltip {
+        .cltc-settings .cltc-analytics-bar:hover .cltc-analytics-tooltip {
           opacity: 1;
         }
       }
-      .cltc-settings-overlay .cltc-analytics-tooltip rect {
+      .cltc-settings .cltc-analytics-tooltip rect {
         fill: var(--cltc-text);
       }
-      .cltc-settings-overlay .cltc-analytics-tooltip text {
+      .cltc-settings .cltc-analytics-tooltip text {
         fill: var(--cltc-popover);
         font-size: 10px;
         font-weight: 600;
       }
-      .cltc-settings-overlay .cltc-composition-bar {
+      .cltc-settings .cltc-composition-bar {
         display: flex;
         gap: 2px;
         width: 100%;
@@ -8290,19 +8996,19 @@ const VERSION = "0.7.9-beta1";
         border-radius: 5px;
         background: var(--cltc-surface-secondary);
       }
-      .cltc-settings-overlay .cltc-composition-bar span {
+      .cltc-settings .cltc-composition-bar span {
         min-width: 0;
       }
-      .cltc-settings-overlay [data-tone="neutral"] { background: #8e8e93; }
-      .cltc-settings-overlay [data-tone="green"] { background: var(--cltc-success); }
-      .cltc-settings-overlay [data-tone="blue"] { background: var(--cltc-chart-blue); }
-      .cltc-settings-overlay [data-tone="purple"] { background: var(--cltc-chart-purple); }
-      .cltc-settings-overlay .cltc-composition-legend {
+      .cltc-settings [data-tone="neutral"] { background: #8e8e93; }
+      .cltc-settings [data-tone="green"] { background: var(--cltc-success); }
+      .cltc-settings [data-tone="blue"] { background: var(--cltc-chart-blue); }
+      .cltc-settings [data-tone="purple"] { background: var(--cltc-chart-purple); }
+      .cltc-settings .cltc-composition-legend {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 8px 16px;
       }
-      .cltc-settings-overlay .cltc-composition-legend span {
+      .cltc-settings .cltc-composition-legend span {
         display: grid;
         grid-template-columns: 8px minmax(0, 1fr) auto;
         align-items: center;
@@ -8311,34 +9017,34 @@ const VERSION = "0.7.9-beta1";
         color: var(--cltc-muted);
         font-size: 11px;
       }
-      .cltc-settings-overlay .cltc-composition-legend i {
+      .cltc-settings .cltc-composition-legend i {
         width: 7px;
         height: 7px;
         border-radius: 2px;
       }
-      .cltc-settings-overlay .cltc-composition-legend strong {
+      .cltc-settings .cltc-composition-legend strong {
         color: var(--cltc-text);
         font-weight: 500;
       }
-      .cltc-settings-overlay .cltc-analytics-model-head,
-      .cltc-settings-overlay .cltc-analytics-model-row {
+      .cltc-settings .cltc-analytics-model-head,
+      .cltc-settings .cltc-analytics-model-row {
         display: grid;
         grid-template-columns: minmax(150px, 1.45fr) repeat(4, minmax(72px, .7fr));
         gap: 10px;
         align-items: center;
       }
-      .cltc-settings-overlay .cltc-analytics-model-head {
+      .cltc-settings .cltc-analytics-model-head {
         padding: 0 9px;
         color: var(--cltc-muted);
         font-size: 10px;
       }
-      .cltc-settings-overlay .cltc-analytics-models {
+      .cltc-settings .cltc-analytics-models {
         max-height: 320px;
         overflow: auto;
         border-top: 1px solid var(--cltc-border-subtle);
         border-bottom: 1px solid var(--cltc-border-subtle);
       }
-      .cltc-settings-overlay .cltc-analytics-model-row {
+      .cltc-settings .cltc-analytics-model-row {
         width: 100%;
         min-height: 38px;
         padding: 7px 9px;
@@ -8350,26 +9056,26 @@ const VERSION = "0.7.9-beta1";
         font: inherit;
         text-align: left;
       }
-      .cltc-settings-overlay .cltc-analytics-model-row:focus-visible {
+      .cltc-settings .cltc-analytics-model-row:focus-visible {
         background: var(--cltc-hover);
         outline: none;
       }
-      .cltc-settings-overlay .cltc-analytics-model-row[data-hidden="true"] {
+      .cltc-settings .cltc-analytics-model-row[data-hidden="true"] {
         display: none;
       }
-      .cltc-settings-overlay .cltc-analytics-model-row span {
+      .cltc-settings .cltc-analytics-model-row span {
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         font-size: 11px;
       }
-      .cltc-settings-overlay .cltc-analytics-expand {
+      .cltc-settings .cltc-analytics-expand {
         justify-self: start;
         padding-left: 0;
         color: var(--cltc-text);
       }
-      .cltc-settings-overlay .cltc-analytics-empty {
+      .cltc-settings .cltc-analytics-empty {
         padding: 24px 10px;
         color: var(--cltc-muted);
         font-size: 12px;
@@ -8377,36 +9083,36 @@ const VERSION = "0.7.9-beta1";
       }
       @media (hover: hover) and (pointer: fine) {
         #${ROOT_ID} .cltc-price-head button:hover,
-        .cltc-settings-overlay .cltc-price-head button:hover,
+        .cltc-settings .cltc-price-head button:hover,
         #${ROOT_ID} .cltc-price-actions button:hover,
         #${ROOT_ID} .cltc-price-actions .cltc-link-button:hover,
         #${ROOT_ID} .cltc-price-row:hover,
-        .cltc-settings-overlay .cltc-price-actions button:hover,
-        .cltc-settings-overlay .cltc-price-actions .cltc-link-button:hover,
-        .cltc-settings-overlay .cltc-settings-row button:hover,
-        .cltc-settings-overlay .cltc-settings-row .cltc-link-button:hover,
-        .cltc-settings-overlay .cltc-price-row:hover,
-        .cltc-settings-overlay .cltc-analytics-model-row:hover {
+        .cltc-settings .cltc-price-actions button:hover,
+        .cltc-settings .cltc-price-actions .cltc-link-button:hover,
+        .cltc-settings .cltc-settings-row button:hover,
+        .cltc-settings .cltc-settings-row .cltc-link-button:hover,
+        .cltc-settings .cltc-price-row:hover,
+        .cltc-settings .cltc-analytics-model-row:hover {
           background: var(--cltc-hover);
         }
-        .cltc-settings-overlay .cltc-settings-nav button:hover {
+        .cltc-settings .cltc-settings-nav button:hover {
           background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
         }
         #${ROOT_ID} .cltc-profile-select:hover,
-        .cltc-settings-overlay .cltc-profile-select:hover {
+        .cltc-settings .cltc-profile-select:hover {
           border-color: color-mix(in srgb, var(--cltc-text) 52%, var(--cltc-border));
           background: color-mix(in srgb, var(--cltc-surface-secondary) 70%, var(--cltc-input));
         }
         #${ROOT_ID} .cltc-profile-select option:hover,
-        .cltc-settings-overlay .cltc-profile-select option:hover {
+        .cltc-settings .cltc-profile-select option:hover {
           background: var(--cltc-hover);
         }
-        .cltc-settings-overlay button[data-variant="primary"]:hover {
+        .cltc-settings button[data-variant="primary"]:hover {
           background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
         }
-        .cltc-settings-overlay .cltc-analytics-control:hover {
+        .cltc-settings .cltc-analytics-control:hover {
           background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
@@ -8423,63 +9129,63 @@ const VERSION = "0.7.9-beta1";
           height: calc(100vh - 24px);
           max-height: none;
         }
-        .cltc-settings-overlay .cltc-settings-shell {
+        .cltc-settings .cltc-settings-shell {
           grid-template-columns: minmax(0, 1fr);
           grid-template-rows: auto minmax(0, 1fr);
         }
-        .cltc-settings-overlay .cltc-settings-sidebar {
+        .cltc-settings .cltc-settings-sidebar {
           display: block;
           padding: 8px 10px;
           border-right: 0;
           border-bottom: 1px solid var(--cltc-border-subtle);
           overflow-x: auto;
         }
-        .cltc-settings-overlay .cltc-settings-footer {
+        .cltc-settings .cltc-settings-footer {
           display: none;
         }
-        .cltc-settings-overlay .cltc-settings-nav {
+        .cltc-settings .cltc-settings-nav {
           display: flex;
           min-width: max-content;
         }
-        .cltc-settings-overlay .cltc-settings-nav button {
+        .cltc-settings .cltc-settings-nav button {
           width: auto;
           white-space: nowrap;
         }
-        .cltc-settings-overlay .cltc-settings-content {
+        .cltc-settings .cltc-settings-content {
           padding: 22px 18px 26px;
         }
-        .cltc-settings-overlay .cltc-price-grid {
+        .cltc-settings .cltc-price-grid {
           grid-template-columns: minmax(0, 1fr);
         }
-        .cltc-settings-overlay .cltc-price-row {
+        .cltc-settings .cltc-price-row {
           grid-template-columns: minmax(112px, 1fr) repeat(4, minmax(42px, .45fr));
           font-size: 11px;
         }
-        .cltc-settings-overlay .cltc-analytics-toolbar,
-        .cltc-settings-overlay .cltc-analytics-section-head {
+        .cltc-settings .cltc-analytics-toolbar,
+        .cltc-settings .cltc-analytics-section-head {
           align-items: flex-start;
           flex-wrap: wrap;
         }
-        .cltc-settings-overlay .cltc-analytics-metrics {
+        .cltc-settings .cltc-analytics-metrics {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        .cltc-settings-overlay .cltc-analytics-metric:nth-child(2) {
+        .cltc-settings .cltc-analytics-metric:nth-child(2) {
           border-right: 0;
         }
-        .cltc-settings-overlay .cltc-analytics-metric:nth-child(-n + 2) {
+        .cltc-settings .cltc-analytics-metric:nth-child(-n + 2) {
           border-bottom: 1px solid var(--cltc-border-subtle);
         }
-        .cltc-settings-overlay .cltc-analytics-metric:nth-child(3) {
+        .cltc-settings .cltc-analytics-metric:nth-child(3) {
           padding-left: 0;
         }
-        .cltc-settings-overlay .cltc-composition-legend {
+        .cltc-settings .cltc-composition-legend {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        .cltc-settings-overlay .cltc-analytics-model-head,
-        .cltc-settings-overlay .cltc-analytics-model-row {
+        .cltc-settings .cltc-analytics-model-head,
+        .cltc-settings .cltc-analytics-model-row {
           grid-template-columns: minmax(126px, 1.4fr) repeat(4, minmax(62px, .65fr));
         }
-        .cltc-settings-overlay .cltc-analytics-models {
+        .cltc-settings .cltc-analytics-models {
           overflow-x: auto;
         }
       }
@@ -8487,30 +9193,25 @@ const VERSION = "0.7.9-beta1";
         #${ROOT_ID} .cltc-button,
         #${ROOT_ID} .cltc-price-head button,
         #${ROOT_ID} .cltc-price-actions button,
-        .cltc-settings-overlay button,
+        .cltc-settings button,
         #${ROOT_ID} .cltc-button:active,
         #${ROOT_ID} .cltc-price-head button:active,
         #${ROOT_ID} .cltc-price-actions button:active,
-        .cltc-settings-overlay button:active {
+        .cltc-settings button:active {
           transition: none;
           transform: none;
         }
-        .cltc-settings-overlay .cltc-analytics-chart rect[data-chart-index] {
+        .cltc-settings .cltc-analytics-chart rect[data-chart-index] {
           animation: none;
           transform: scaleY(1);
           transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
         }
-        .cltc-settings-overlay .cltc-sync-status,
-        .cltc-settings-overlay .cltc-sync-status[data-cltc-status-pulse="true"] {
-          transition: none;
-          opacity: 1;
-        }
-        .cltc-settings-overlay .cltc-toggle-field input,
-        .cltc-settings-overlay .cltc-toggle-field input:active,
-        .cltc-settings-overlay .cltc-toggle-field input::after,
-        .cltc-settings-overlay .cltc-profile-select,
-        .cltc-settings-overlay .cltc-price-input,
-        .cltc-settings-overlay .cltc-profile-select::picker-icon {
+        .cltc-settings .cltc-toggle-field input,
+        .cltc-settings .cltc-toggle-field input:active,
+        .cltc-settings .cltc-toggle-field input::after,
+        .cltc-settings .cltc-profile-select,
+        .cltc-settings .cltc-price-input,
+        .cltc-settings .cltc-profile-select::picker-icon {
           transition: none;
           transform: none;
         }
@@ -8619,7 +9320,6 @@ const VERSION = "0.7.9-beta1";
       if (["profile", "general", "usage", "pricing"].includes(panel)) {
         state.settingsPanel = panel;
         renderSettingsOverlay(liveSnapshot(), { animate: true });
-        if (panel === "usage") void refreshUsageAnalyticsFromHelper();
       }
       return;
     }
@@ -8628,6 +9328,13 @@ const VERSION = "0.7.9-beta1";
       const previousPresetIndex = ["today", "7d", "30d", "custom"].indexOf(state.analyticsPreset);
       state.analyticsPreset = presetButton.getAttribute("data-analytics-preset") || "today";
       renderSettingsOverlay(liveSnapshot(), { animate: true, analyticsRange: true, analyticsSegmentFrom: previousPresetIndex });
+      return;
+    }
+    if (event.target.closest?.("[data-action='clear-analytics-range']")) {
+      state.analyticsCustomStart = "";
+      state.analyticsCustomEnd = "";
+      state.analyticsPreset = "today";
+      renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
     }
     if (event.target.closest?.("[data-action='open-analytics-calendar']")) {
@@ -8675,10 +9382,6 @@ const VERSION = "0.7.9-beta1";
       saveProfilePrefsFromEditor();
       return;
     }
-    if (event.target.closest?.("[data-action='sync-cc-switch']")) {
-      void syncCcSwitchFromSettings();
-      return;
-    }
     const hubToggle = event.target.closest?.("[data-misc-field='hubVisible']");
     if (hubToggle) {
       saveHubVisible(Boolean(hubToggle.checked));
@@ -8691,6 +9394,10 @@ const VERSION = "0.7.9-beta1";
     }
     if (event.target.closest?.("[data-action='new-price']")) {
       startNewPriceModel();
+      return;
+    }
+    if (event.target.closest?.("[data-action='sync-usage']")) {
+      void runUsageSync();
       return;
     }
   }
@@ -8829,60 +9536,12 @@ const VERSION = "0.7.9-beta1";
     syncProfileSaveStatus(options);
     return true;
   }
-  function setCcSwitchSyncStatus(message) {
-    state.ccSwitchSyncStatus = normalizeText(message, 160);
-    const status = settingsEditorRoot()?.querySelector("[data-field='cc-switch-sync-status']");
-    if (!status) return;
-    status.textContent = state.ccSwitchSyncStatus;
-    pulseSettingsStatus(status);
-  }
-
-  function pulseSettingsStatus(node) {
-    if (!node) return;
-    if (state.settingsStatusPulseFrame) {
-      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(state.settingsStatusPulseFrame);
-      state.settingsStatusPulseFrame = 0;
-    }
-    node.dataset.cltcStatusPulse = "true";
-    void node.offsetWidth;
-    if (typeof window.requestAnimationFrame !== "function") {
-      node.removeAttribute?.("data-cltc-status-pulse");
-      return;
-    }
-    state.settingsStatusPulseFrame = window.requestAnimationFrame(() => {
-      state.settingsStatusPulseFrame = 0;
-      node.removeAttribute?.("data-cltc-status-pulse");
-    });
-  }
-
-  async function syncCcSwitchFromSettings() {
-    const button = settingsEditorRoot()?.querySelector("[data-action='sync-cc-switch']");
-    if (button) button.disabled = true;
-    setCcSwitchSyncStatus("正在同步 CC Switch...");
-    const result = await syncCcSwitchUsageFromHelper({ refresh: true });
-    if (result.ok) {
-      const imported = toCount(result.imported);
-      const total = toCount(result.total ?? result.seen ?? result.rows);
-      const suffix = total ? ` / ${fmtCount(total)} 条` : "";
-      renderSettingsOverlay(liveSnapshot());
-      setCcSwitchSyncStatus(`已同步 ${fmtCount(imported)} 条${suffix}`);
-    } else if (result.skipped) {
-      setCcSwitchSyncStatus(result.helperUnavailable ? "同步已跳过：helper 不可用，本地统计继续可用" : "同步已跳过：已有同步任务正在执行");
-    } else if (result.helperUnavailable) {
-      setCcSwitchSyncStatus("同步失败：helper 未运行，今日统计仅使用本地捕获数据");
-    } else {
-      setCcSwitchSyncStatus(`同步失败：${normalizeText(result.error, 100) || "helper 不可用"}`);
-    }
-    if (button) button.disabled = false;
-    return result;
-  }
-
-  function ccSwitchSettingsHtml() {
+  function generalSettingsHtml() {
     return `
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
           <h2>数据与显示</h2>
-          <p>管理 HUD 显示、本地 helper 与 CC Switch 数据同步。</p>
+          <p>管理 HUD 显示与本地 Profile 解锁。</p>
         </div>
         <label class="cltc-toggle-field">
           <span>
@@ -8905,20 +9564,43 @@ const VERSION = "0.7.9-beta1";
           </span>
           <input type="checkbox" data-misc-field="profileUnlockEnabled"${profileUnlockEnabled() ? " checked" : ""}>
         </label>
-        <div class="cltc-settings-row">
-          <div>
-            <strong>本地 helper</strong>
-            <div class="cltc-sync-status" data-field="helper-status" data-helper-unavailable="${state.helperUnavailable ? "true" : "false"}">${escapeHtml(helperStatusText())}</div>
-          </div>
-          <a class="cltc-link-button" href="${escapeHtml(HELPER_GITHUB_URL)}" target="_blank" rel="noreferrer">查看脚本</a>
+      </section>
+      ${usageSyncSectionHtml()}
+    `;
+  }
+
+  function usageSyncTestState() {
+    return {
+      busy: state.usageSyncBusy,
+      status: state.usageSyncStatus || "",
+      result: state.usageSyncResult ? { ...state.usageSyncResult } : null,
+      handleStored: Boolean(state.usageSyncDirHandle),
+    };
+  }
+
+  function usageSyncStatusText() {
+    if (state.usageSyncBusy) return state.usageSyncStatus || "正在同步…";
+    if (state.usageSyncStatus) return state.usageSyncStatus;
+    const result = usageSyncLastResult();
+    if (!result) return "";
+    const range = result.firstDay ? ` · 覆盖 ${result.firstDay} ~ ${result.lastDay}` : "";
+    return `上次同步：写入 ${result.imported} 轮 · 去重 ${result.deduped} · 跳过 ${result.skipped}${range}（${new Date(result.at).toLocaleString()}）`;
+  }
+
+  function usageSyncSectionHtml() {
+    const busy = state.usageSyncBusy;
+    const statusText = usageSyncStatusText();
+    const statusHtml = statusText ? `<p class="cltc-usage-sync-status">${escapeHtml(statusText)}</p>` : "";
+    return `
+      <section class="cltc-settings-section">
+        <div class="cltc-settings-section-heading">
+          <h2>历史数据同步</h2>
+          <p>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量。首次使用需选择一次本机 .codex 数据文件夹，之后点击「同步」即可增量更新；重复同步不会重复计数。</p>
         </div>
-        <div class="cltc-settings-row">
-          <div>
-            <strong>CC Switch 数据</strong>
-            <div class="cltc-sync-status" data-field="cc-switch-sync-status">${escapeHtml(state.ccSwitchSyncStatus || "按需同步本地历史统计。")}</div>
-          </div>
-          <button type="button" data-action="sync-cc-switch">立即同步</button>
+        <div class="cltc-price-actions cltc-price-actions-left">
+          <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>同步</button>
         </div>
+        ${statusHtml}
       </section>
     `;
   }
@@ -9027,7 +9709,7 @@ const VERSION = "0.7.9-beta1";
       </section>
     `;
     const content =
-      panel === "profile" ? profileSettingsHtml() : panel === "general" ? ccSwitchSettingsHtml() : panel === "usage" ? usageAnalyticsHtml() : pricingHtml;
+      panel === "profile" ? profileSettingsHtml() : panel === "general" ? generalSettingsHtml() : panel === "usage" ? usageAnalyticsHtml() : pricingHtml;
     return `
       <div class="cltc-settings-modal" role="dialog" aria-modal="true" aria-label="Codex Token Cost 设置" data-price-model="${escapeHtml(model)}" data-settings-active="${panel}">
         <div class="cltc-price-head">
@@ -9075,8 +9757,8 @@ const VERSION = "0.7.9-beta1";
   }
 
   function ensureFlatpickrTheme() {
-    const style = document.getElementById("codex-live-token-cost-flatpickr-style") || document.createElement("style");
-    style.id ||= "codex-live-token-cost-flatpickr-style";
+    const style = document.getElementById(FLATPICKR_STYLE_ID) || document.createElement("style");
+    style.id ||= FLATPICKR_STYLE_ID;
     style.textContent = `
       .flatpickr-calendar {
         --cltc-calendar-accent: rgb(76, 78, 80);
@@ -9345,6 +10027,11 @@ const VERSION = "0.7.9-beta1";
         },
         onClose(selectedDates) {
           const complete = selectedDates.length === 2;
+          if (complete) {
+            state.analyticsCustomStart = localDateKey(selectedDates[0]);
+            state.analyticsCustomEnd = localDateKey(selectedDates[1]);
+            state.analyticsPreset = "custom";
+          }
           window.setTimeout(() => {
             destroyAnalyticsCalendar();
             if (complete && state.priceEditorOpen) renderSettingsOverlay(liveSnapshot());
@@ -9370,7 +10057,7 @@ const VERSION = "0.7.9-beta1";
     }
     if (state.analyticsTimer) return;
     state.analyticsTimer = window.setInterval(() => {
-      if (state.priceEditorOpen && state.settingsPanel === "usage") void refreshUsageAnalyticsFromHelper();
+      if (state.priceEditorOpen && state.settingsPanel === "usage") renderSettingsOverlay(liveSnapshot());
       else stopAnalyticsTimer();
     }, 60_000);
   }
@@ -9507,7 +10194,7 @@ const VERSION = "0.7.9-beta1";
       entering = true;
       for (const node of Array.from(document.querySelectorAll?.(".cltc-settings-overlay") || [])) node.remove?.();
       state.settingsOverlay = document.createElement("div");
-      state.settingsOverlay.className = "cltc-settings-overlay";
+      state.settingsOverlay.className = "cltc-settings-overlay cltc-settings";
       state.settingsOverlay.setAttribute("data-codex-plus-ext", codexPlusScriptKey());
       state.settingsOverlay.dataset.cltcEntering = "true";
       state.settingsOverlay.addEventListener("click", handleSettingsClick);
@@ -10103,146 +10790,6 @@ const VERSION = "0.7.9-beta1";
     delete window.__codexLiveTokenCostMessageCapture;
   }
 
-  function helperJsonViaBridge(url) {
-    const bridge = window.electronBridge;
-    if (!bridge || typeof bridge.sendMessageFromView !== "function") return Promise.reject(new Error("electronBridge unavailable"));
-    const requestId = `cltc-helper-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    return new Promise((resolve, reject) => {
-      let timer = 0;
-      const cleanup = () => {
-        if (timer) window.clearTimeout(timer);
-        window.removeEventListener?.("message", handler, true);
-      };
-      const settle = (data) => {
-        if (!data || data.requestId !== requestId || data.type !== "fetch-response") return false;
-        cleanup();
-        if (data.responseType !== "success" || toCount(data.status) >= 400) {
-          reject(new Error(`helper bridge fetch failed: ${data.status || data.responseType || "unknown"}`));
-          return true;
-        }
-        try {
-          resolve(JSON.parse(data.bodyJsonString || "{}"));
-        } catch (error) {
-          reject(error);
-        }
-        return true;
-      };
-      const handler = (event) => {
-        settle(event?.data);
-      };
-      window.addEventListener?.("message", handler, true);
-      timer = window.setTimeout(() => {
-        cleanup();
-        reject(new Error("helper bridge fetch timeout"));
-      }, 3000);
-      Promise.resolve(bridge.sendMessageFromView({ type: "fetch", method: "GET", url, requestId }))
-        .then(settle)
-        .catch((error) => {
-          cleanup();
-          reject(error);
-        });
-    });
-  }
-
-  async function helperJsonViaBridgeWithRetry(url) {
-    let lastError = null;
-    for (const delay of HELPER_BRIDGE_RETRY_DELAYS_MS) {
-      if (delay > 0) await new Promise((resolve) => window.setTimeout(resolve, delay));
-      try {
-        return await helperJsonViaBridge(url);
-      } catch (error) {
-        lastError = error;
-      }
-    }
-    throw lastError || new Error("helper bridge unavailable");
-  }
-
-  function isCodexAppDocument() {
-    const protocol = String(window.location?.protocol || "").toLowerCase();
-    const href = String(window.location?.href || "").toLowerCase();
-    return protocol === "app:" || href.startsWith("app://");
-  }
-
-  async function helperJson(url) {
-    try {
-      return await helperJsonViaBridgeWithRetry(url);
-    } catch (error) {
-      if (isCodexAppDocument()) throw new Error("helper bridge unavailable in app document");
-      const response = await window.fetch(url, { cache: "no-store" });
-      if (!response?.ok) throw new Error(`helper fetch failed: ${response?.status || 0}`);
-      return response.json();
-    }
-  }
-
-  async function requestHelperThreadContent() {
-    return false;
-  }
-
-  function helperRefreshDelay(options = {}) {
-    const value = Number(options.pollIntervalMs);
-    return Number.isFinite(value) && value >= 0 ? value : HELPER_REFRESH_POLL_INTERVAL_MS;
-  }
-
-  function waitForHelperRefresh(options = {}) {
-    return new Promise((resolve) => window.setTimeout(resolve, helperRefreshDelay(options)));
-  }
-
-  async function helperJsonUntilReady(requestUrl, readyUrl, options = {}) {
-    let payload = await helperJson(requestUrl);
-    const maxPollsValue = Number(options.maxPolls);
-    const maxPolls = Number.isFinite(maxPollsValue) ? Math.max(0, Math.round(maxPollsValue)) : HELPER_REFRESH_MAX_POLLS;
-    for (let attempt = 0; payload?.refreshing && attempt < maxPolls; attempt += 1) {
-      await waitForHelperRefresh(options);
-      payload = await helperJson(readyUrl);
-    }
-    return payload;
-  }
-
-  async function syncCcSwitchUsageFromHelper(options = {}) {
-    if (state.ccSwitchSyncInFlight) {
-      if (!options.refresh) return state.ccSwitchSyncPromise || { ok: false, skipped: true };
-      const inFlightPromise = state.ccSwitchSyncPromise;
-      if (inFlightPromise) await inFlightPromise;
-      if (state.ccSwitchSyncInFlight) return { ok: false, skipped: true, refreshing: true };
-    }
-    if (typeof window.fetch !== "function") {
-      setHelperStatus(HELPER_STATUS_CC_SWITCH_DEGRADED, true);
-      return { ok: false, skipped: true, helperUnavailable: true };
-    }
-    state.ccSwitchSyncInFlight = true;
-    const generation = state.ccSwitchSyncGeneration;
-    state.ccSwitchSyncPromise = (async () => {
-      try {
-        const payload = await helperJsonUntilReady(
-          options.refresh ? CC_SWITCH_TURNS_REFRESH_URL : CC_SWITCH_TURNS_URL,
-          CC_SWITCH_TURNS_URL,
-          options,
-        );
-        if (payload?.refreshing) return { ok: false, skipped: true, refreshing: true };
-        const payloadError = normalizeText(payload?.error, 500);
-        if (payload?.ok !== true || payloadError) {
-          setHelperStatus(HELPER_STATUS_CC_SWITCH_DEGRADED, true);
-          return { ok: false, helperUnavailable: true, error: payloadError || "cc_switch_sync_failed" };
-        }
-        const turns = Array.isArray(payload?.turns) ? payload.turns : [];
-        const result = importLocalUsageTurns(turns, { replaceSource: "cc-switch" });
-        setHelperStatus(HELPER_STATUS_CONNECTED, false);
-        return { ok: true, ...result };
-      } catch (error) {
-        setHelperStatus(HELPER_STATUS_CC_SWITCH_DEGRADED, true);
-        return { ok: false, helperUnavailable: true, error: error?.message || String(error) };
-      }
-    })();
-    try {
-      return await state.ccSwitchSyncPromise;
-    } finally {
-      if (state.ccSwitchSyncGeneration === generation) {
-        state.ccSwitchSyncInFlight = false;
-        state.ccSwitchSyncPromise = null;
-      }
-    }
-  }
-
   function refreshProfileData(options = {}) {
     if (state.profileDataRefreshPromise) return state.profileDataRefreshPromise;
     const attemptedAt = toCount(state.profileDataRefreshAttemptAt);
@@ -10250,12 +10797,12 @@ const VERSION = "0.7.9-beta1";
       return Promise.resolve({ ok: false, skipped: true });
     }
     state.profileDataRefreshAttemptAt = Date.now();
-    const refreshOptions = { ...options, refresh: true };
-    state.profileDataRefreshPromise = syncCcSwitchUsageFromHelper(refreshOptions)
-      .then((ccSwitch) => {
-        const ok = ccSwitch?.ok === true && !ccSwitch?.error;
-        if (ok) state.profileDataRefreshAt = Date.now();
-        return { ok, helperStats: false, ccSwitch };
+    state.profileDataRefreshPromise = Promise.resolve()
+      .then(() => {
+        profileLedgerRebuildRollup();
+        rebuildAnalyticsRollup();
+        state.profileDataRefreshAt = Date.now();
+        return { ok: true };
       })
       .catch((error) => ({ ok: false, error: error?.message || String(error) }))
       .finally(() => {
@@ -10264,26 +10811,38 @@ const VERSION = "0.7.9-beta1";
     return state.profileDataRefreshPromise;
   }
 
-  async function refreshUsageAnalyticsFromHelper() {
-    if (!state.priceEditorOpen || state.settingsPanel !== "usage") return { ok: false, skipped: true };
-    return syncCcSwitchUsageFromHelper();
+  async function fetchCodexppHistory(options = {}) {
+    if (state.codexppHistoryFetching) return state.codexppHistoryAt > 0;
+    if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) return false;
+    const sessionId = normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
+    if (!sessionId) return false;
+    state.codexppHistoryFetching = true;
+    try {
+      const payload = await window.codexPlus.call("/thread-usage-history", { session_id: sessionId });
+      const turns = codexppHistoryTurnsFromPayload(payload, sessionId);
+      if (turns.length) {
+        state.codexppHistoryTurns = turns;
+        state.codexppHistoryAt = Date.now();
+        invalidateLocalUsageCache();
+        scheduleRender(0);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      state.codexppHistoryFetching = false;
+    }
   }
 
-  function refreshLocalHelperStatsOnStart() {
-    return false;
-  }
-
-  function startCcSwitchStartupSync() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__ || state.ccSwitchStartupSyncStarted || typeof window.fetch !== "function") return;
-    state.ccSwitchStartupSyncStarted = true;
-    window.setTimeout(() => {
-      void syncCcSwitchUsageFromHelper().then((result) => {
-        if (!result?.ok) return;
-        const imported = toCount(result.imported);
-        state.ccSwitchSyncStatus = imported ? `启动时已同步 ${fmtCount(imported)} 条 CC Switch 统计数据` : "启动时已检查 CC Switch 统计数据";
-        scheduleRender();
-      });
-    }, 1500);
+  function refreshCodexppHistory(options = {}) {
+    const sessionId = normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
+    if (!sessionId) return false;
+    const cacheTtl = 5 * 60 * 1000;
+    if (state.codexppHistoryAt && Date.now() - state.codexppHistoryAt < cacheTtl && state.codexppHistorySessionId === sessionId) return false;
+    state.codexppHistorySessionId = sessionId;
+    void fetchCodexppHistory(options);
+    return true;
   }
 
   function scheduleProfileQueryClientDiscovery(retry = 0) {
@@ -10337,10 +10896,10 @@ const VERSION = "0.7.9-beta1";
     loadLocalLedger();
     cleanupAutoZeroPriceModels();
     installLocalCapture();
-    document.addEventListener("keydown", rememberPendingInput, true);
-    document.addEventListener("click", handleDocumentClick, true);
-    document.addEventListener("submit", rememberPendingInput, true);
-    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    trackListener(document, "keydown", rememberPendingInput, true);
+    trackListener(document, "click", handleDocumentClick, true);
+    trackListener(document, "submit", rememberPendingInput, true);
+    trackListener(document, "pointerdown", handleDocumentPointerDown, true);
     installOfficialModelObserver();
     installTaskRunningObserver();
     scheduleProfileQueryClientDiscovery();
@@ -10349,21 +10908,23 @@ const VERSION = "0.7.9-beta1";
     installHubVisibilityObserver();
     if (profileSyntheticEnabled() && state.profileQueryClient) scheduleProfileUsageRefresh(0);
     installCodexPlusEmbeddedPage();
-    refreshLocalHelperStatsOnStart();
-    startCcSwitchStartupSync();
+    refreshCodexppHistory();
     render();
     void refreshDefaultPrices();
   }
 
   function scheduleStart() {
+    if (state.started || state.destroyed) return;
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
     else start();
-    if (!window.__CODEX_LIVE_TOKEN_COST_TEST__) window.setTimeout(start, 1200);
+    if (!window.__CODEX_LIVE_TOKEN_COST_TEST__) state.startTimer = trackTimer(window.setTimeout(start, 1200));
   }
 
   function destroy() {
     state.started = false;
     state.destroyed = true;
+    window.clearTimeout(state.startTimer);
+    state.startTimer = 0;
     stopProfileUiReadinessCoordinator();
     stopSidebarProfileIdentitySync();
     state.profileUiAuthCacheKey = "";
@@ -10372,9 +10933,6 @@ const VERSION = "0.7.9-beta1";
     cancelOutputRateRefresh();
     if (state.profileSaveStatusTimer) window.clearTimeout(state.profileSaveStatusTimer);
     if (state.settingsOverlayCloseTimer) window.clearTimeout(state.settingsOverlayCloseTimer);
-    if (state.settingsStatusPulseFrame && typeof window.cancelAnimationFrame === "function") {
-      window.cancelAnimationFrame(state.settingsStatusPulseFrame);
-    }
     cancelSettingsFocusFrame();
     if (state.analyticsSegmentSwitchFrame && typeof window.cancelAnimationFrame === "function") {
       window.cancelAnimationFrame(state.analyticsSegmentSwitchFrame);
@@ -10386,7 +10944,6 @@ const VERSION = "0.7.9-beta1";
     state.priceRemoteAbortController = null;
     state.profileSaveStatusTimer = 0;
     state.settingsOverlayCloseTimer = 0;
-    state.settingsStatusPulseFrame = 0;
     state.analyticsSegmentSwitchFrame = 0;
     stopAnalyticsTimer();
     state.hubVisibilityObserver?.disconnect?.();
@@ -10406,9 +10963,6 @@ const VERSION = "0.7.9-beta1";
     state.profileDataRefreshAttemptAt = 0;
     state.profileDataRefreshAt = 0;
     state.profileDataRefreshPromise = null;
-    state.ccSwitchSyncGeneration += 1;
-    state.ccSwitchSyncInFlight = false;
-    state.ccSwitchSyncPromise = null;
     if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock === VERSION) {
       Array.prototype.filter = Array.prototype.__codexLiveTokenCostOriginalFilter;
     }
@@ -10447,10 +11001,10 @@ const VERSION = "0.7.9-beta1";
       Xhr.prototype.send = Xhr.prototype.__codexLiveTokenCostOriginalSend;
       delete Xhr.prototype.__codexLiveTokenCostWrapped;
     }
-    document.removeEventListener("keydown", rememberPendingInput, true);
-    document.removeEventListener("click", handleDocumentClick, true);
-    document.removeEventListener("submit", rememberPendingInput, true);
-    document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+    while (disposers.length) {
+      const dispose = disposers.pop();
+      try { dispose(); } catch { }
+    }
     for (const sessionKey of Array.from(state.localTurnTimers.keys())) clearLocalTurnTimer(sessionKey);
     clearLocalTurnTimer();
     stopCadencedShimmer();
@@ -10471,6 +11025,9 @@ const VERSION = "0.7.9-beta1";
     state.activeBridge = null;
     delete window.__codexLiveTokenCost;
     if (window.__codexLiveTokenCostVersion === VERSION) delete window.__codexLiveTokenCostVersion;
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__ && disposers.length !== 0) {
+      throw new Error("Codex Token Cost: disposers not drained");
+    }
   }
 
   window.__codexLiveTokenCost = {
@@ -10494,9 +11051,7 @@ const VERSION = "0.7.9-beta1";
     },
     usage: localUsageExport,
     importLocalUsageTurns,
-    syncCcSwitchUsageFromHelper,
     refreshProfileData,
-    mergeHelperStats,
     debugSessionState,
   };
 
@@ -10510,6 +11065,8 @@ const VERSION = "0.7.9-beta1";
       profileLedgerObserveLocalTurn,
       profileLedgerActivity,
       profileLedgerTurns: () => ensureProfileLedgerLoaded().turns,
+      profileLedgerUsageCalls: () => ensureProfileLedgerLoaded().usageCalls,
+      profileLedgerInvocations: () => ensureProfileLedgerLoaded().invocations,
       profileDisplayedBucket,
       saveProfileLedgerSnapshot,
       calcCost,
@@ -10562,8 +11119,6 @@ const VERSION = "0.7.9-beta1";
       observeSessionInfo,
       currentSessionKey,
       conversationContentState,
-      mergeHelperThreadContent,
-      requestHelperThreadContent,
       startupBlankConversationSessionKey,
       rememberSidebarThreadClick,
       rememberNewConversationClick,
@@ -10573,6 +11128,12 @@ const VERSION = "0.7.9-beta1";
       trimLocalLedger,
       compactLocalLedger,
       localUsageArchiveTurns,
+      codexppHistoryTurnsFromPayload,
+      codexppTokenKey,
+      mergeCodexppHistoryTurns,
+      setCodexppHistoryTurns(turns) {
+        state.codexppHistoryTurns = Array.isArray(turns) ? turns : [];
+      },
       localDailyUsage,
       localDateKey,
       analyticsRangeForPreset,
@@ -10583,9 +11144,15 @@ const VERSION = "0.7.9-beta1";
       analyticsTurnsFromRollup,
       loadAnalyticsRollup,
       saveAnalyticsRollup,
+      saveLocalLedger,
+      saveDailyLedger,
+      storageSaveErrors: () => ({
+        localLedger: state.localLedgerSaveError,
+        daily: state.dailyLedgerSaveError,
+        analytics: state.analyticsRollupSaveError,
+      }),
       usageAnalyticsHtml,
       analyticsChartBuckets,
-      refreshUsageAnalyticsFromHelper,
       renderEmbeddedSettingsPage,
       installCodexPlusEmbeddedPage,
       todayUsage,
@@ -10611,16 +11178,16 @@ const VERSION = "0.7.9-beta1";
       rememberLocalUsage,
       persistLocalCurrentTurn,
       importLocalUsageTurns,
-      syncCcSwitchUsageFromHelper,
       refreshProfileData,
-      helperJson,
-      mergeHelperStats,
-      normalizeHelperStatsPayload,
       saveProfilePrefsFromEditor,
       profileSaveToastHtml,
-      syncCcSwitchFromSettings,
-      ccSwitchSettingsHtml,
-      helperStatusText,
+      generalSettingsHtml,
+      usageSyncRun: (options) => runUsageSync(options || {}),
+      usageSyncState: () => usageSyncTestState(),
+      usageSyncParseLines: (lines, summary) => usageSyncParseRolloutLines(lines, summary || { lineErrors: 0 }),
+      usageSyncFinalizeTurnRow: (threadId, record) => usageSyncFinalizeTurnRow(threadId, record),
+      usageSyncCollectRows: (dirHandle, options) => usageSyncCollectRows(dirHandle, options || {}),
+      usageSyncDecodeBytes: (bytes) => usageSyncDecodeBytes(bytes),
       profileUsageRefreshRequests: () => state.profileUsageRefreshRequests,
       profileUnlockEnabled,
       profileSyntheticEnabled,
@@ -10721,7 +11288,7 @@ const VERSION = "0.7.9-beta1";
   // Codex++ only hot-reloads in place when every loaded script registered a cleanup during
   // initialization; otherwise it reloads the whole page.
   try {
-    window.codexPlus?.onCleanup?.(destroy);
+    if (codexPlusApiReady()) window.codexPlus?.onCleanup?.(destroy);
   } catch {
     // Older Codex++ builds without the extension API keep the page-reload behavior.
   }

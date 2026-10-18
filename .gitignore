@@ -8,12 +8,11 @@
 !.github/workflows/release.yml
 !scripts/
 !scripts/codex-live-token-cost.js
+!scripts/codex-live-token-cost-reload.cjs
+!scripts/codex-usage-backfill.cjs
 !scripts/prices.json
-!scripts/codex-local-usage-helper.cjs
 !scripts/deploy-userscript.ps1
 !scripts/deploy-userscript.sh
-!scripts/start-helper.ps1
-!scripts/start-helper.sh
 !docs/
 !docs/images/
 !docs/images/**
