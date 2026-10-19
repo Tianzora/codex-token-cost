@@ -190,6 +190,8 @@ assert.equal(code.includes('data-analytics-metric="cost" data-active="${String(m
 assert.equal(code.includes('data-active="${String(name === model)}" aria-pressed="${String(name === model)}" aria-label="${escapeHtml(priceLabel)}"'), true);
 assert.equal(code.includes('class="cltc-settings-content" role="region" aria-live="polite"'), false);
 assert.equal(code.includes('tabindex="${index === 0 ? "0" : "-1"}"'), true);
+assert.equal(code.includes('const chart = bar.ownerSVGElement || bar.closest?.(".cltc-analytics-chart");'), true);
+assert.equal(code.includes('state.settingsOverlay?.querySelectorAll?.("[data-chart-index]")'), false);
 assert.match(code, /bars\.forEach\(\(node\) => node\.setAttribute\?\.\("tabindex", node === next \? "0" : "-1"\)\);/);
 assert.equal(code.includes('<p class="cltc-sync-status" data-field="usage-sync-status" role="status">'), true);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
