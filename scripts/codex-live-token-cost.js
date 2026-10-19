@@ -6355,7 +6355,7 @@ const VERSION = "0.7.10-beta1";
         const label = index % labelEvery === 0 || index === buckets.length - 1 ? `<text x="${x + barWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(item.label)}</text>` : "";
         if (!hasData) return label;
         return `<g class="cltc-analytics-bar">
-          <rect tabindex="0" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
+          <rect tabindex="${index === 0 ? "0" : "-1"}" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
           <g class="cltc-analytics-tooltip" aria-hidden="true">
             <rect x="${tooltipX}" y="${tooltipY}" width="${tooltipWidth}" height="20" rx="5"></rect>
             <text x="${tooltipX + tooltipWidth / 2}" y="${tooltipY + 14}" text-anchor="middle">${escapeHtml(display)}</text>
@@ -9317,7 +9317,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus,
       .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus-visible {
-        stroke: rgb(76, 78, 80) !important;
+        stroke: var(--cltc-text) !important;
       }
       .cltc-settings .cltc-analytics-chart text {
         fill: var(--cltc-muted);
@@ -10478,7 +10478,10 @@ const VERSION = "0.7.10-beta1";
     if (index < 0) return;
     event.preventDefault?.();
     const next = bars[Math.max(0, Math.min(bars.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)))];
-    next?.focus?.();
+    if (next) {
+      bars.forEach((node) => node.setAttribute?.("tabindex", node === next ? "0" : "-1"));
+      next.focus?.();
+    }
   }
 
   function handleSettingsKeydown(event) {
