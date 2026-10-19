@@ -4,38 +4,177 @@ const vm = require("node:vm");
 const assert = require("node:assert/strict");
 
 const scriptPath = path.join(__dirname, "..", "scripts", "codex-live-token-cost.js");
-const priceSourcePath = path.join(__dirname, "..", "scripts", "prices.json");
 const code = fs.readFileSync(scriptPath, "utf8").replace(/\r\n/g, "\n");
-const priceTable = JSON.parse(fs.readFileSync(priceSourcePath, "utf8"));
-const retiredPriceModels = [
-  "gpt-5.2",
-  "gpt-5.2-pro",
-  "gpt-5.1",
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-5-nano",
-  "gpt-5-pro",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-  "gpt-4.1-nano",
-  "gpt-4o",
-  "gpt-4o-2024-05-13",
-  "gpt-4o-mini",
-  "o1",
-  "o1-pro",
-  "o3-pro",
-  "o3",
-  "o4-mini",
-  "o3-mini",
-  "gpt-4-turbo-2024-04-09",
-  "gpt-4-0613",
-  "gpt-3.5-turbo",
-  "gpt-3.5-turbo-0125",
-  "gpt-3.5-turbo-1106",
-  "gpt-3.5-turbo-instruct",
-  "davinci-002",
-  "babbage-002",
-];
+
+// LiteLLM 上游价格表（model_prices_and_context_window.json）的最小 fixture：
+// 覆盖 openai provider 过滤、mode/过期过滤、×1e6 取整与全零条目剔除。
+const upstreamPriceFixture = {
+  "gpt-5.6-sol": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.000004,
+    cache_read_input_token_cost: 0.0000004,
+    cache_creation_input_token_cost: 0.000005,
+    output_cost_per_token: 0.00002,
+  },
+  "gpt-5.6-terra": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.000002,
+    cache_read_input_token_cost: 0.0000002,
+    cache_creation_input_token_cost: 0.0000025,
+    output_cost_per_token: 0.000012,
+  },
+  "gpt-5.6-luna": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.0000002,
+    cache_read_input_token_cost: 0.00000002,
+    cache_creation_input_token_cost: 0.00000025,
+    output_cost_per_token: 0.0000012,
+  },
+  "gpt-5.3-codex": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.00000175,
+    cache_read_input_token_cost: 0.000000175,
+    output_cost_per_token: 0.000014,
+    deprecation_date: "2027-04-01",
+  },
+  "gpt-5.4": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.0000025,
+    cache_read_input_token_cost: 0.00000025,
+    output_cost_per_token: 0.000015,
+  },
+  "gpt-5.4-mini": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.00000075,
+    cache_read_input_token_cost: 0.000000075,
+    output_cost_per_token: 0.0000045,
+  },
+  "gpt-5.4-nano": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.0000002,
+    cache_read_input_token_cost: 0.00000002,
+    output_cost_per_token: 0.00000125,
+  },
+  "gpt-5.4-pro": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.00003,
+    output_cost_per_token: 0.00018,
+  },
+  "gpt-5.5": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.000005,
+    cache_read_input_token_cost: 0.0000005,
+    output_cost_per_token: 0.00003,
+  },
+  "gpt-5.5-pro": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.00003,
+    output_cost_per_token: 0.00018,
+  },
+  "gpt-5.2": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.00000125,
+    cache_read_input_token_cost: 0.000000125,
+    output_cost_per_token: 0.00001,
+    deprecation_date: "2026-06-30",
+  },
+  "gpt-image-2": {
+    litellm_provider: "openai",
+    mode: "image_generation",
+    input_cost_per_token: 0.000005,
+    cache_read_input_token_cost: 0.00000125,
+    output_cost_per_token: 0.00004,
+  },
+  "o3": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.000002,
+    cache_read_input_token_cost: 0.0000005,
+    output_cost_per_token: 0.000008,
+  },
+  "codex-mini-latest": {
+    litellm_provider: "openai",
+    mode: "responses",
+    input_cost_per_token: 0.0000015,
+    cache_read_input_token_cost: 0.000000375,
+    output_cost_per_token: 0.000006,
+  },
+  "container-free": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0,
+    output_cost_per_token: 0,
+  },
+  "claude-sonnet-4": {
+    litellm_provider: "anthropic",
+    mode: "chat",
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+  },
+  // gpt 对话模型但不在官方定价页：默认列表不应出现。
+  "gpt-5.9-alias": {
+    litellm_provider: "openai",
+    mode: "chat",
+    input_cost_per_token: 0.000003,
+    output_cost_per_token: 0.000015,
+  },
+};
+
+// priceUpstreamSnapshot 的期望输出（USD / 1M tokens），同时作为本地缓存种子。
+const upstreamSnapshotFixture = {
+  prices: {
+    "gpt-5.6-sol": { input: 4, cachedInput: 0.4, cacheWrite: 5, output: 20 },
+    "gpt-5.6-terra": { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
+    "gpt-5.6-luna": { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
+    "gpt-5.3-codex": { input: 1.75, cachedInput: 0.175, cacheWrite: null, output: 14 },
+    "gpt-5.4": { input: 2.5, cachedInput: 0.25, cacheWrite: null, output: 15 },
+    "gpt-5.4-mini": { input: 0.75, cachedInput: 0.075, cacheWrite: null, output: 4.5 },
+    "gpt-5.4-nano": { input: 0.2, cachedInput: 0.02, cacheWrite: null, output: 1.25 },
+    "gpt-5.4-pro": { input: 30, cachedInput: null, cacheWrite: null, output: 180 },
+    "gpt-5.5": { input: 5, cachedInput: 0.5, cacheWrite: null, output: 30 },
+    "gpt-5.5-pro": { input: 30, cachedInput: null, cacheWrite: null, output: 180 },
+    "gpt-5.2": { input: 1.25, cachedInput: 0.125, cacheWrite: null, output: 10 },
+    "gpt-image-2": { input: 5, cachedInput: 1.25, cacheWrite: null, output: 40 },
+    "o3": { input: 2, cachedInput: 0.5, cacheWrite: null, output: 8 },
+    "codex-mini-latest": { input: 1.5, cachedInput: 0.375, cacheWrite: null, output: 6 },
+    "gpt-5.9-alias": { input: 3, cachedInput: null, cacheWrite: null, output: 15 },
+  },
+  meta: {
+    "gpt-5.6-sol": { mode: "chat", deprecationDate: "" },
+    "gpt-5.6-terra": { mode: "chat", deprecationDate: "" },
+    "gpt-5.6-luna": { mode: "chat", deprecationDate: "" },
+    "gpt-5.3-codex": { mode: "responses", deprecationDate: "2027-04-01" },
+    "gpt-5.4": { mode: "responses", deprecationDate: "" },
+    "gpt-5.4-mini": { mode: "responses", deprecationDate: "" },
+    "gpt-5.4-nano": { mode: "responses", deprecationDate: "" },
+    "gpt-5.4-pro": { mode: "responses", deprecationDate: "" },
+    "gpt-5.5": { mode: "chat", deprecationDate: "" },
+    "gpt-5.5-pro": { mode: "responses", deprecationDate: "" },
+    "gpt-5.2": { mode: "chat", deprecationDate: "2026-06-30" },
+    "gpt-image-2": { mode: "image_generation", deprecationDate: "" },
+    "o3": { mode: "responses", deprecationDate: "" },
+    "codex-mini-latest": { mode: "responses", deprecationDate: "" },
+    "gpt-5.9-alias": { mode: "chat", deprecationDate: "" },
+  },
+};
+
+const seededPriceSnapshot = {
+  version: 2,
+  fetchedAt: Date.parse("2026-07-01T00:00:00.000Z"),
+  prices: upstreamSnapshotFixture.prices,
+  meta: upstreamSnapshotFixture.meta,
+};
 
 function createIndexedDbTestDouble() {
   const databases = new Map();
@@ -139,7 +278,7 @@ assert.equal(code.includes("@keyframes cltc-analytics-bar-grow"), true);
 assert.equal(code.includes("transform-box: fill-box;"), true);
 assert.equal(code.includes("transform-origin: center bottom;"), true);
 assert.equal(code.includes("transform: scaleY(0);"), true);
-assert.equal(code.includes("animation: cltc-analytics-bar-grow 720ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;"), true);
+assert.equal(code.includes("animation: cltc-analytics-bar-grow 520ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;"), true);
 assert.equal(code.includes('style="--cltc-chart-bar-delay:${index * stagger}ms"'), true);
 assert.match(code, /prefers-reduced-motion: reduce[\s\S]*?\.cltc-settings \.cltc-analytics-chart rect\[data-chart-index\][\s\S]*?animation: none;[\s\S]*?transform: scaleY\(1\);/);
 assert.equal(code.includes("refreshUsageAnalyticsFromHelper"), false);
@@ -161,11 +300,10 @@ assert.equal(code.includes("justify-content: center"), true);
 assert.equal(code.includes("grid-template-columns: max-content minmax(0, 1fr)"), true);
 assert.equal(code.includes("grid-template-columns: 176px minmax(0, 1fr)"), false);
 const settingsSidebarRule = code.match(/\.cltc-settings \.cltc-settings-sidebar \{([\s\S]*?)\n      \}/)?.[1] || "";
-const settingsFooterRule = code.match(/\.cltc-settings \.cltc-settings-footer \{([\s\S]*?)\n      \}/)?.[1] || "";
 assert.equal(settingsSidebarRule.includes("border-right"), false);
-assert.equal(settingsFooterRule.includes("margin-top: auto"), false);
-assert.equal(code.includes(".cltc-settings .cltc-settings-version"), false);
-assert.equal(code.includes(".cltc-settings .cltc-settings-footer span + span"), false);
+assert.equal(code.includes("cltc-settings-footer"), false);
+assert.equal(code.includes("cltc-settings-version"), false);
+assert.equal(code.includes("cltc-update-cluster"), true);
 assert.equal(code.includes("--cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent)"), true);
 assert.equal(code.includes("--cltc-muted: var(--codex-plus-text-tertiary"), false);
 assert.equal(code.includes("font-weight: 650"), false);
@@ -193,7 +331,7 @@ assert.equal(code.includes('tabindex="${index === 0 ? "0" : "-1"}"'), true);
 assert.equal(code.includes('const chart = bar.ownerSVGElement || bar.closest?.(".cltc-analytics-chart");'), true);
 assert.equal(code.includes('state.settingsOverlay?.querySelectorAll?.("[data-chart-index]")'), false);
 assert.match(code, /bars\.forEach\(\(node\) => node\.setAttribute\?\.\("tabindex", node === next \? "0" : "-1"\)\);/);
-assert.equal(code.includes('<p class="cltc-sync-status" data-field="usage-sync-status" role="status">'), true);
+assert.match(code, /<p class="cltc-sync-status" data-field="usage-sync-status" data-tone="\$\{statusTone\}" role="status">/);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
 assert.equal(code.includes(".cltc-profile-select:open"), true);
 assert.equal(code.includes(".cltc-profile-select option"), true);
@@ -329,12 +467,12 @@ assert.match(code, /state\.settingsOverlayCloseTimer = window\.setTimeout\(remov
 assert.match(code, /state\.settingsOverlay\.addEventListener\("keydown", handleSettingsKeydown\);/);
 assert.match(code, /if \(event\.target\?\.classList\?\.contains\("cltc-settings-overlay"\)\) \{\s+closeEmbeddedSettingsPage\(\);/);
 assert.match(code, /function closeEmbeddedSettingsPage\(\) \{[\s\S]*?state\.embeddedPageContainer = null;[\s\S]*?embeddedPageClose\(\);/);
-assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
+assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+if \(event\.target\?\.closest\?\.\("\.codex-plus-modal-content, \.codex-plus-page-overlay"\)\) return;\s+if \(state\.updateClusterEl\?\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
 assert.equal(code.includes('data-action="close-price"'), false);
 assert.match(code, /function clearEmbeddedRailActiveAfterNavigation\(event\) \{[\s\S]*?closest\?\.\(\"nav\[data-app-navigation-rail\] button\[aria-label\]\"\)[\s\S]*?clearEmbeddedRailActive\(\);/);
 assert.match(code, /rememberPendingInput\(event\);\s+clearEmbeddedRailActiveAfterNavigation\(event\);/);
 assert.match(code, /function clearEmbeddedRailActive\(\) \{[\s\S]*?nav\[data-app-navigation-rail\] button\[aria-label\][\s\S]*?aria-current'\, 'data-active'\, 'data-selected'[\s\S]*?removeAttribute/);
-assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{\s+state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
+assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{\s+(?:if \(options\.panel[\s\S]*?;\s+)?state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+renderUpdateCluster\(\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
 assert.match(code, /animateAnalyticsSegments\(container, options\);/);
 assert.match(code, /button\.addEventListener\("pointerdown", handleSettingsNavPointerDown\)/);
 assert.match(code, /function handleSettingsNavPointerDown\(event\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?event\.stopPropagation\?\.\(\);[\s\S]*?selectSettingsPanel/);
@@ -537,29 +675,42 @@ assert.equal(code.includes("function finishActiveTurnFromDomIfStopped()"), true)
 assert.equal(code.includes("stoppedChecks"), false);
 assert.equal(code.includes('setLocalTurnTimer(sessionKey, window.setTimeout?.(check'), false);
 assert.equal(code.includes('data-action="new-price">新建</button>'), true);
-assert.equal(code.includes('data-action="delete-price" data-variant="danger">删除</button>'), true);
+assert.equal(code.includes('data-action="delete-price" data-variant="danger">隐藏</button>'), true);
 assert.equal(code.includes('data-action="close-price">取消</button>'), false);
 assert.equal(code.includes('data-settings-panel="profile"'), true);
 assert.equal(code.includes('data-settings-panel="general"'), true);
 assert.equal(code.includes('data-settings-panel="pricing"'), true);
 assert.equal(code.includes("state.settingsPanel = panel"), true);
+assert.equal(code.includes('settingsPanel: "usage"'), true);
+assert.equal(code.includes("data-cltc-panel-enter"), true);
+assert.equal(code.includes("@keyframes cltc-settings-enter"), true);
+assert.equal(code.includes('const allowedPanels = ["profile", "general", "usage", "pricing"]'), true);
+assert.equal(code.includes('cltc-nav-group">监控'), true);
+assert.equal(code.includes("data-profile-locked"), true);
 assert.equal(code.includes('<span class="cltc-price-title">Codex Token Cost</span>'), true);
-assert.equal(code.includes('<span class="cltc-settings-version">v${VERSION}</span>'), true);
+assert.equal(code.includes("cltc-settings-footer"), false);
+assert.equal(code.includes("cltc-settings-version"), false);
+assert.equal(code.includes('const UPDATE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js";'), true);
+assert.equal(code.includes("updateScheduleAutoCheck();"), true);
+assert.equal(code.includes('"cltc-update-cluster"'), true);
+assert.equal(code.includes('data-action="check-update"'), true);
+assert.equal(code.includes("一键更新 v${escapeHtml(state.updateRemoteVersion)}"), true);
+assert.equal(code.includes("(0, eval)(sourceText)"), true);
 assert.equal(code.includes("cltc-settings-owner"), false);
 assert.equal(code.includes("cltc-settings-kicker"), false);
 assert.equal(code.includes('<h2>个人资料</h2>'), true);
-assert.equal(code.includes('<h2>数据与显示</h2>'), true);
+assert.equal(code.includes('<h2>常规</h2>'), true);
 assert.equal(code.includes('<h2>模型价格</h2>'), true);
-assert.equal(code.includes('"gpt-5.3-codex"'), true);
-assert.equal(code.includes('"gpt-5.4-nano":'), true);
-assert.equal(code.includes('"gpt-5.4-pro"'), true);
+assert.equal(code.includes('"gpt-5.4-nano"'), true);
 assert.equal(code.includes('"gpt-5.6-sol"'), true);
-assert.equal(code.includes('"gpt-5.6-terra"'), true);
-assert.equal(code.includes('"gpt-5.6-luna"'), true);
-assert.equal(Object.hasOwn(priceTable, "gpt-5.6-sol"), true);
-assert.equal(Object.hasOwn(priceTable, "gpt-5.4-nano"), true);
 assert.equal(code.includes('data-price-field="cacheWrite"'), true);
 assert.equal(code.includes("<span>写缓存</span>"), true);
+assert.equal(code.includes("data-price-search"), true);
+assert.equal(code.includes('data-price-filter="${value}"'), true);
+assert.equal(code.includes('filterButton("all", "全部")'), true);
+assert.equal(code.includes("function applyPriceFilter"), true);
+assert.equal(code.includes("function syncPriceValidation"), true);
+assert.equal(code.includes("cltc-analytics-grid"), true);
 assert.equal(code.includes('{ value: "free", label: "Free" }'), true);
 assert.equal(code.includes('{ value: "pro_5x", label: "Pro 5x" }'), true);
 assert.equal(code.includes('{ value: "pro_20x", label: "Pro 20x" }'), true);
@@ -569,12 +720,13 @@ assert.equal(code.includes('{ value: "enterprise", label: "Enterprise" }'), true
 assert.equal(code.includes('{ value: "edu", label: "Edu" }'), true);
 assert.equal(code.includes('{ value: "staff", label: "Staff" }'), true);
 assert.equal(code.includes('{ value: "founder", label: "Founder" }'), true);
-assert.equal(code.includes('<h2>数据与显示</h2>'), true);
+assert.equal(code.includes('<h2>常规</h2>'), true);
 assert.equal(code.includes("显示 HUD"), true);
 assert.equal(code.includes("显示 HUB"), false);
 assert.equal(code.includes('data-misc-field="hubVisible"'), true);
 assert.equal(code.includes('data-misc-field="outputRateVisible"'), true);
-assert.match(code, /显示 HUD[\s\S]*?data-misc-field="hubVisible"[\s\S]*?显示 Token 输出速率[\s\S]*?data-misc-field="outputRateVisible"[\s\S]*?启用本地 Profile 解锁/);
+assert.match(code, /显示 HUD[\s\S]*?data-misc-field="hubVisible"[\s\S]*?显示 Token 输出速率[\s\S]*?data-misc-field="outputRateVisible"/);
+assert.equal(code.includes('data-misc-field="profileUnlockEnabled"'), true);
 assert.equal(code.includes('grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);'), true);
 assert.equal(code.includes('grid-template-columns: minmax(0, 2.05fr) repeat(4, minmax(0, .755fr)) minmax(0, 1.20fr);'), true);
 assert.equal(code.includes('data-cltc-output-rate-visible="true"'), true);
@@ -727,13 +879,22 @@ assert.equal(code.includes("function scheduleUsageAutoSync"), true);
 assert.equal(code.includes("scheduleUsageAutoSync();"), true);
 assert.equal(code.includes("自动同步暂不可用"), true);
 assert.match(code, /mergeProfileLedgerTurns\(\s*mergeCodexppHistoryTurns\(/);
+assert.equal(code.includes("FALLBACK_DEFAULT_PRICES"), false);
+assert.equal(code.includes("model_prices_and_context_window.json"), true);
+assert.equal(code.includes("__codexLiveTokenCostRemotePricesV2"), true);
+assert.equal(code.includes("function priceUpstreamSnapshot"), true);
+assert.equal(code.includes("function priceModelShownByDefault"), true);
+assert.equal(code.includes("function priceSyncStatus"), true);
+assert.equal(code.includes("litellm_provider"), true);
+assert.equal(code.includes("OFFICIAL_PRICE_MODELS"), true);
+assert.equal(code.includes("priceModelAtLeastMinVersion"), true);
+assert.equal(code.includes('data-action="sync-prices"'), true);
+assert.match(code, /\.cltc-settings \.cltc-price-sync \{[\s\S]*?font-size: 12px;[\s\S]*?\}/);
 
 const listeners = new Map();
 const windowListeners = new Map();
 const storage = new Map();
 const bridgeCalls = [];
-const priceFetchCalls = [];
-const priceFetchQueue = [];
 const delayedTimers = [];
 const registerPageCalls = [];
 let domComposerState = "none";
@@ -842,6 +1003,7 @@ storage.set(
     ],
   }),
 );
+storage.set("__codexLiveTokenCostRemotePricesV2", JSON.stringify(seededPriceSnapshot));
 const context = {
   console,
   setTimeout(handler, delay = 0) {
@@ -867,6 +1029,7 @@ const context = {
   String,
   RegExp,
   URL,
+  TextDecoder,
   atob(value) {
     return Buffer.from(value, "base64").toString("binary");
   },
@@ -1183,7 +1346,10 @@ assert.equal(typeof api.newPriceModelName, "function");
 assert.equal(typeof api.deletePriceForModel, "function");
 assert.equal(typeof api.restoreDefaultPrices, "function");
 assert.equal(typeof api.refreshDefaultPrices, "function");
-assert.equal(typeof api.remotePriceTable, "function");
+assert.equal(typeof api.priceUpstreamSnapshot, "function");
+assert.equal(typeof api.priceModelShownByDefault, "function");
+assert.equal(typeof api.priceSyncStatus, "function");
+assert.equal(typeof api.priceSyncDownloadCommand, "function");
 assert.equal(typeof api.visiblePrices, "function");
 assert.equal(typeof api.priceFor, "function");
 assert.equal(typeof api.priceModelKey, "function");
@@ -1207,10 +1373,32 @@ assert.equal(typeof api.usageAnalyticsHtml, "function");
 assert.equal(typeof api.analyticsChartBuckets, "function");
 assert.equal(typeof api.localProfileAccountsCheckResponse, "function");
 assert.equal(typeof api.profileUiAuthContextValue, "function");
-assert.equal(Object.keys(priceTable).length, 10);
-for (const model of retiredPriceModels) assert.equal(Object.hasOwn(priceTable, model), false);
-assert.deepEqual(api.visiblePrices(), api.remotePriceTable(priceTable));
-for (const model of retiredPriceModels) assert.equal(api.priceFor(model), null);
+assert.deepEqual(JSON.parse(JSON.stringify(api.visiblePrices())), upstreamSnapshotFixture.prices);
+assert.deepEqual(JSON.parse(JSON.stringify(api.priceUpstreamSnapshot(upstreamPriceFixture))), upstreamSnapshotFixture);
+assert.equal(Object.hasOwn(api.visiblePrices(), "claude-sonnet-4"), false);
+assert.equal(Object.hasOwn(api.visiblePrices(), "container-free"), false);
+assert.equal(api.priceModelShownByDefault("gpt-5.6-sol"), true);
+assert.equal(api.priceModelShownByDefault("gpt-5.4"), true);
+assert.equal(api.priceModelShownByDefault("gpt-5.5"), true);
+assert.equal(api.priceModelShownByDefault("gpt-5.3-codex"), false);
+assert.equal(api.priceModelShownByDefault("gpt-5.2"), false);
+assert.equal(api.priceModelShownByDefault("gpt-5.9-alias"), false);
+assert.equal(api.priceModelShownByDefault("gpt-image-2"), false);
+assert.equal(api.priceModelShownByDefault("o3"), false);
+assert.equal(api.priceModelShownByDefault("claude-sonnet-4"), false);
+assert.equal(api.priceListModels().includes("gpt-5.6-sol"), true);
+assert.equal(api.priceListModels().includes("gpt-5.4"), true);
+assert.equal(api.priceListModels().includes("gpt-5.3-codex"), false);
+assert.equal(api.priceListModels().includes("gpt-5.2"), false);
+assert.equal(api.priceListModels().includes("gpt-5.9-alias"), false);
+assert.equal(api.priceListModels("gpt-5.9-alias").includes("gpt-5.9-alias"), true);
+assert.equal(api.priceListModels().includes("gpt-image-2"), false);
+assert.equal(api.priceListModels().includes("o3"), false);
+assert.equal(api.priceListModels().includes("codex-mini-latest"), false);
+assert.equal(api.priceListModels("o3").includes("o3"), true);
+assert.deepEqual(api.priceListableUsedNames(["deepseek-v4-flash", "GPT-5.5", "gpt-5.3-codex", "gpt-5.4", "gpt-audio", null, ""]), ["GPT-5.5", "gpt-5.4"]);
+assert.equal(api.priceSyncStatus().tone, "ok");
+assert.match(api.priceSyncStatus().text, /^上游价格（LiteLLM）· 同步于 \d{2}-\d{2} \d{2}:\d{2}$/);
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.currentSessionTurns(api.localUsageExport().turns).length, 0);
 assert.equal(api.liveSnapshot().session.total, 0);
@@ -1422,6 +1610,9 @@ assert.equal(analyticsHtml.includes("总花费"), true);
 assert.equal(analyticsHtml.includes("模型调用"), true);
 assert.equal(analyticsHtml.includes("缓存命中率"), true);
 assert.equal(analyticsHtml.includes('data-analytics-chart="true"'), true);
+assert.equal(analyticsHtml.includes("· 部分统计"), false);
+assert.equal(analyticsHtml.includes("cltc-analytics-split"), true);
+assert.match(analyticsHtml, /cltc-analytics-grid[\s\S]*?<line/);
 assert.equal(analyticsHtml.includes("cltc-analytics-tooltip"), true);
 assert.equal(analyticsHtml.includes('viewBox="0 0 720 230"'), true);
 assert.match(analyticsHtml, /data-chart-index="0"[^>]* y="36"/);
@@ -1578,8 +1769,9 @@ assert.equal(
   ], "new:auto").length,
   0,
 );
-assert.equal(api.generalSettingsHtml().includes("数据与显示"), true);
-assert.equal(api.generalSettingsHtml().includes("管理 HUD 显示与本地 Profile 解锁"), true);
+assert.equal(api.generalSettingsHtml().includes("常规"), true);
+assert.equal(api.generalSettingsHtml().includes("管理 HUD 显示、本地资料与历史数据同步"), true);
+assert.equal(api.generalSettingsHtml().includes("自动读取本机会话记录，重复同步不会重复计数。"), false);
 const syncSectionHtml = api.generalSettingsHtml();
 assert.equal(syncSectionHtml.includes("<h2>历史数据同步</h2>"), false);
 assert.equal(syncSectionHtml.includes("<strong>历史数据同步</strong>"), true);
@@ -1663,7 +1855,8 @@ assert.equal(api.generalSettingsHtml().includes("显示 HUD"), true);
 assert.equal(api.generalSettingsHtml().includes("显示 HUB"), false);
 assert.equal(api.generalSettingsHtml().includes('data-misc-field="hubVisible"'), true);
 assert.equal(api.generalSettingsHtml().includes('data-misc-field="outputRateVisible"'), true);
-assert.equal(api.generalSettingsHtml().includes('data-misc-field="profileUnlockEnabled"'), true);
+assert.equal(api.generalSettingsHtml().includes('data-misc-field="profileUnlockEnabled"'), false);
+assert.equal(api.profileSettingsHtml().includes('data-misc-field="profileUnlockEnabled"'), true);
 function startupDom({ composer = true, activeThread = false, transcript = false } = {}) {
   const activeThreadNode = activeThread
     ? {
@@ -1829,10 +2022,10 @@ assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.3-codex
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.4-nano"), true);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.4-pro"), true);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.5"), true);
-assert.equal(api.priceFor("gpt-5.6-sol").input, 5);
-assert.equal(api.priceFor("gpt-5.6-sol").cachedInput, 0.5);
-assert.equal(api.priceFor("gpt-5.6-sol").cacheWrite, 6.25);
-assert.equal(api.priceFor("gpt-5.6-sol").output, 30);
+assert.equal(api.priceFor("gpt-5.6-sol").input, 4);
+assert.equal(api.priceFor("gpt-5.6-sol").cachedInput, 0.4);
+assert.equal(api.priceFor("gpt-5.6-sol").cacheWrite, 5);
+assert.equal(api.priceFor("gpt-5.6-sol").output, 20);
 assert.equal(api.priceFor("gpt-5.6-terra").input, 2);
 assert.equal(api.priceFor("gpt-5.6-terra").cachedInput, 0.2);
 assert.equal(api.priceFor("gpt-5.6-terra").cacheWrite, 2.5);
@@ -2060,7 +2253,7 @@ context.localStorage.setItem(
 context.localStorage.setItem("__codexLiveTokenCostHiddenPriceModelsV1", JSON.stringify(["gpt-5.4-nano"]));
 assert.equal(api.cleanupAutoZeroPriceModels(), true);
 assert.equal(api.priceFor("gpt-5.4-nano").input, 0.2);
-assert.equal(api.priceFor("gpt-5.6-sol").cacheWrite, 6.25);
+assert.equal(api.priceFor("gpt-5.6-sol").cacheWrite, 5);
 assert.equal(api.priceFor("custom-migration-model").input, 7);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "gpt-5.4-nano"), true);
 assert.equal(api.cleanupAutoZeroPriceModels(), false);
@@ -2098,7 +2291,7 @@ const pricedZeroCostTurn = {
 };
 const pricedZeroTurnCost = api.turnCost(pricedZeroCostTurn);
 assert.equal(pricedZeroTurnCost.priced, true);
-assert.equal(pricedZeroTurnCost.value, ((800 * 5 + 200 * 0.5 + 100 * 30) / 1_000_000));
+assert.equal(pricedZeroTurnCost.value, ((800 * 4 + 200 * 0.4 + 100 * 20) / 1_000_000));
 const pricedZeroDailyBucket = api.addTurnToDailyBucket(
   api.emptyDailyUsageBucket("2026-07-04"),
   pricedZeroCostTurn,
@@ -2205,7 +2398,7 @@ assert.equal(officialTokenUsage.cacheWriteTokens, 75);
 assert.equal(officialTokenUsage.reasoningOutputTokens, 12);
 assert.equal(
   api.costForModelUsage(cacheWriteUsage, "gpt-5.6-sol").value,
-  (500 * 5 + 200 * 0.5 + 300 * 6.25 + 100 * 30) / 1_000_000,
+  (500 * 4 + 200 * 0.4 + 300 * 5 + 100 * 20) / 1_000_000,
 );
 const partialCacheReadUsage = api.normalizeUsage({
   input_tokens: 1000,
@@ -2647,7 +2840,7 @@ const apiKeyQueryClient = {
     };
     api.setProfileUnlockEnabled(true);
     api.rememberProfileQueryClient(realChatgptOverrideQueryClient);
-    api.renderEmbeddedSettingsPage(realChatgptSettingsContainer);
+    api.renderEmbeddedSettingsPage(realChatgptSettingsContainer, { panel: "profile" });
     assert.equal(realChatgptSettingsContainer.innerHTML.includes('data-settings-panel="profile"'), true);
     assert.equal(realChatgptSettingsContainer.innerHTML.includes('data-profile-field="planType"'), true);
     assert.equal(realChatgptSettingsContainer.innerHTML.includes('value="custom"'), true);
@@ -4850,51 +5043,166 @@ assert.equal(syncedAccountInfoQuery.data.hasChatGptToken, false);
 assert.equal(syncedProfileQueries.some(({ queryKey }) => queryKey.join("/") === "accounts/check"), false);
 const profileLifecycleTest = Promise.resolve()
   .then(async () => {
-    const remotePrices = {
-      ...priceTable,
-      "gpt-5.6-sol": { input: 6, cachedInput: 0.6, cacheWrite: 7.5, output: 36 },
-      "gpt-remote-model": { input: 3, cachedInput: 0.3, output: 18 },
+    // —— 上游价格同步：native 通道（command/exec curl → fs/readFile base64 → fs/remove）——
+    const priceTestNow = currentNow;
+    const priceTempPath = "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js.prices.json";
+    const priceCachePath = "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js.prices.cache.json";
+    const priceCommandCalls = [];
+    const priceReadCalls = [];
+    const priceRemoveCalls = [];
+    const priceWriteCalls = [];
+    const priceHostState = { upstream: upstreamPriceFixture, cacheFile: null, failCommand: false };
+    const priceHostClient = {
+      hostId: "local",
+      sendRequest(route, payload) {
+        if (route === "command/exec") {
+          priceCommandCalls.push(payload.command);
+          if (priceHostState.failCommand) {
+            return Promise.resolve({ exitCode: 22, stdout: "", stderr: "curl: (22) The requested URL returned error: 404" });
+          }
+          return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (route === "fs/readFile") {
+          priceReadCalls.push(payload.path);
+          if (String(payload.path).endsWith(".prices.cache.json")) {
+            if (!priceHostState.cacheFile) return Promise.resolve({});
+            return Promise.resolve({ dataBase64: Buffer.from(JSON.stringify(priceHostState.cacheFile), "utf8").toString("base64") });
+          }
+          return Promise.resolve({ dataBase64: Buffer.from(JSON.stringify(priceHostState.upstream), "utf8").toString("base64") });
+        }
+        if (route === "fs/writeFile") {
+          priceWriteCalls.push({ path: payload.path, dataBase64: payload.dataBase64 });
+          return Promise.resolve({});
+        }
+        if (route === "fs/remove") {
+          priceRemoveCalls.push(payload.path);
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
     };
-    const priceResponse = (payload, status = 200) =>
-      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
-    context.fetch = async function priceRemoteFetch(url, options) {
-      priceFetchCalls.push({ url: String(url), options });
-      const next = priceFetchQueue.shift();
-      if (next instanceof Error) throw next;
-      return next;
+    const savedCodexPlusForPrices = context.codexPlus;
+    // 共享 localStorage stub 故意不实现 removeItem（profile 账本指针回退依赖其缺失）；
+    // 价格缓存清理只在本用例内补上真实浏览器行为。
+    context.localStorage.removeItem = (key) => {
+      storage.delete(String(key));
     };
-    priceFetchQueue.push(priceResponse(remotePrices));
+    context.__codexPlusNativeHostClients = new Map([["local", { ref: { deref: () => priceHostClient } }]]);
+    context.codexPlus = {
+      apiVersion: 1,
+      script: { key: "user:market-codex-live-token-cost.js" },
+      call(route) {
+        if (route === "/user-scripts/list") {
+          return Promise.resolve({
+            user_dir: "C:\\Users\\tester\\user_scripts",
+            scripts: [{ key: "user:market-codex-live-token-cost.js", name: "market-codex-live-token-cost.js" }],
+          });
+        }
+        return Promise.resolve({});
+      },
+    };
+    storage.set("__codexLiveTokenCostRemotePricesV1", JSON.stringify({ version: 1, fetchedAt: 1, prices: { "gpt-legacy": { input: 1, output: 1 } } }));
+    const syncedUpstream = {
+      ...upstreamPriceFixture,
+      "gpt-5.6-sol": { ...upstreamPriceFixture["gpt-5.6-sol"], input_cost_per_token: 0.0000045, output_cost_per_token: 0.000021 },
+      "gpt-9-nebula": {
+        litellm_provider: "openai",
+        mode: "responses",
+        input_cost_per_token: 0.00001,
+        output_cost_per_token: 0.00005,
+      },
+    };
+
+    // 0) localStorage 无缓存、本地文件缓存存在、上游不可达：沿用文件缓存，定价不丢。
+    priceHostState.cacheFile = {
+      version: 2,
+      fetchedAt: Date.parse("2026-07-02T00:00:00.000Z"),
+      prices: { ...upstreamSnapshotFixture.prices, "gpt-5.6-sol": { ...upstreamSnapshotFixture.prices["gpt-5.6-sol"], input: 4.2 } },
+      meta: upstreamSnapshotFixture.meta,
+    };
+    storage.delete("__codexLiveTokenCostRemotePricesV2");
+    priceHostState.failCommand = true;
+    assert.equal(await api.refreshDefaultPrices(), false);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.2);
+    assert.equal(api.priceSyncStatus().tone, "warn");
+    assert.equal(api.priceSyncStatus().text.includes("沿用"), true);
+    priceHostState.failCommand = false;
+    priceCommandCalls.length = 0;
+    priceReadCalls.length = 0;
+    priceRemoveCalls.length = 0;
+
+    priceHostState.upstream = syncedUpstream;
     assert.equal(await api.refreshDefaultPrices(), true);
-    assert.equal(priceFetchCalls[0].url, "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/prices.json");
-    assert.equal(priceFetchCalls[0].options.cache, "no-store");
-    assert.equal(priceFetchCalls[0].options.credentials, "omit");
-    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
-    assert.equal(api.priceFor("gpt-remote-model").output, 18);
-    const cachedRemotePrices = storage.get("__codexLiveTokenCostRemotePricesV1");
-    assert.deepEqual(JSON.parse(cachedRemotePrices).prices, JSON.parse(JSON.stringify(api.remotePriceTable(remotePrices))));
+    assert.equal(priceCommandCalls.length, 1);
+    const syncCommand = priceCommandCalls[0];
+    assert.equal(syncCommand[0], "curl");
+    assert.equal(syncCommand.includes("--fail"), true);
+    assert.equal(syncCommand[syncCommand.indexOf("-o") + 1], priceTempPath);
+    assert.equal(
+      syncCommand.at(-1).startsWith("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json?cltc_price="),
+      true,
+    );
+    assert.deepEqual(priceReadCalls, [priceTempPath]);
+    assert.deepEqual(priceRemoveCalls, [priceTempPath]);
+    assert.equal(priceWriteCalls.length, 1);
+    assert.equal(priceWriteCalls[0].path, priceCachePath);
+    const writtenCache = JSON.parse(Buffer.from(priceWriteCalls[0].dataBase64, "base64").toString("utf8"));
+    assert.equal(writtenCache.prices["gpt-5.6-sol"].input, 4.5);
+    assert.equal(writtenCache.meta["gpt-9-nebula"].mode, "responses");
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    assert.equal(api.priceFor("gpt-9-nebula").output, 50);
+    // 价格已收录但不在官方模型列表：默认不展示，显式传入/使用过才出现。
+    assert.equal(api.priceListModels().includes("gpt-9-nebula"), false);
+    assert.equal(api.priceListModels("gpt-9-nebula").includes("gpt-9-nebula"), true);
+    assert.equal(api.priceListModels().includes("gpt-5.6-sol"), true);
+    assert.equal(api.priceListModels().includes("gpt-5.9-alias"), false);
+    const cachedSnapshot = JSON.parse(storage.get("__codexLiveTokenCostRemotePricesV2"));
+    assert.equal(cachedSnapshot.version, 2);
+    assert.equal(cachedSnapshot.prices["gpt-5.6-sol"].input, 4.5);
+    assert.equal(cachedSnapshot.meta["gpt-9-nebula"].mode, "responses");
+    assert.equal(storage.has("__codexLiveTokenCostRemotePricesV1"), false);
+    assert.equal(api.priceSyncStatus().tone, "ok");
 
-    priceFetchQueue.push(new Error("offline"));
+    // 10 分钟节流窗口内的再次刷新不触发下载，也不覆盖现有价格。
+    priceHostState.upstream = upstreamPriceFixture;
+    assert.equal(await api.refreshDefaultPrices(), true);
+    assert.equal(priceCommandCalls.length, 1);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    assert.equal(api.priceFor("gpt-9-nebula").output, 50);
+
+    // 窗口外的失败：保留现有价格与缓存，状态转为可重试的警告。
+    currentNow = FIXED_NOW + 11 * 60 * 1000;
+    priceHostState.failCommand = true;
     assert.equal(await api.refreshDefaultPrices(), false);
-    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
-    assert.equal(storage.get("__codexLiveTokenCostRemotePricesV1"), cachedRemotePrices);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    assert.deepEqual(JSON.parse(storage.get("__codexLiveTokenCostRemotePricesV2")), cachedSnapshot);
+    assert.equal(api.priceSyncStatus().tone, "warn");
+    assert.equal(api.priceSyncStatus().retry, true);
+    assert.equal(api.priceSyncStatus().text.includes("同步失败"), true);
 
-    priceFetchQueue.push(priceResponse({
-      "gpt-only-one": { input: 1, output: 1 },
-      "gpt-only-two": { input: 1, output: 1 },
-    }));
+    // 窗口外返回无效上游表（条目数不足）：同样拒绝，价格不变。
+    priceHostState.failCommand = false;
+    priceHostState.upstream = {
+      "gpt-only-one": { litellm_provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+    };
     assert.equal(await api.refreshDefaultPrices(), false);
-    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
-    assert.equal(storage.get("__codexLiveTokenCostRemotePricesV1"), cachedRemotePrices);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    assert.equal(api.priceSyncStatus().tone, "warn");
 
+    // 恢复默认：清空自定义价并重新同步上游。
+    priceHostState.upstream = syncedUpstream;
     assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-5.6-sol", { input: 99, output: 99 }), true);
-    assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-remote-model", { input: 99, output: 99 }), true);
-    priceFetchQueue.push(priceResponse(remotePrices));
+    assert.equal(context.__codexLiveTokenCost.setModelPrice("gpt-9-nebula", { input: 99, output: 99 }), true);
     assert.equal(await api.restoreDefaultPrices(), true);
-    assert.equal(api.priceFor("gpt-5.6-sol").input, 6);
-    assert.equal(api.priceFor("gpt-remote-model").output, 18);
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    assert.equal(api.priceFor("gpt-9-nebula").output, 50);
     const restoredOverrides = JSON.parse(storage.get("__codexLiveTokenCostPriceOverridesV1"));
     assert.equal(Object.hasOwn(restoredOverrides, "gpt-5.6-sol"), false);
-    assert.equal(Object.hasOwn(restoredOverrides, "gpt-remote-model"), false);
+    assert.equal(Object.hasOwn(restoredOverrides, "gpt-9-nebula"), false);
+    currentNow = priceTestNow;
+    context.codexPlus = savedCodexPlusForPrices;
+    delete context.localStorage.removeItem;
+    delete context.__codexPlusNativeHostClients;
 
     const observedProfileQueryRows = [];
     const observedProfileCacheListeners = [];
@@ -5677,6 +5985,217 @@ profileLifecycleTest.then(async () => {
     vm.runInNewContext(code, context, { filename: scriptPath });
     assert.equal(registerPageCalls.length, registerPageCallsBeforeMismatch, "apiVersion mismatch must not register the page");
     delete context.codexPlus;
+  })
+  .then(async () => {
+    context.__codexLiveTokenCostVersion = undefined;
+    context.__codexLiveTokenCost = undefined;
+    context.__codexLiveTokenCostActiveBridge = undefined;
+    const updateToasts = [];
+    const userScriptListResult = {
+      enabled: true,
+      user_dir: "C:\\Users\\tester\\user_scripts",
+      scripts: [{ key: "user:market-codex-live-token-cost.js", name: "market-codex-live-token-cost.js", source: "user", enabled: true, status: "loaded" }],
+    };
+    context.codexPlus = {
+      script: { key: "user:market-codex-live-token-cost.js" },
+      fail() {},
+      toast(message, options) {
+        updateToasts.push({ message, options });
+      },
+      call(route) {
+        if (route === "/user-scripts/list") return Promise.resolve(userScriptListResult);
+        return Promise.resolve({});
+      },
+    };
+    vm.runInNewContext(code, context, { filename: scriptPath });
+    const updateApi = context.__codexLiveTokenCostTest;
+    assert.equal(typeof updateApi.checkForUpdateNow, "function");
+    assert.equal(typeof updateApi.runScriptUpdate, "function");
+    assert.equal(typeof updateApi.updateClusterHtml, "function");
+    assert.equal(typeof updateApi.updateStateSnapshot, "function");
+    assert.match(code, /const ownsGlobals = window\.__codexLiveTokenCost\?\.destroy === destroy;/);
+    assert.match(code, /if \(ownsGlobals\) document\.getElementById\(STYLE_ID\)\?\.remove\(\);/);
+    assert.match(code, /if \(ownsGlobals\) \{\n      delete window\.__codexLiveTokenCost;\n      if \(window\.__codexLiveTokenCostVersion === VERSION\) delete window\.__codexLiveTokenCostVersion;\n    \}/);
+    assert.match(code, /window\.__codexLiveTokenCostLastApply = trace;/);
+    assert.match(code, /window\.requestAnimationFrame\(done\);\n[\s\S]{0,200}?window\.setTimeout\(done, 50\);/);
+    assert.match(code, /const done = \(\) => \{\n        if \(settled\) return;\n        settled = true;\n        resolve\(\);\n      \};/);
+    assert.match(code, /\.cltc-update-cluster \{\n        display: inline-flex;\n        align-items: center;\n        gap: 6px;\n        margin-left: 10px;/);
+    assert.match(code, /\.cltc-update-cluster \.cltc-update-version \{\n        position: relative;\n      \}/);
+    assert.match(code, /\.cltc-update-cluster\[data-phase="available"\] \.cltc-update-version::after \{\n        content: "";\n        position: absolute;\n        top: -2px;\n        right: -6px;\n        width: 6px;\n        height: 6px;\n        border-radius: 999px;\n        background: #e5484d;\n        pointer-events: none;\n      \}/);
+    assert.match(code, /const UPDATE_REPO_URL = "https:\/\/github\.com\/Tianzora\/codex-token-cost";/);
+    assert.equal(updateApi.updateParseVersion("// @version      0.7.11-beta1\n"), "0.7.11-beta1");
+    assert.equal(updateApi.updateParseVersion("// no version header"), "");
+    const compareVersions = updateApi.compareUpdateVersions;
+    assert.equal(compareVersions("0.7.10-beta1", "0.7.10-beta1"), 0);
+    assert.equal(compareVersions("0.7.10-beta1", "0.7.10"), -1);
+    assert.equal(compareVersions("0.7.10", "0.7.10-beta1"), 1);
+    assert.equal(compareVersions("0.7.9", "0.7.10-beta1"), -1);
+    assert.equal(compareVersions("0.7.11-beta1", "0.7.10-beta1"), 1);
+    assert.equal(compareVersions("0.7.10-beta2", "0.7.10-beta1"), 1);
+    assert.equal(compareVersions("0.7.10-beta10", "0.7.10-beta9"), 1);
+    assert.equal(compareVersions("1.0.0", "0.9.9"), 1);
+    assert.equal(compareVersions("bogus", "0.7.10"), 0);
+    const downloadArgs = updateApi.updateDownloadCommand("https://example.com/a.js?x=1", "C:\\tmp\\a.js.download");
+    assert.equal(downloadArgs[0], "curl");
+    assert.equal(downloadArgs[downloadArgs.indexOf("-o") + 1], "C:\\tmp\\a.js.download");
+    assert.equal(downloadArgs[downloadArgs.length - 1], "https://example.com/a.js?x=1");
+    assert.equal(downloadArgs.includes("--retry"), true);
+    const checkArgs = updateApi.updateCheckCommand("https://example.com/a.js?x=1", "C:\\tmp\\a.js.download");
+    assert.equal(checkArgs[0], "curl");
+    assert.equal(checkArgs[checkArgs.indexOf("-r") + 1], "0-8191");
+    assert.equal(checkArgs[checkArgs.indexOf("-o") + 1], "C:\\tmp\\a.js.download");
+    assert.equal(checkArgs[checkArgs.length - 1], "https://example.com/a.js?x=1");
+    assert.equal(updateApi.updateCommandPathJoin("C:\\Users\\tester\\user_scripts\\", "market-codex-live-token-cost.js"), "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js");
+    assert.equal(updateApi.updateCommandPathJoin("/Users/tester/user_scripts", "a.js"), "/Users/tester/user_scripts/a.js");
+    const fakeSource = (version) => [
+      "// ==UserScript==",
+      "// @name         Codex Live Token Cost",
+      `// @version      ${version}`,
+      "// ==/UserScript==",
+      `// ${"x".repeat(110000)}`,
+      "(() => {",
+      '  "use strict";',
+      `  window.__codexLiveTokenCostVersion = ${JSON.stringify(version)};`,
+      "  window.__codexLiveTokenCost = { destroy() {} };",
+      "})();",
+    ].join("\n");
+    assert.equal(updateApi.updateSourceLooksValid(fakeSource("0.7.11-beta1"), "0.7.11-beta1"), true);
+    assert.equal(updateApi.updateSourceLooksValid(fakeSource("0.7.11-beta1"), "0.7.12"), false);
+    assert.equal(updateApi.updateSourceLooksValid("// too short", "0.7.11-beta1"), false);
+
+    updateApi.updateResetState();
+    const savedCodexPlus = context.codexPlus;
+    context.codexPlus = undefined;
+    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), false);
+    assert.equal(updateApi.updateStateSnapshot().phase, "");
+    assert.equal(updateApi.updateStateSnapshot().error, "Codex++ 通道不可用");
+    assert.equal(await updateApi.checkForUpdateNow({ auto: false }), false);
+    assert.equal(updateApi.updateStateSnapshot().phase, "error");
+    assert.equal(updateApi.updateStateSnapshot().errorKind, "check");
+    context.codexPlus = savedCodexPlus;
+
+    const base64Of = (text) => Buffer.from(text, "utf8").toString("base64");
+    const targetPath = "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js";
+    const downloadPath = `${targetPath}.download`;
+    const commandCalls = [];
+    const readCalls = [];
+    const writeCalls = [];
+    const removeCalls = [];
+    let remoteSource = fakeSource("0.7.10-beta1");
+    let writtenBase64 = "";
+    let corruptTargetRead = false;
+    const hostClient = {
+      hostId: "local",
+      sendRequest(route, payload) {
+        if (route === "command/exec") {
+          commandCalls.push(payload.command);
+          return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
+        }
+        if (route === "fs/readFile") {
+          readCalls.push(payload.path);
+          if (payload.path === downloadPath) return Promise.resolve({ dataBase64: base64Of(remoteSource) });
+          if (payload.path === targetPath) return Promise.resolve({ dataBase64: corruptTargetRead ? base64Of("corrupt") : writtenBase64 || base64Of(code) });
+          return Promise.resolve({ dataBase64: "" });
+        }
+        if (route === "fs/writeFile") {
+          writeCalls.push({ path: payload.path, dataBase64: payload.dataBase64 });
+          writtenBase64 = payload.dataBase64;
+          return Promise.resolve({});
+        }
+        if (route === "fs/remove") {
+          removeCalls.push(payload.path);
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    };
+    context.__codexPlusNativeHostClients = new Map([["local", { ref: { deref: () => hostClient } }]]);
+
+    updateApi.updateResetState();
+    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), true);
+    assert.equal(updateApi.updateStateSnapshot().phase, "");
+    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "");
+    assert.equal(commandCalls.length, 1);
+    assert.equal(commandCalls[0].includes("-r"), true);
+    assert.equal(commandCalls[0][commandCalls[0].length - 1].includes("raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js"), true);
+
+    updateApi.updateResetState();
+    assert.equal(await updateApi.checkForUpdateNow({ auto: false }), true);
+    assert.equal(updateApi.updateStateSnapshot().phase, "uptodate");
+    assert.equal(updateApi.updateClusterHtml().includes("已是最新"), true);
+    assert.equal(updateApi.updateClusterHtml().includes('data-action="open-repo"'), true);
+
+    remoteSource = fakeSource("0.7.11-beta1");
+    updateApi.updateResetState();
+    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), true);
+    assert.equal(updateApi.updateStateSnapshot().phase, "available");
+    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "0.7.11-beta1");
+    assert.equal(updateApi.updateClusterHtml().includes("一键更新 v0.7.11-beta1"), true);
+    const availableHtml = updateApi.updateClusterHtml();
+    assert.equal(availableHtml.includes('data-action="open-repo"'), true);
+    assert.equal(availableHtml.includes('class="cltc-update-github"'), true);
+    assert.equal(availableHtml.includes("<svg"), true);
+    const openCalls = [];
+    context.open = (url, target, features) => {
+      openCalls.push([url, target, features]);
+      return null;
+    };
+    updateApi.handleUpdateClusterClick({
+      target: { closest: () => ({ getAttribute: (name) => (name === "data-action" ? "open-repo" : null) }) },
+    });
+    assert.equal(openCalls.length, 1);
+    assert.equal(openCalls[0][0], "https://github.com/Tianzora/codex-token-cost");
+    assert.equal(openCalls[0][1], "_blank");
+    assert.equal(String(openCalls[0][2]).includes("noopener"), true);
+
+    const previousInstance = context.__codexLiveTokenCost;
+    const registryKey = "user:market-codex-live-token-cost.js";
+    const registryEntry = {
+      key: registryKey,
+      name: "market-codex-live-token-cost.js",
+      source: "user",
+      status: "loaded",
+      error: "",
+      loadedAt: "2026-07-04T00:00:00.000Z",
+      cleanups: [previousInstance.destroy],
+    };
+    context.__codexPlusUserScripts = { scripts: { [registryKey]: registryEntry } };
+    const versionBeforeUpdate = context.__codexLiveTokenCostVersion;
+
+    const freshRemoteSource = remoteSource;
+    remoteSource = fakeSource("0.7.10-beta1");
+    assert.equal(await updateApi.runScriptUpdate(), false);
+    assert.equal(updateApi.updateStateSnapshot().phase, "error");
+    assert.equal(updateApi.updateStateSnapshot().errorKind, "update");
+    assert.equal(writeCalls.length, 0);
+    assert.equal(context.__codexLiveTokenCostVersion, versionBeforeUpdate);
+    remoteSource = freshRemoteSource;
+
+    corruptTargetRead = true;
+    assert.equal(await updateApi.runScriptUpdate(), false);
+    assert.equal(updateApi.updateStateSnapshot().phase, "error");
+    assert.equal(updateApi.updateStateSnapshot().errorKind, "update");
+    assert.equal(context.__codexLiveTokenCostVersion, versionBeforeUpdate);
+    assert.equal(context.__codexLiveTokenCost, previousInstance);
+    corruptTargetRead = false;
+
+    assert.equal(await updateApi.runScriptUpdate(), true);
+    assert.equal(context.__codexLiveTokenCostVersion, "0.7.11-beta1");
+    assert.equal(context.__codexLiveTokenCost === previousInstance, false);
+    assert.equal(typeof context.__codexLiveTokenCost.destroy, "function");
+    assert.equal(registryEntry.cleanups[0], context.__codexLiveTokenCost.destroy);
+    assert.equal(registryEntry.loadedAt !== "2026-07-04T00:00:00.000Z", true);
+    assert.equal(registryEntry.status, "loaded");
+    assert.equal(writeCalls.length, 2);
+    assert.equal(writeCalls[1].path, targetPath);
+    assert.equal(writeCalls[1].dataBase64, base64Of(remoteSource));
+    assert.equal(removeCalls.includes(downloadPath), true);
+    assert.equal(readCalls.includes(targetPath), true);
+    assert.equal(updateToasts.some((entry) => String(entry.message).includes("已更新到 v0.7.11-beta1")), true);
+    const lastCommand = commandCalls[commandCalls.length - 1];
+    assert.equal(lastCommand[0], "curl");
+    assert.equal(lastCommand.includes("-r"), false);
+    assert.equal(lastCommand[lastCommand.length - 1].includes("raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js"), true);
   })
   .catch((error) => {
   setImmediate(() => {

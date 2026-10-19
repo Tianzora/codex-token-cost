@@ -21,14 +21,92 @@ const VERSION = "0.7.10-beta1";
     '<path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"></path>' +
     '<path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"></path>' +
     "</svg>";
+  const NAV_ICON_USAGE =
+    '<svg class="cltc-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path>' +
+    "</svg>";
+  const NAV_ICON_PROFILE =
+    '<svg class="cltc-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20c.9-3.4 3.5-5.2 7-5.2s6.1 1.8 7 5.2"></path>' +
+    "</svg>";
+  const NAV_ICON_GENERAL =
+    '<svg class="cltc-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M4 7h7"></path><path d="M15 7h5"></path><circle cx="13" cy="7" r="2"></circle><path d="M4 17h5"></path><path d="M13 17h7"></path><circle cx="11" cy="17" r="2"></circle>' +
+    "</svg>";
+  const NAV_ICON_PRICING =
+    '<svg class="cltc-nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H12l8 8-8 8-8-8z"></path><circle cx="8.5" cy="8.5" r="1.2"></circle>' +
+    "</svg>";
   const OFFICIAL_MODEL_TRIGGER_SELECTOR = "[data-codex-intelligence-trigger='true']";
   const PRICE_OVERRIDES_KEY = "__codexLiveTokenCostPriceOverridesV1";
   const HIDDEN_PRICE_MODELS_KEY = "__codexLiveTokenCostHiddenPriceModelsV1";
   const PRICE_MIGRATION_KEY = "__codexLiveTokenCostPriceMigrationV1";
   const PRICE_MIGRATION_VERSION = "official-prices-2026-07-31-v4";
-  const PRICE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/prices.json";
-  const PRICE_REMOTE_CACHE_KEY = "__codexLiveTokenCostRemotePricesV1";
-  const PRICE_REMOTE_TIMEOUT_MS = 5000;
+  const PRICE_REMOTE_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+  // 官方定价页（https://developers.openai.com/api/docs/pricing）在售的 gpt 对话模型：
+  // 只用于「模型价格」默认列表；价格仍来自 LiteLLM。未被列出的新模型在使用后仍会出现。
+  const OFFICIAL_PRICE_MODELS = new Set([
+    "gpt-3.5-turbo",
+    "gpt-3.5-turbo-0125",
+    "gpt-4-0613",
+    "gpt-4-turbo-2024-04-09",
+    "gpt-4.1",
+    "gpt-4.1-2025-04-14",
+    "gpt-4.1-mini",
+    "gpt-4.1-mini-2025-04-14",
+    "gpt-4.1-nano",
+    "gpt-4.1-nano-2025-04-14",
+    "gpt-4o",
+    "gpt-4o-2024-05-13",
+    "gpt-4o-2024-08-06",
+    "gpt-4o-mini",
+    "gpt-4o-mini-2024-07-18",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-pro",
+    "gpt-5-search-api",
+    "gpt-5.1",
+    "gpt-5.2",
+    "gpt-5.2-pro",
+    "gpt-5.3-codex",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-cyber",
+    "gpt-5.5-pro",
+    "gpt-5.6-cyber",
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-6-astra",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6.1-sol",
+    "gpt-audio",
+    "gpt-audio-1.5",
+    "gpt-audio-mini",
+    "gpt-rosalind-discovery",
+    "gpt-rosalind-research",
+  ]);
+  const PRICE_SYNC_SOURCE_LABEL = "LiteLLM";
+  const PRICE_REMOTE_CACHE_KEY = "__codexLiveTokenCostRemotePricesV2";
+  const PRICE_REMOTE_LEGACY_CACHE_KEY = "__codexLiveTokenCostRemotePricesV1";
+  const PRICE_SYNC_MIN_INTERVAL_MS = 10 * 60 * 1000;
+  const PRICE_SYNC_RETRY_DELAY_MS = 15 * 1000;
+  const PRICE_SYNC_MIN_MODELS = 3;
+  const PRICE_SYNC_MAX_MODELS = 2000;
+  // 「模型价格」默认只展示 gpt 对话/推理模型（chat/responses），其余模型使用过后才出现。
+  const PRICE_DISPLAY_MODES = ["chat", "responses"];
+  const UPDATE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js";
+  const UPDATE_REPO_URL = "https://github.com/Tianzora/codex-token-cost";
+  const UPDATE_AUTO_CHECK_DELAY_MS = 4000;
+  const UPDATE_COMMAND_TIMEOUT_MS = 135000;
+  const UPDATE_STATUS_RESET_MS = 4000;
+  const UPDATE_MIN_SOURCE_LENGTH = 100000;
+  const UPDATE_CHECK_RANGE_BYTES = 8191;
   const DAILY_USAGE_KEY = "__codexLiveTokenCostDailyUsageV1";
   const LOCAL_USAGE_KEY = "__codexLiveTokenCostLocalUsageV1";
   const ANALYTICS_ROLLUP_KEY = "__codexLiveTokenCostAnalyticsRollupV1";
@@ -241,20 +319,10 @@ const VERSION = "0.7.10-beta1";
   }
   const FLATPICKR_CSS_GZIP_BASE64 = "H4sIAAAAAAACCtUby5LbuPHur2DW5VrLFrXUazQjXjaxK1V78GWzqT1s9kCR4IgZimSR1DzM0r+n8SLxFiV7korl0ohAo9Hd6Bca4CzNo7bK4ofaj6McFUlUd7sofrivy2ORbNs6KpoqqlHRhmUVxVn7sg3CJGuqPHrZFmWBwhY9t36UZ/fFNgYwVIePWZPtshzD7rMkQUVYRUmSFfcw1H9Cu4cMBhTZIWqzsqBIlMckq1FMHvO2DndlnaAaBqdl0fpN9hVt56vqOcyzAvl7lN3v2+0CN1BAv46S7Nhs19BSlU1G8ES7psyPLQqfsqTdb5fBZna7wRCcoF35jFFjKhkaaAnNrf6h8dvyGO/9iFJ5APqrY044CO09gmDfpmkqz72PkvJpO6+evQA+b9EN/kx9tSHwaMvw7KsNS3ie46/6fhe9D6bkMwtuJ+F/a6LTTFerWVmhYmrqyAq8kh3Xr3l4iJ75ut6sAlgkQaPIzxxZZ+i4clKs/i4v44fwq58VCXre3uF/xrFUAxHFoWtpWv09StAvxefyqfCWQXBovPi4y2J/h75mqH4/Wyyn8+lsuZjOJ+F1w04O2XCmKDe9VtcIa9YjGGFZbRfVsxFF0wJM3OmmgAcBVPx+HgTvvI8eIJg4MFDRCJIMJaqMIw/HvM2+gNnuPaE7iV4abwbfn6AnAv7qLUD48T7Lk/fFx/lEAQYp/BoV90iA2hQfN5POYEDYf3h/yQ5VWbcReC171/cjeDGO4LmRYH+hGN5afg4vgDWx5M32UfM7Qg8KB1Mb7G/ZAcmgXe/72rY8gCOWnv0aWyr3umpnjtKh7xL6+KQYgXnkQOzQ18Jzx3wHcR0MC9Z17L5A9bPEJa5ZUX4aiT86tqUJxXaH0rJGJgFvoxQipMEWVQPPcCT10SNE1IbGRBYFKQNiXI5BYvB3++OPISMsYFEuCInwFjbPQBbuS9m0DopnUV2XT78SvA6oARXh8BwmKgZCHZZiWNMgbiOUjPxEsouzpDIwYYZ18I5NAL8cC8Y1jgoPJweHqL7Pii2EvrWZMjaNNHAlDVy5WPoNtPIcPxiGz0LMD3vrMShlq/XjMi/rrUvztekMwyFtsY/9GyXwHEcMjM5CDNPJkYS1G+x5LEfSdPpwC0fbtIyPTVceWxyAZQf0VEdVJZpxH4dNyYc48oAjS9OHcyEchGpbmiOhETJO3CAC4mcdt6e22NJ5yr6Uud1NwjTLc62RuZWlmnTPDcm/LhPO0LEBwTcoh8yeejSg76uptdEbtYbyEdVpDiGR7TDEwIoFA7SJgsSPTITwk/5xy66q0SNtnjrhCiwBKuhXYZRIOEFxWQv7o/hYN7B4LEyE5tQukNaNb8HmOCjyJG55gRaMFZeYCWVNBLl6MlaChqGduNccS4KXjZ3Ry3QjvoLRy5XFOLj76cMbj/z76UPd5uDycBAB4wLH9+EnmggpIOCreoCTc/gbx8g3l7M8sHIFy4LROGmmUft/y/N2j33NWCYpdMdiy936DkV3p4tm8prH+8tmwyM6YrJv05vVZrUZbScXTEUmoQkOKb7wEKDkN+em86povMb0A3rXSgIYNVfMsDebN6GpjUgjK/aozmCfVxwPvxTVsf3dGreljF4B9zL8MNWaIZCaqw0WDFx6JNkxQmxJnI9zBEU42e/ZwJlYIEvBYaPKCn93hGynmJ4bkRWFPKLjKetQooNxEcg2RhYiiAD02FNLe5C5GHwCb0U2rItBgXByLuYU+HmoNCqBju2Bho0ciVHrzZT+D2bz9eSaip6ZN2bLQv4khURcsTEOw6W/R2Qdt7COIxmqvBPkm7sfftCjvBkNTXr/WXU0B1C27u4xcpJMAs6ql7WYPPJKK91nu0DYxCvrkt1MaPXq5p2LNlxAIxytg7Nwr8AFnvksCysbaYLvZD7J7XD4GOr79GRsrWvQGV0NrEOoFfe1V2krdKyxDFigForvy7Vss5wpAvLEks4gYMkl77XV4jcYG16k+WIGP7mv2MxWt6y6FSi7DjGvNZZ79W2JFEBgI3mgeyHgFS0TKqZJ6Oq0CoYqHzSJckqjQ5a/GAWz0QRjZIG6Y6q9s3W8H3zoWErGqIQNkxYy6VLdAB1s0eL9v4Kz2103UofrkYoOjo3I6Al0vzCUAEbjJzGUCPgF2c/JrjlRkhWCRT2sxULoxB+iCX2kNirOYKeS9jk0EpuqyZwFHzWcwclnbEEIKgZnA1HOzC0rwMaj3JREYHbSDOUJ3Q8be0yNY9fDVbFxjfuD7zX/nF48gtmY4BshuzNtqiEvsaiLodbr0HAlcf5clxUcDBS8sCTI74CKY541rW1etqJCbVks4Y9WUp6aXad2ooqZVJCpen84GYR8eQndBuPQc/szGmo54tX1txeoqr59B3WN2rHAJStIlXh69XCWe4pSup6WbwkgbtRn+oU5mY+WLiIYVUAq0MJxEj6zs7loPT9Q64nDXi38bsVaSeWM2Qlp9LMWHZq+iyGTBxgA+UWIW3lDzkXh6W1xf9T2OiyOrcOSKK1R1zEHk6A0gkNZwcHcwaKML2qvVxMlfezjp64G8ubrCmYkD7crc/AnJ+uxK+a06frKLPdxJ+Xk2VCvUNX1NXUUTv/r1qiiRC9Zt6ymtNECq1zBUdnV47h0LDzcJeohxIXECbN2yecAmbTWBpdMvsdlIGMS5hLz6DWS1oPIDx88bfFXqDz24jc0wdbuYfvvY9Nm6UuPjj37vL4ABhQjPyIWFTo7v3knFQqbTXFl4QaKvNKmyxJzx+WIuf0yBPYngssQD9TnztIAzYjm6+BK7WCF4OUd/hhzpid+WWGomM0Wt+vNfLV8J6/+LmqyRu7u17hGKYL4m/DrcQOMZaig/ndDNY78Fr0laXBvOOwnflgkRPuUMKfqlxrqxDEWWM11n8w3cKZKM65Gk+s9n+0wuAB9DqYtx07ihJSmckHqpxDqRGYIcQIjhJ5waoiNEBJi6rEV7R7cs3jvsbdbYiLWI/xexp0MqZ+o9JBmAdAuSqAJlUQcazLfDMDY6MmsfKJJ2nFgM64wHDkZ2zkmm2YMGG0QHLMVA5vBvH4DfnM/x24ZzXEbZS7gNvb3uM2juWREJXSIxwXWy8iJi08o6rRjQhdYP6EIJIaet+ubuzTdhJari+p9RUEXFZuheGwK6tBIgZPzaiuAdMr16oCFW/zDSoZV/QcibCA9CfyHQgCdmX4FI+SA84te84qyfa/ezpyMktTlaAyyPI/EnP1wmXMtcnWOEMmY5blkpQywBq2xhGp1eU0m4q8vuCy7Hn9ZFpPhvrdihjgfll1xU+sr27/msKvTZx563MgHMMn/CNti4dhqOXHXBg2lF3lP/v0kyHMHYACyOsJBaCZaviePceJddK/clykRNZTp2mFVZ2BVYuh+vNNegTnNaqzjX8oEKXfF2cE7v6Gs1m74XUPY7Uct2d1aIDxrYQHe5Fio2xfjSyCO90NGTor5oZSS4CVU0aSXdW6tfHpKMSiRldwNyXRJLuIINAx7HiG0jrcKpSAlFNBFZsjNik9aaU2pC3zXOs3YzahSNRKpNlAsb/K0N7guul6hXKA31F/7zYIssP5Gu6g/5GK/8JLQ6trd+auV0VSO2dGjcJuDQ7fYC4bkzg9Q1u7VkfpR7DVVSXYzHWxAFJnZpxhnHXtWyyodl+BzHc1a0OE3M/4Bd2KLpLEdVZP7JMoo/LVY7WvbmNWdNoZd3Rpz1OtI4q2np7oh9LWWweKUMzHTOZlcZlLek3QXaEa/9Pg6J7qDkIXGfXlkh6pCJf3sKKjywq2S6TmwhihOpxTfzNjVWnS/krqCy88wC+hI1Jb11AEZHfzq0Km3aHqrHLvUgpCYpS/evc61e/kUAHpSrXiHy/2mwyoB+HRWJIPAWfi+facWT3XTGbeiWsZupMACJijFeRSs6CQWv5CSKgC2P2oEjqLIX/5UCminn7m0H9BLWkcH1Hji+6RdWpeHbrgrea4w7y/A57uK8xzg1JbCy7jffnPq9PP/OwP/ATTgCv4mPwAA";
 
-  // Standard short-context USD / 1M tokens, synced from scripts/prices.json on 2026-07-31.
-  const FALLBACK_DEFAULT_PRICES = {
-    "gpt-5.6-sol": { input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 },
-    "gpt-5.6-terra": { input: 2, cachedInput: 0.2, cacheWrite: 2.5, output: 12 },
-    "gpt-5.6-luna": { input: 0.2, cachedInput: 0.02, cacheWrite: 0.25, output: 1.2 },
-    "gpt-5.3-codex": { input: 1.75, cachedInput: 0.175, output: 14 },
-    "gpt-5.4": { input: 2.5, cachedInput: 0.25, output: 15 },
-    "gpt-5.4-mini": { input: 0.75, cachedInput: 0.075, output: 4.5 },
-    "gpt-5.4-nano": { input: 0.2, cachedInput: 0.02, output: 1.25 },
-    "gpt-5.4-pro": { input: 30, cachedInput: null, output: 180 },
-    "gpt-5.5": { input: 5, cachedInput: 0.5, output: 30 },
-    "gpt-5.5-pro": { input: 30, cachedInput: null, output: 180 },
-  };
+  // 价格完全来自 LiteLLM 上游（model_prices_and_context_window.json）运行期同步：
+  // 本地缓存只保留上次成功同步的紧凑表，同步前/失败时显示「未定价」。
   let DEFAULT_PRICES = loadDefaultPrices();
+  let DEFAULT_PRICE_META = loadDefaultPriceMeta();
 
   if (window.__codexLiveTokenCostVersion && window.__codexLiveTokenCostVersion !== VERSION) {
     try {
@@ -349,10 +417,16 @@ const VERSION = "0.7.10-beta1";
     detectedEffortLabel: "",
     detectedFastMode: false,
     priceRemoteRequest: null,
-    priceRemoteAbortController: null,
+    priceSyncRetryTimer: 0,
+    priceSyncRetried: false,
+    priceSyncError: "",
+    priceSyncedAt: 0,
+    priceFileCacheLoaded: false,
     priceEditorOpen: false,
     priceEditorModel: "",
-    settingsPanel: "profile",
+    priceSearch: "",
+    priceFilter: "all",
+    settingsPanel: "usage",
     analyticsPreset: "today",
     analyticsMetric: "tokens",
     analyticsCustomStart: "",
@@ -366,6 +440,14 @@ const VERSION = "0.7.10-beta1";
     usageSyncAutoTimer: 0,
     usageSyncAutoAt: 0,
     usageSyncAutoFailures: 0,
+    updateBusy: false,
+    updatePhase: "",
+    updateRemoteVersion: "",
+    updateErrorKind: "",
+    updateError: "",
+    updateStatusTimer: 0,
+    updateAutoCheckTimer: 0,
+    updateClusterEl: null,
     analyticsModel: "",
     analyticsModelsExpanded: false,
     analyticsRollup: null,
@@ -414,6 +496,7 @@ const VERSION = "0.7.10-beta1";
     profileDataRefreshAt: 0,
     profileDataRefreshPromise: null,
     settingsFocusFrame: 0,
+    settingsPanelEnterTimer: 0,
     analyticsSegmentSwitchFrame: 0,
     hubValueCache: new Map(),
     hubSkeletonVersion: "",
@@ -1171,9 +1254,59 @@ const VERSION = "0.7.10-beta1";
   }
 
   function loadDefaultPrices() {
-    const cached = loadJson(PRICE_REMOTE_CACHE_KEY, null);
-    const cachedPrices = normalizePriceTable(cached?.prices || cached);
-    return { ...normalizePriceTable(FALLBACK_DEFAULT_PRICES), ...cachedPrices };
+    return normalizePriceTable(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.prices);
+  }
+
+  function loadDefaultPriceMeta() {
+    return normalizePriceMeta(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.meta);
+  }
+
+  function normalizePriceMeta(source) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return {};
+    return Object.fromEntries(
+      Object.entries(source)
+        .map(([model, value]) => [
+          normalizeText(model, 120),
+          {
+            mode: normalizeText(value?.mode, 40).toLowerCase(),
+            deprecationDate: normalizeText(value?.deprecationDate, 40),
+          },
+        ])
+        .filter(([model]) => model),
+    );
+  }
+
+  // 本地文件缓存：同步成功后把紧凑价格表写到用户脚本目录，启动时先读它，
+  // 这样即使本次上游不可达（或 localStorage 已满）也不会丢失已有定价。
+  function priceCachePath(targetPath) {
+    return `${targetPath}.prices.cache.json`;
+  }
+
+  async function priceCacheLoad(client, targetPath) {
+    try {
+      const text = updateDecodeBase64Text(await priceSyncReadBase64(client, priceCachePath(targetPath)));
+      const parsed = JSON.parse(text);
+      const prices = normalizePriceTable(parsed?.prices);
+      const count = Object.keys(prices).length;
+      if (count < PRICE_SYNC_MIN_MODELS || count > PRICE_SYNC_MAX_MODELS) return null;
+      return { prices, meta: normalizePriceMeta(parsed?.meta), fetchedAt: toCount(parsed?.fetchedAt) };
+    } catch {
+      return null;
+    }
+  }
+
+  async function priceCacheSave(client, targetPath, snapshot) {
+    try {
+      const payload = JSON.stringify({
+        version: 2,
+        fetchedAt: Date.now(),
+        prices: snapshot.prices,
+        meta: snapshot.meta,
+      });
+      await updateWriteBase64(client, priceCachePath(targetPath), btoa(payload));
+    } catch {
+      // 文件缓存失败不影响本次同步结果；下次成功同步会再次尝试。
+    }
   }
 
   function normalizePriceTable(source) {
@@ -1185,51 +1318,175 @@ const VERSION = "0.7.10-beta1";
     );
   }
 
-  function remotePriceTable(payload) {
-    const table = normalizePriceTable(payload?.prices || payload);
-    const modelCount = Object.keys(table).length;
-    return modelCount >= 3 && modelCount <= 256 ? table : null;
+  // 每 token 成本 ×1e6 折算为 USD / 1M tokens；12 位有效数字消除浮点毛刺。
+  function priceUsdPerMillionTokens(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return null;
+    return Number((number * 1e6).toPrecision(12));
   }
 
-  function saveRemotePriceTable(table) {
+  // LiteLLM 上游 → 本地紧凑价格表：只收 openai provider，丢弃全零条目；
+  // mode/deprecation_date 供「模型价格」列表做默认展示过滤。
+  function priceUpstreamSnapshot(payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+    const prices = {};
+    const meta = {};
+    let count = 0;
+    for (const [rawModel, entry] of Object.entries(payload)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      if (normalizeText(entry.litellm_provider, 40).toLowerCase() !== "openai") continue;
+      const model = normalizeText(rawModel, 120);
+      if (!model) continue;
+      const price = normalizePrice({
+        input: priceUsdPerMillionTokens(entry.input_cost_per_token),
+        cachedInput: priceUsdPerMillionTokens(entry.cache_read_input_token_cost),
+        cacheWrite: priceUsdPerMillionTokens(entry.cache_creation_input_token_cost),
+        output: priceUsdPerMillionTokens(entry.output_cost_per_token),
+      });
+      if (!priceUsable(price)) continue;
+      prices[model] = price;
+      meta[model] = {
+        mode: normalizeText(entry.mode, 40).toLowerCase(),
+        deprecationDate: normalizeText(entry.deprecation_date, 40),
+      };
+      count += 1;
+    }
+    if (count < PRICE_SYNC_MIN_MODELS || count > PRICE_SYNC_MAX_MODELS) return null;
+    return { prices, meta };
+  }
+
+  function saveRemotePriceTable(snapshot) {
     try {
       localStorage.setItem(
         PRICE_REMOTE_CACHE_KEY,
-        JSON.stringify({ version: 1, fetchedAt: Date.now(), prices: table }),
+        JSON.stringify({
+          version: 2,
+          fetchedAt: Date.now(),
+          prices: snapshot.prices,
+          meta: snapshot.meta,
+        }),
       );
+      try {
+        localStorage.removeItem(PRICE_REMOTE_LEGACY_CACHE_KEY);
+      } catch {
+        // 旧缓存清理失败不影响新表落盘。
+      }
     } catch {
-      // A full localStorage must not invalidate an otherwise valid remote table.
+      // localStorage 配额吃紧时保留内存表即可，下次启动重新同步。
     }
   }
 
+  function priceSyncUrl() {
+    return `${PRICE_REMOTE_URL}?cltc_price=${Date.now()}`;
+  }
+
+  function priceSyncDownloadCommand(url, outPath) {
+    return [
+      "curl",
+      "-sS",
+      "-L",
+      "--fail",
+      "--connect-timeout", "8",
+      "--max-time", "20",
+      "--retry", "2",
+      "--retry-delay", "1",
+      "--retry-all-errors",
+      "-o", outPath,
+      url,
+    ];
+  }
+
+  function priceSyncClientOptions() {
+    return { priority: "background", source: "codex-token-cost-prices" };
+  }
+
+  async function priceSyncReadBase64(client, path) {
+    const result = await client.sendRequest("fs/readFile", { path }, priceSyncClientOptions());
+    const dataBase64 = typeof result?.dataBase64 === "string" ? result.dataBase64 : "";
+    if (!dataBase64) throw new Error("读取上游价格表失败");
+    return dataBase64;
+  }
+
+  function priceSyncScheduleRetry() {
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (state.priceSyncRetried || state.priceSyncRetryTimer || state.destroyed) return;
+    state.priceSyncRetried = true;
+    state.priceSyncRetryTimer = trackTimer(
+      window.setTimeout(() => {
+        state.priceSyncRetryTimer = 0;
+        if (state.destroyed) return;
+        void refreshDefaultPrices();
+      }, PRICE_SYNC_RETRY_DELAY_MS),
+    );
+  }
+
+  // 上游同步走 native 通道：command/exec 里的 curl 下载到临时文件，再 fs/readFile
+  // 取回 base64（command/exec 的 stdout 会在 1 MiB 处截断，无法整表回传）。页面
+  // fetch 到 github 会被 CSP connect-src 拦截，因此这条通道是生产唯一可行路径。
+  // 启动时先读本地文件缓存，命中且未过期就直接复用，失败也不会丢已有定价。
   function refreshDefaultPrices() {
     if (state.priceRemoteRequest) return state.priceRemoteRequest;
-    const fetcher = window.fetch;
-    if (typeof fetcher !== "function") return Promise.resolve(false);
-
     const request = (async () => {
-      const controller = typeof window.AbortController === "function" ? new window.AbortController() : null;
-      state.priceRemoteAbortController = controller;
-      const timeout = window.setTimeout(() => controller?.abort(), PRICE_REMOTE_TIMEOUT_MS);
+      state.priceSyncError = "";
+      let client = null;
+      let target = null;
       try {
-        const response = await fetcher(PRICE_REMOTE_URL, {
-          cache: "no-store",
-          credentials: "omit",
-          headers: { Accept: "application/json" },
-          signal: controller?.signal,
-        });
-        if (!response?.ok) return false;
-        const table = remotePriceTable(await response.json());
-        if (!table) return false;
-        DEFAULT_PRICES = table;
-        saveRemotePriceTable(table);
+        client = appServerSyncClient();
+      } catch {
+        client = null;
+      }
+      if (client) {
+        try {
+          target = await updateResolveTarget();
+        } catch {
+          target = null;
+        }
+      }
+      if (client && target && !state.priceFileCacheLoaded) {
+        state.priceFileCacheLoaded = true;
+        const cached = await priceCacheLoad(client, target.targetPath);
+        if (cached) {
+          DEFAULT_PRICES = cached.prices;
+          DEFAULT_PRICE_META = cached.meta;
+          if (cached.fetchedAt) state.priceSyncedAt = cached.fetchedAt;
+        }
+      }
+      const cachedAt = Math.max(toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt), toCount(state.priceSyncedAt));
+      if (cachedAt && Date.now() - cachedAt < PRICE_SYNC_MIN_INTERVAL_MS) {
+        if (!state.priceSyncedAt) state.priceSyncedAt = cachedAt;
+        return true;
+      }
+      try {
+        if (!client) throw new Error("未找到本地文件通道");
+        if (!target) throw new Error("Codex++ 通道不可用");
+        const tempPath = `${target.targetPath}.prices.json`;
+        await updateRunCommand(client, priceSyncDownloadCommand(priceSyncUrl(), tempPath));
+        let text = "";
+        try {
+          text = updateDecodeBase64Text(await priceSyncReadBase64(client, tempPath));
+        } finally {
+          await updateRemoveFile(client, tempPath);
+        }
+        let snapshot = null;
+        try {
+          snapshot = priceUpstreamSnapshot(JSON.parse(text));
+        } catch {
+          throw new Error("上游价格表解析失败");
+        }
+        if (!snapshot) throw new Error("上游价格表无效");
+        DEFAULT_PRICES = snapshot.prices;
+        DEFAULT_PRICE_META = snapshot.meta;
+        state.priceSyncedAt = Date.now();
+        state.priceSyncError = "";
+        saveRemotePriceTable(snapshot);
+        await priceCacheSave(client, target.targetPath, snapshot);
         if (state.started) render();
         return true;
-      } catch {
+      } catch (error) {
+        state.priceSyncError = updateErrorMessage(error);
+        priceSyncScheduleRetry();
+        if (state.started) render();
         return false;
-      } finally {
-        window.clearTimeout(timeout);
-        if (state.priceRemoteAbortController === controller) state.priceRemoteAbortController = null;
       }
     })();
     state.priceRemoteRequest = request;
@@ -1237,6 +1494,24 @@ const VERSION = "0.7.10-beta1";
       if (state.priceRemoteRequest === request) state.priceRemoteRequest = null;
     });
     return request;
+  }
+
+  function priceSyncTimeLabel(timestamp) {
+    const date = new Date(timestamp);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function priceSyncStatus() {
+    if (state.priceRemoteRequest) return { tone: "busy", text: "正在同步上游价格…" };
+    if (state.priceSyncError) {
+      const cachedAt = state.priceSyncedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+      const cachedNote = cachedAt ? `（沿用 ${priceSyncTimeLabel(cachedAt)} 的缓存）` : "";
+      return { tone: "warn", text: `上游价格同步失败：${state.priceSyncError}${cachedNote}`, retry: true };
+    }
+    const syncedAt = state.priceSyncedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+    if (!syncedAt) return { tone: "idle", text: "上游价格尚未同步" };
+    return { tone: "ok", text: `上游价格（${PRICE_SYNC_SOURCE_LABEL}）· 同步于 ${priceSyncTimeLabel(syncedAt)}` };
   }
 
   function hubVisible() {
@@ -2387,14 +2662,72 @@ const VERSION = "0.7.10-beta1";
     return { ...visibleDefaultPrices(), ...visibleOverrides };
   }
 
+  function priceModelMeta(model) {
+    const name = normalizeText(model, 120);
+    if (!name) return null;
+    const key = Object.keys(DEFAULT_PRICE_META).find((item) => item.toLowerCase() === name.toLowerCase());
+    return key ? DEFAULT_PRICE_META[key] : null;
+  }
+
+  // 用户是否用过这些模型：实时检测、最近一轮、本地账本与本地归档都算。
+  // 返回小写集合，供列表渲染时一次性复用（避免每个模型都重建归档汇总）。
+  function priceUsedModelSet(archiveTurns = null) {
+    ensureLocalLedgerLoaded();
+    const turns = Array.isArray(archiveTurns) ? archiveTurns : localUsageArchiveTurns();
+    const names = [state.detectedModel, state.localLast?.model, ...state.localLedger.map((turn) => turn?.model), ...turns.map((turn) => turn?.model)];
+    return new Set(names.map((name) => normalizeText(name, 120).toLowerCase()).filter(Boolean));
+  }
+
+  // 默认展示：gpt 的对话/推理模型（chat/responses）且未过期；其余模型（o 系列、
+  // 图像模型、非 openai 模型等）只有用户使用过后才出现在「模型价格」里。
+  // 「模型价格」只展示 gpt-5.4 及以上版本（含新版本；无版本号的旧系列不展示）。
+  function priceModelAtLeastMinVersion(model) {
+    const match = normalizeText(model, 120).match(/^gpt-(\d+)(?:\.(\d+))?/i);
+    if (!match) return false;
+    const major = Number(match[1]);
+    const minor = Number(match[2] || 0);
+    return major > 5 || (major === 5 && minor >= 4);
+  }
+
+  // 默认展示：gpt 官方定价页在售、版本 ≥ 5.4 的对话/推理模型；o 系列与
+  // 低版本/第三方模型不会因为「用过」而进入列表。
+  function priceModelShownByDefault(model, used = null) {
+    const name = normalizeText(model, 120);
+    if (!name || !/^gpt/i.test(name)) return false;
+    if (!priceModelAtLeastMinVersion(name)) return false;
+    if ((used || priceUsedModelSet()).has(name.toLowerCase())) return true;
+    if (!OFFICIAL_PRICE_MODELS.has(name.toLowerCase())) return false;
+    const meta = priceModelMeta(name);
+    if (!meta) return false;
+    if (!PRICE_DISPLAY_MODES.includes(meta.mode)) return false;
+    if (meta.deprecationDate) {
+      const deprecatedAt = Date.parse(meta.deprecationDate);
+      if (Number.isFinite(deprecatedAt) && deprecatedAt <= Date.now()) return false;
+    }
+    return true;
+  }
+
+  // 「用过的模型」只保留 gpt 5.4 及以上：中转/第三方模型与低版本不会进入价格列表。
+  function priceListableUsedNames(names) {
+    return (Array.isArray(names) ? names : []).filter((name) => /^gpt/i.test(normalizeText(name, 120)) && priceModelAtLeastMinVersion(name));
+  }
+
   function priceListModels(extraModel = "") {
     ensureLocalLedgerLoaded();
-    const names = [
-      ...Object.keys(visiblePrices()),
-      extraModel,
+    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const archiveTurns = localUsageArchiveTurns();
+    const used = priceUsedModelSet(archiveTurns);
+    const usedNames = priceListableUsedNames([
       state.detectedModel,
       state.localLast?.model,
       ...state.localLedger.map((turn) => turn?.model),
+      ...archiveTurns.map((turn) => turn?.model),
+    ]);
+    const names = [
+      ...Object.keys(DEFAULT_PRICES).filter((name) => priceModelShownByDefault(name, used)),
+      ...Object.keys(overrides),
+      extraModel,
+      ...usedNames,
     ];
     return Array.from(new Set(names.map((name) => normalizeText(name, 120)).filter((name) => name && name !== UNKNOWN_MODEL && !priceModelHidden(name)))).sort(
       (a, b) => a.localeCompare(b),
@@ -3964,6 +4297,491 @@ const VERSION = "0.7.10-beta1";
     const base = normalizeText(dir, 600).replace(/[\\/]+$/, "");
     const child = normalizeText(name, 260).replace(/^[\\/]+/, "");
     return base && child ? `${base}\\${child}` : base || child;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 脚本自更新：启动时静默检测 GitHub 上的新版本；仅在检测到新版本后，于设置页
+  // 标题旁显示「一键更新」入口。页面 fetch 被 CSP 拦截，因此下载走 app-server
+  // command/exec 执行本机 curl，安装走 fs/writeFile（跨平台统一，无需 move/cmd），
+  // 写回校验通过后覆盖本地脚本文件并就地重载（destroy + eval）立即生效。
+  // ---------------------------------------------------------------------------
+
+  function updateParseVersion(text) {
+    const match = /^\/\/\s*@version[ \t]+(\S+)[ \t]*$/m.exec(String(text || ""));
+    return normalizeText(match?.[1], 40);
+  }
+
+  function updateVersionParts(value) {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(normalizeText(value, 60));
+    if (!match) return null;
+    return {
+      numbers: [Number(match[1]), Number(match[2]), Number(match[3])],
+      prerelease: match[4] ? match[4].split(".") : [],
+    };
+  }
+
+  function compareUpdateVersions(left, right) {
+    const a = updateVersionParts(left);
+    const b = updateVersionParts(right);
+    if (!a || !b) return 0;
+    for (let index = 0; index < 3; index += 1) {
+      if (a.numbers[index] !== b.numbers[index]) return a.numbers[index] < b.numbers[index] ? -1 : 1;
+    }
+    if (!a.prerelease.length && !b.prerelease.length) return 0;
+    if (!a.prerelease.length) return 1;
+    if (!b.prerelease.length) return -1;
+    const length = Math.max(a.prerelease.length, b.prerelease.length);
+    for (let index = 0; index < length; index += 1) {
+      const leftId = a.prerelease[index];
+      const rightId = b.prerelease[index];
+      if (leftId === undefined) return -1;
+      if (rightId === undefined) return 1;
+      if (leftId === rightId) continue;
+      const leftNumeric = /^\d+$/.test(leftId);
+      const rightNumeric = /^\d+$/.test(rightId);
+      if (leftNumeric && rightNumeric) return Number(leftId) < Number(rightId) ? -1 : 1;
+      if (leftNumeric) return -1;
+      if (rightNumeric) return 1;
+      const leftSuffix = /^([A-Za-z-]+)(\d+)$/.exec(leftId);
+      const rightSuffix = /^([A-Za-z-]+)(\d+)$/.exec(rightId);
+      if (leftSuffix && rightSuffix && leftSuffix[1] === rightSuffix[1]) {
+        const leftNumber = Number(leftSuffix[2]);
+        const rightNumber = Number(rightSuffix[2]);
+        if (leftNumber !== rightNumber) return leftNumber < rightNumber ? -1 : 1;
+        continue;
+      }
+      return leftId < rightId ? -1 : 1;
+    }
+    return 0;
+  }
+
+  function updateCommandPathJoin(dir, name) {
+    const base = normalizeText(dir, 600).replace(/[\\/]+$/, "");
+    const child = normalizeText(name, 260).replace(/^[\\/]+/, "");
+    if (!base) return child;
+    if (!child) return base;
+    const separator = /^[A-Za-z]:/.test(base) || base.includes("\\") ? "\\" : "/";
+    return `${base}${separator}${child}`;
+  }
+
+  function updateDownloadCommand(url, outPath) {
+    return [
+      "curl",
+      "-sS",
+      "-L",
+      "--fail",
+      "--connect-timeout", "10",
+      "--max-time", "60",
+      "--retry", "2",
+      "--retry-delay", "1",
+      "-o", outPath,
+      url,
+    ];
+  }
+
+  function updateCheckCommand(url, outPath) {
+    return [
+      "curl",
+      "-sS",
+      "-L",
+      "--fail",
+      "--connect-timeout", "5",
+      "--max-time", "20",
+      "--retry", "2",
+      "--retry-delay", "1",
+      "-r", `0-${UPDATE_CHECK_RANGE_BYTES}`,
+      "-o", outPath,
+      url,
+    ];
+  }
+
+  function updateYieldPaint() {
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(done);
+      // 窗口隐藏/最小化时 rAF 会被挂起：必须有计时器兜底，避免更新流程永久卡在“检查更新中…”。
+      window.setTimeout(done, 50);
+    });
+  }
+
+  function updateDecodeBase64Text(value) {
+    const binary = window.atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  function updateCacheBustUrl() {
+    return `${UPDATE_REMOTE_URL}?cltc_update=${Date.now()}`;
+  }
+
+  function updateSourceLooksValid(text, version) {
+    if (typeof text !== "string" || text.length < UPDATE_MIN_SOURCE_LENGTH) return false;
+    if (!/^\/\/\s*==UserScript==/.test(text)) return false;
+    if (!/\/\/\s*@name\s+Codex Live Token Cost/.test(text)) return false;
+    if (!text.includes("__codexLiveTokenCostVersion")) return false;
+    if (updateParseVersion(text) !== version) return false;
+    if (!text.trimEnd().endsWith("})();")) return false;
+    return true;
+  }
+
+  function updateErrorMessage(error) {
+    const raw = error && typeof error === "object" && "message" in error ? error.message : error;
+    return normalizeText(String(raw ?? ""), 300) || "未知错误";
+  }
+
+  async function updateResolveTarget() {
+    if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) {
+      throw new Error("Codex++ 通道不可用");
+    }
+    const key = codexPlusScriptKey();
+    const result = await window.codexPlus.call("/user-scripts/list", {});
+    const userDir = normalizeText(result?.user_dir, 600);
+    if (!userDir) throw new Error("无法解析用户脚本目录");
+    const scripts = Array.isArray(result?.scripts) ? result.scripts : [];
+    const entry = scripts.find((item) => normalizeText(item?.key, 200) === key)
+      || scripts.find((item) => normalizeText(item?.name, 260).endsWith("market-codex-live-token-cost.js"));
+    const name = normalizeText(entry?.name, 260) || "market-codex-live-token-cost.js";
+    const targetPath = updateCommandPathJoin(userDir, name);
+    return { userDir, name, targetPath, downloadPath: `${targetPath}.download` };
+  }
+
+  function updateClientOptions() {
+    return { priority: "background", source: "codex-token-cost-update" };
+  }
+
+  async function updateRunCommand(client, command) {
+    let timer = 0;
+    const timeout = new Promise((resolve, reject) => {
+      timer = window.setTimeout(() => reject(new Error("命令执行超时")), UPDATE_COMMAND_TIMEOUT_MS);
+    });
+    let result = null;
+    try {
+      result = await Promise.race([
+        client.sendRequest("command/exec", { command }, updateClientOptions()),
+        timeout,
+      ]);
+    } finally {
+      window.clearTimeout(timer);
+    }
+    const exitCode = Number(result?.exitCode);
+    if (!result || !Number.isFinite(exitCode) || exitCode !== 0) {
+      const detail = normalizeText(result?.stderr, 200) || normalizeText(result?.stdout, 200) || "命令执行失败";
+      throw new Error(`命令失败（退出码 ${Number.isFinite(exitCode) ? exitCode : "?"}）：${detail}`);
+    }
+    return result;
+  }
+
+  async function updateReadBase64(client, path) {
+    const result = await client.sendRequest("fs/readFile", { path }, updateClientOptions());
+    const dataBase64 = typeof result?.dataBase64 === "string" ? result.dataBase64 : "";
+    if (!dataBase64) throw new Error("读取远端脚本失败");
+    return dataBase64;
+  }
+
+  async function updateWriteBase64(client, path, dataBase64) {
+    await client.sendRequest("fs/writeFile", { path, dataBase64 }, updateClientOptions());
+  }
+
+  async function updateRemoveFile(client, path) {
+    try {
+      await client.sendRequest("fs/remove", { path }, updateClientOptions());
+    } catch {
+      // 清理下载临时文件失败不影响更新结果。
+    }
+  }
+
+  function updateClearStatusTimer() {
+    if (!state.updateStatusTimer) return;
+    window.clearTimeout(state.updateStatusTimer);
+    state.updateStatusTimer = 0;
+  }
+
+  function updateScheduleStatusReset() {
+    updateClearStatusTimer();
+    state.updateStatusTimer = trackTimer(window.setTimeout(() => {
+      state.updateStatusTimer = 0;
+      if (state.destroyed || state.updateBusy) return;
+      if (state.updatePhase === "uptodate") {
+        state.updatePhase = "";
+        renderUpdateCluster();
+      }
+    }, UPDATE_STATUS_RESET_MS));
+  }
+
+  function updateScheduleAutoCheck() {
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (state.updateAutoCheckTimer || state.destroyed) return;
+    state.updateAutoCheckTimer = trackTimer(window.setTimeout(() => {
+      state.updateAutoCheckTimer = 0;
+      if (state.destroyed) return;
+      void checkForUpdateNow({ auto: true });
+    }, UPDATE_AUTO_CHECK_DELAY_MS));
+  }
+
+  async function checkForUpdateNow(options = {}) {
+    const auto = options.auto === true;
+    if (state.destroyed || state.updateBusy) return false;
+    if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) {
+      state.updateError = "Codex++ 通道不可用";
+      state.updateErrorKind = "check";
+      if (!auto) {
+        state.updatePhase = "error";
+        renderUpdateCluster();
+      }
+      return false;
+    }
+    state.updateBusy = true;
+    state.updateError = "";
+    state.updateErrorKind = "";
+    if (state.updatePhase !== "available") state.updatePhase = "checking";
+    updateClearStatusTimer();
+    renderUpdateCluster();
+    await updateYieldPaint();
+    try {
+      const target = await updateResolveTarget();
+      const client = appServerSyncClient();
+      if (!client) throw new Error("未找到本地文件通道");
+      await updateRunCommand(client, updateCheckCommand(updateCacheBustUrl(), target.downloadPath));
+      if (state.destroyed) return false;
+      const text = await updateReadBase64(client, target.downloadPath).then(updateDecodeBase64Text);
+      if (state.destroyed) return false;
+      const remoteVersion = updateParseVersion(text);
+      if (!remoteVersion) throw new Error("远端脚本缺少版本信息");
+      await updateRemoveFile(client, target.downloadPath);
+      state.updateRemoteVersion = remoteVersion;
+      if (compareUpdateVersions(remoteVersion, VERSION) > 0) {
+        state.updatePhase = "available";
+      } else {
+        state.updateRemoteVersion = "";
+        state.updatePhase = auto ? "" : "uptodate";
+        if (!auto) updateScheduleStatusReset();
+      }
+      return true;
+    } catch (error) {
+      state.updateRemoteVersion = "";
+      state.updateError = updateErrorMessage(error);
+      if (auto) {
+        state.updatePhase = "";
+      } else {
+        state.updatePhase = "error";
+        state.updateErrorKind = "check";
+      }
+      return false;
+    } finally {
+      state.updateBusy = false;
+      if (!state.destroyed) renderUpdateCluster();
+    }
+  }
+
+  async function runScriptUpdate() {
+    if (state.destroyed || state.updateBusy) return false;
+    const retrying = state.updatePhase === "error" && state.updateErrorKind === "update";
+    if (state.updatePhase !== "available" && !retrying) return false;
+    state.updateBusy = true;
+    state.updateError = "";
+    state.updateErrorKind = "";
+    state.updatePhase = "updating";
+    updateClearStatusTimer();
+    renderUpdateCluster();
+    await updateYieldPaint();
+    try {
+      const target = await updateResolveTarget();
+      const client = appServerSyncClient();
+      if (!client) throw new Error("未找到本地文件通道");
+      await updateRunCommand(client, updateDownloadCommand(updateCacheBustUrl(), target.downloadPath));
+      if (state.destroyed) return false;
+      const dataBase64 = await updateReadBase64(client, target.downloadPath);
+      const text = updateDecodeBase64Text(dataBase64);
+      const remoteVersion = updateParseVersion(text);
+      if (!remoteVersion || compareUpdateVersions(remoteVersion, VERSION) <= 0) throw new Error("远端版本无效或没有变化");
+      if (!updateSourceLooksValid(text, remoteVersion)) throw new Error("下载内容校验未通过");
+      state.updateRemoteVersion = remoteVersion;
+      state.updatePhase = "applying";
+      renderUpdateCluster();
+      await updateYieldPaint();
+      await updateWriteBase64(client, target.targetPath, dataBase64);
+      if (state.destroyed) return false;
+      const verifyBase64 = await updateReadBase64(client, target.targetPath);
+      if (verifyBase64 !== dataBase64) throw new Error("脚本文件写回校验失败");
+      await updateRemoveFile(client, target.downloadPath);
+      applyUpdatedScript(text, remoteVersion);
+      return true;
+    } catch (error) {
+      if (!state.destroyed) {
+        state.updatePhase = "error";
+        state.updateErrorKind = "update";
+        state.updateError = updateErrorMessage(error);
+        renderUpdateCluster();
+      }
+      return false;
+    } finally {
+      state.updateBusy = false;
+      if (!state.destroyed) renderUpdateCluster();
+    }
+  }
+
+  function applyUpdatedScript(sourceText, remoteVersion) {
+    const registryKey = codexPlusScriptKey();
+    const registry = window.__codexPlusUserScripts;
+    const trace = {
+      at: new Date().toISOString(),
+      remoteVersion,
+      versionBefore: window.__codexLiveTokenCostVersion ?? null,
+      destroyError: "",
+      versionAfterDestroy: null,
+      evalError: "",
+      evalStack: "",
+      applied: false,
+      versionAfterEval: null,
+    };
+    window.__codexLiveTokenCostLastApply = trace;
+    try {
+      destroy();
+    } catch (error) {
+      trace.destroyError = updateErrorMessage(error);
+      reportFailure(error);
+    }
+    trace.versionAfterDestroy = window.__codexLiveTokenCostVersion ?? null;
+    let applied = false;
+    try {
+      (0, eval)(sourceText);
+      applied = window.__codexLiveTokenCostVersion === remoteVersion;
+    } catch (error) {
+      trace.evalError = updateErrorMessage(error);
+      trace.evalStack = String(error?.stack || "").slice(0, 600);
+      reportFailure(error);
+    }
+    trace.applied = applied;
+    trace.versionAfterEval = window.__codexLiveTokenCostVersion ?? null;
+    window.setTimeout(() => {
+      trace.versionAfter3s = window.__codexLiveTokenCostVersion ?? null;
+      trace.instanceAfter3s = typeof window.__codexLiveTokenCost;
+      trace.railAfter3s = !!Array.from(document.querySelectorAll?.("nav[data-app-navigation-rail] button[aria-label]") || [])
+        .find((node) => (node.getAttribute?.("aria-label") || "") === "Codex Token Cost");
+      trace.styleAfter3s = !!document.getElementById(STYLE_ID);
+    }, 3000);
+    if (!applied) {
+      window.codexPlus?.toast?.(`脚本文件已更新到 v${remoteVersion}，重启 Codex 后生效`, { type: "warn" });
+      return false;
+    }
+    try {
+      const entry = registry?.scripts?.[registryKey];
+      if (entry && typeof entry === "object") {
+        const destroyNext = window.__codexLiveTokenCost?.destroy;
+        if (typeof destroyNext === "function") entry.cleanups = [destroyNext];
+        entry.loadedAt = new Date().toISOString();
+        entry.status = "loaded";
+        entry.error = "";
+      }
+    } catch {
+      // 注册表 best-effort 修正失败不影响新实例运行。
+    }
+    window.codexPlus?.toast?.(`Codex Token Cost 已更新到 v${remoteVersion}`, { type: "success" });
+    reopenEmbeddedSettingsSoon();
+    return true;
+  }
+
+  function reopenEmbeddedSettingsSoon() {
+    const deadline = Date.now() + 6000;
+    const attempt = () => {
+      const button = Array.from(document.querySelectorAll?.('nav[data-app-navigation-rail] button[aria-label]') || [])
+        .find((node) => (node.getAttribute?.('aria-label') || '') === 'Codex Token Cost');
+      if (button?.isConnected) {
+        button.click?.();
+        return;
+      }
+      if (Date.now() < deadline) window.setTimeout(attempt, 250);
+    };
+    window.setTimeout(attempt, 300);
+  }
+
+  const GITHUB_ICON_SVG =
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
+    '<path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path>' +
+    "</svg>";
+
+  function updateGithubButtonHtml() {
+    return `<button type="button" class="cltc-update-github" data-action="open-repo" title="在 GitHub 上 Star 支持本项目" aria-label="打开 GitHub 项目仓库">${GITHUB_ICON_SVG}</button>`;
+  }
+
+  function updateClusterHtml() {
+    const versionText = `v${VERSION}`;
+    const versionSpan = `<span class="cltc-update-version">${escapeHtml(versionText)}</span>`;
+    let body;
+    if (state.updateBusy) {
+      const note = state.updatePhase === "applying"
+        ? `正在应用 v${escapeHtml(state.updateRemoteVersion)}…`
+        : state.updatePhase === "updating" || state.updatePhase === "available"
+          ? "正在更新…"
+          : "检查更新中…";
+      body = versionSpan + `<span class="cltc-update-note">${note}</span>`;
+    } else if (state.updatePhase === "available") {
+      body = versionSpan + `<button type="button" class="cltc-update-action" data-action="update-script" title="从 GitHub 下载新版本并立即生效">一键更新 v${escapeHtml(state.updateRemoteVersion)}</button>`;
+    } else if (state.updatePhase === "error") {
+      const isUpdate = state.updateErrorKind === "update";
+      const label = isUpdate ? "更新失败，点击重试" : "检查更新失败，点击重试";
+      const action = isUpdate ? "update-script" : "check-update";
+      body = versionSpan + `<button type="button" class="cltc-update-action" data-action="${action}" data-tone="warn" title="${escapeHtml(state.updateError || "未知错误")}">${label}</button>`;
+    } else if (state.updatePhase === "uptodate") {
+      body = versionSpan + `<span class="cltc-update-note">已是最新</span>`;
+    } else {
+      const title = state.updateError
+        ? `上次检查更新失败：${escapeHtml(state.updateError)}（点击重试）`
+        : "点击检查更新";
+      body = `<button type="button" class="cltc-update-version" data-action="check-update" title="${title}">${escapeHtml(versionText)}</button>`;
+    }
+    return body + updateGithubButtonHtml();
+  }
+
+  function ensureUpdateCluster() {
+    const container = state.embeddedPageContainer;
+    if (!container || typeof container.closest !== "function") return null;
+    const modal = container.closest(".codex-plus-modal-content") || container.closest(".codex-plus-page-overlay");
+    if (!modal || typeof modal.querySelector !== "function") return null;
+    const title = modal.querySelector(".codex-plus-modal-title");
+    if (!title || typeof title.appendChild !== "function") return null;
+    let cluster = state.updateClusterEl;
+    if (cluster && typeof cluster.isConnected === "boolean" && !cluster.isConnected) cluster = null;
+    if (cluster && cluster.parentElement && cluster.parentElement !== title) cluster = null;
+    if (!cluster) {
+      const leftover = typeof title.querySelector === "function" ? title.querySelector(".cltc-update-cluster") : null;
+      if (leftover) leftover.remove?.();
+      cluster = document.createElement("span");
+      cluster.className = "cltc-update-cluster";
+      cluster.setAttribute("data-phase", "idle");
+      cluster.addEventListener?.("click", handleUpdateClusterClick);
+      title.appendChild(cluster);
+      state.updateClusterEl = cluster;
+    }
+    return cluster;
+  }
+
+  function renderUpdateCluster() {
+    const cluster = ensureUpdateCluster();
+    if (!cluster) return;
+    const html = updateClusterHtml();
+    if (cluster.innerHTML !== html) cluster.innerHTML = html;
+    cluster.setAttribute("data-phase", state.updateBusy ? "busy" : state.updatePhase || "idle");
+  }
+
+  function handleUpdateClusterClick(event) {
+    const actionNode = event?.target?.closest?.("button[data-action]");
+    if (!actionNode || state.destroyed) return;
+    const action = actionNode.getAttribute?.("data-action") || "";
+    if (action === "open-repo") {
+      window.open(UPDATE_REPO_URL, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (state.updateBusy) return;
+    if (action === "update-script") void runScriptUpdate();
+    else if (action === "check-update") void checkForUpdateNow({ auto: false });
   }
 
   function usageSyncRootFromRolloutPath(value) {
@@ -6335,14 +7153,23 @@ const VERSION = "0.7.10-beta1";
     const buckets = analyticsChartBuckets(turns, range, metric);
     const width = 720;
     const height = 230;
-    const inset = { top: 36, right: 10, bottom: 34, left: 10 };
+    const inset = { top: 36, right: 10, bottom: 34, left: 44 };
     const chartHeight = height - inset.top - inset.bottom;
     const max = Math.max(1, ...buckets.map((item) => item.value));
     const gap = buckets.length > 60 ? 1 : buckets.length > 30 ? 2 : 4;
-    const stagger = buckets.length > 60 ? 18 : buckets.length > 30 ? 24 : 32;
+    const stagger = buckets.length > 60 ? 12 : buckets.length > 30 ? 16 : 20;
     const barWidth = Math.max(2, (width - inset.left - inset.right - gap * Math.max(0, buckets.length - 1)) / Math.max(1, buckets.length));
     const labelEvery = Math.max(1, Math.ceil(buckets.length / 7));
     const hasData = buckets.some((item) => item.value > 0);
+    const grid = hasData
+      ? [0, 0.5, 1]
+          .map((ratio) => {
+            const y = inset.top + chartHeight - ratio * chartHeight;
+            const display = metric === "cost" ? fmtMoney(max * ratio) : fmtCount(max * ratio);
+            return `<line x1="${inset.left}" y1="${y}" x2="${width - inset.right}" y2="${y}"></line><text x="${inset.left - 6}" y="${y - 4}" text-anchor="end">${escapeHtml(display)}</text>`;
+          })
+          .join("")
+      : "";
     const bars = buckets
       .map((item, index) => {
         const barHeight = item.value ? Math.max(2, (item.value / max) * chartHeight) : 1;
@@ -6365,7 +7192,7 @@ const VERSION = "0.7.10-beta1";
       })
       .join("");
     const empty = hasData ? "" : `<text class="cltc-analytics-chart-empty" x="${width / 2}" y="${inset.top + chartHeight / 2}" text-anchor="middle" dominant-baseline="middle">暂无数据</text>`;
-    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}${bars}</svg>`;
+    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}<g class="cltc-analytics-grid" aria-hidden="true">${grid}</g>${bars}</svg>`;
   }
 
   function usageAnalyticsHtml(options = {}) {
@@ -6392,11 +7219,18 @@ const VERSION = "0.7.10-beta1";
     const current = aggregateUsageAnalytics(filtered, range);
     const previous = aggregateUsageAnalytics(filtered, previousRange);
     const metric = options.metric === "cost" || state.analyticsMetric === "cost" ? "cost" : "tokens";
-    const metricRow = (label, value, comparison, incomplete = false) => `
+    const comparisonTone = (key, currentValue, previousValue) => {
+      if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue) || previousValue === 0 || currentValue === previousValue) return "neutral";
+      const up = currentValue > previousValue;
+      if (key === "cost") return up ? "bad" : "good";
+      if (key === "cache") return up ? "good" : "bad";
+      return "neutral";
+    };
+    const metricRow = (label, value, comparison, incomplete = false, tone = "neutral") => `
       <div class="cltc-analytics-metric">
         <span>${label}</span>
         <strong>${value}</strong>
-        <small>${analyticsComparisonText(comparison.current, comparison.previous, { disabled: incomplete })}</small>
+        <small data-tone="${tone}">${analyticsComparisonText(comparison.current, comparison.previous, { disabled: incomplete })}</small>
       </div>`;
     const composition = [
       ["常规输入", current.regularInput, "neutral", true],
@@ -6414,7 +7248,7 @@ const VERSION = "0.7.10-beta1";
           <span>${fmtCount(item.tokens)}</span>
           <span>${fmtCount(item.calls)}</span>
           <span>${item.priced ? fmtMoney(item.cost) : `${fmtMoney(item.cost)} · 部分`}</span>
-          <span>${Math.round(item.share)}%</span>
+          <span class="cltc-analytics-share" style="--cltc-share:${Math.max(0, Math.min(100, Math.round(item.share)))}%">${Math.round(item.share)}%</span>
         </button>`,
       )
       .join("");
@@ -6442,31 +7276,33 @@ const VERSION = "0.7.10-beta1";
           </div>
         </div>
         <div class="cltc-analytics-metrics">
-          ${metricRow("总 Token", fmtCount(current.totalTokens), { current: current.totalTokens, previous: previous.totalTokens })}
-          ${metricRow("总花费", current.priced ? fmtMoney(current.cost) : `${fmtMoney(current.cost)} · 部分统计`, { current: current.cost, previous: previous.cost }, !current.priced || !previous.priced)}
-          ${metricRow("模型调用", fmtCount(current.calls), { current: current.calls, previous: previous.calls })}
-          ${metricRow("缓存命中率", current.cacheHitRate == null ? "—" : `${current.cacheHitRate}%`, { current: current.cacheHitRate, previous: previous.cacheHitRate })}
+          ${metricRow("总 Token", fmtCount(current.totalTokens), { current: current.totalTokens, previous: previous.totalTokens }, false, comparisonTone("tokens", current.totalTokens, previous.totalTokens))}
+          ${metricRow("总花费", fmtMoney(current.cost), { current: current.cost, previous: previous.cost }, !current.priced || !previous.priced, comparisonTone("cost", current.cost, previous.cost))}
+          ${metricRow("模型调用", fmtCount(current.calls), { current: current.calls, previous: previous.calls }, false, comparisonTone("calls", current.calls, previous.calls))}
+          ${metricRow("缓存命中率", current.cacheHitRate == null ? "—" : `${current.cacheHitRate}%`, { current: current.cacheHitRate, previous: previous.cacheHitRate }, current.cacheHitRate == null, comparisonTone("cache", current.cacheHitRate, previous.cacheHitRate))}
         </div>
-        <div class="cltc-analytics-section">
-          <div class="cltc-analytics-section-head">
-            <div><h3>趋势</h3><p>${preset === "today" ? "按小时" : Math.ceil((range.endMs - range.startMs) / 86_400_000) + 1 > 90 ? "按周" : "按日"}</p></div>
-            <div class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="${metric === "cost" ? 1 : 0}" role="group" aria-label="趋势指标">
-              <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}" aria-pressed="${String(metric === "tokens")}">Token</button>
-              <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}" aria-pressed="${String(metric === "cost")}">花费</button>
+        <div class="cltc-analytics-split">
+          <div class="cltc-analytics-section">
+            <div class="cltc-analytics-section-head">
+              <div><h3>趋势</h3><p>${preset === "today" ? "按小时" : Math.ceil((range.endMs - range.startMs) / 86_400_000) + 1 > 90 ? "按周" : "按日"}</p></div>
+              <div class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="${metric === "cost" ? 1 : 0}" role="group" aria-label="趋势指标">
+                <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}" aria-pressed="${String(metric === "tokens")}">Token</button>
+                <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}" aria-pressed="${String(metric === "cost")}">花费</button>
+              </div>
             </div>
+            ${analyticsChartSvg(filtered, range, metric)}
           </div>
-          ${analyticsChartSvg(filtered, range, metric)}
-        </div>
-        <div class="cltc-analytics-section">
-          <div class="cltc-analytics-section-head"><div><h3>Token 构成</h3><p>输入构成互斥计算</p></div><strong>${fmtCount(compositionTotal)}</strong></div>
-          <div class="cltc-composition-bar" aria-label="Token 构成">
-            ${composition
-              .filter((item) => item[3])
-              .map(([label, value, tone]) => `<span data-tone="${tone}" style="flex-grow:${value}" title="${label} · ${fmtCount(value)}"></span>`)
-              .join("")}
-          </div>
-          <div class="cltc-composition-legend">
-            ${composition.map(([label, value, tone, available]) => `<span><i data-tone="${tone}"></i>${label}<strong>${available ? fmtCount(value) : "未提供"}</strong></span>`).join("")}
+          <div class="cltc-analytics-section">
+            <div class="cltc-analytics-section-head"><div><h3>Token 构成</h3><p>输入构成互斥计算</p></div><strong>${fmtCount(compositionTotal)}</strong></div>
+            <div class="cltc-composition-bar" aria-label="Token 构成">
+              ${composition
+                .filter((item) => item[3])
+                .map(([label, value, tone]) => `<span data-tone="${tone}" style="flex-grow:${value}" title="${label} · ${fmtCount(value)}"></span>`)
+                .join("")}
+            </div>
+            <div class="cltc-composition-legend">
+              ${composition.map(([label, value, tone, available]) => `<span><i data-tone="${tone}"></i>${label}<strong>${available ? `${fmtCount(value)} · ${compositionTotal ? Math.round((value / compositionTotal) * 100) : 0}%` : "未提供"}</strong></span>`).join("")}
+            </div>
           </div>
         </div>
         <div class="cltc-analytics-section">
@@ -7923,7 +8759,6 @@ const VERSION = "0.7.10-beta1";
       }
     } else {
       uninstallOfficialProfileUnlock();
-      if (state.settingsPanel === "profile") state.settingsPanel = "general";
     }
     return enabled;
   }
@@ -7949,16 +8784,34 @@ const VERSION = "0.7.10-beta1";
   }
 
   function renderEmbeddedSettingsPage(container, options = {}) {
+    if (options.panel && ["profile", "general", "usage", "pricing"].includes(options.panel)) state.settingsPanel = options.panel;
     state.priceEditorOpen = true;
     state.embeddedPageContainer = container;
     container.classList.add("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings");
+    renderUpdateCluster();
     if (state.analyticsCalendar?.isOpen) return;
+    const firstRender = !container.innerHTML;
     const html = pricePopoverHtml(liveSnapshot());
     if (state.embeddedHtmlSignature === html && container.innerHTML) {
       return;
     }
     state.embeddedHtmlSignature = html;
     container.innerHTML = html;
+    applyPriceFilter(container);
+    const content = typeof container.querySelector === "function" ? container.querySelector(".cltc-settings-content") : null;
+    if (content && options.panelSwitch === true) content.scrollTop = 0;
+    if (state.settingsPanelEnterTimer) window.clearTimeout(state.settingsPanelEnterTimer);
+    state.settingsPanelEnterTimer = 0;
+    container.removeAttribute?.("data-cltc-nav-enter");
+    if (content && (firstRender || options.panelSwitch === true) && !prefersReducedMotion()) {
+      content.dataset.cltcPanelEnter = "true";
+      container.dataset.cltcNavEnter = "true";
+      state.settingsPanelEnterTimer = window.setTimeout(() => {
+        state.settingsPanelEnterTimer = 0;
+        content.removeAttribute("data-cltc-panel-enter");
+        container.removeAttribute?.("data-cltc-nav-enter");
+      }, 380);
+    }
     animateAnalyticsSegments(container, options);
     for (const button of Array.from(container.querySelectorAll?.(".cltc-settings-nav [data-settings-panel]") || [])) {
       button.addEventListener("pointerdown", handleSettingsNavPointerDown);
@@ -7969,6 +8822,7 @@ const VERSION = "0.7.10-beta1";
     if (container.dataset.cltcEmbeddedBound !== "true") {
       container.dataset.cltcEmbeddedBound = "true";
       container.addEventListener("click", handleSettingsClick, true);
+      container.addEventListener("input", handleSettingsInput, true);
       container.addEventListener("pointerdown", handleEmbeddedControlPointerDown, true);
       container.addEventListener("change", handleSettingsChange, true);
       container.addEventListener("keydown", handleSettingsKeydown, true);
@@ -8017,7 +8871,7 @@ const VERSION = "0.7.10-beta1";
   function selectSettingsPanel(panel) {
     if (!["profile", "general", "usage", "pricing"].includes(panel)) return false;
     state.settingsPanel = panel;
-    renderSettingsOverlay(liveSnapshot(), { animate: true });
+    renderSettingsOverlay(liveSnapshot(), { animate: true, panelSwitch: true });
     return true;
   }
 
@@ -8592,15 +9446,6 @@ const VERSION = "0.7.10-beta1";
         padding: 18px 10px;
         background: var(--cltc-sidebar-surface);
       }
-      .cltc-settings .cltc-settings-footer {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px 10px 0;
-        color: var(--cltc-muted);
-        font-size: 11px;
-      }
       .cltc-settings .cltc-settings-nav {
         display: grid;
         gap: 2px;
@@ -8787,6 +9632,32 @@ const VERSION = "0.7.10-beta1";
         color: var(--cltc-muted);
         font-size: 12px;
         line-height: 17px;
+      }
+      .cltc-settings .cltc-price-sync {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+        color: var(--cltc-muted);
+        font-size: 12px;
+        line-height: 17px;
+      }
+      .cltc-settings .cltc-price-sync[data-tone="warn"] {
+        color: var(--cltc-danger);
+      }
+      .cltc-settings .cltc-price-sync button {
+        min-height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: 6px;
+        background: transparent;
+        color: inherit;
+        font-size: 11px;
+        line-height: 20px;
+        cursor: pointer;
+      }
+      .cltc-settings .cltc-price-sync button:hover {
+        border-color: var(--cltc-danger);
       }
       .cltc-settings .cltc-price-editor {
         display: grid;
@@ -9305,7 +10176,7 @@ const VERSION = "0.7.10-beta1";
         outline: none !important;
         transform-box: fill-box;
         transform-origin: center bottom;
-        animation: cltc-analytics-bar-grow 720ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;
+        animation: cltc-analytics-bar-grow 520ms cubic-bezier(.16, 1, .3, 1) var(--cltc-chart-bar-delay, 0ms) both;
         transition: opacity var(--cltc-duration-tooltip) var(--cltc-ease-out);
       }
       @keyframes cltc-analytics-bar-grow {
@@ -9508,9 +10379,6 @@ const VERSION = "0.7.10-beta1";
           border-bottom: 1px solid var(--cltc-border-subtle);
           overflow-x: auto;
         }
-        .cltc-settings .cltc-settings-footer {
-          display: none;
-        }
         .cltc-settings .cltc-settings-nav {
           display: flex;
           min-width: max-content;
@@ -9640,6 +10508,824 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings-overlay.cltc-settings-embedded .cltc-price-head {
         display: none;
       }
+      .cltc-update-cluster {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: 10px;
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.4;
+        white-space: nowrap;
+        color: var(--color-token-text-tertiary, rgba(128, 132, 140, 0.9));
+      }
+      .cltc-update-cluster button {
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+      }
+      .cltc-update-cluster button:hover {
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .cltc-update-cluster button:focus-visible {
+        outline: 2px solid var(--color-token-focus-border, #3a83f7);
+        outline-offset: 2px;
+        border-radius: 3px;
+      }
+      .cltc-update-cluster .cltc-update-action {
+        color: var(--color-token-text-primary, inherit);
+        font-weight: 600;
+      }
+      .cltc-update-cluster .cltc-update-action[data-tone="warn"] {
+        color: #e5484d;
+      }
+      .cltc-update-cluster .cltc-update-version {
+        position: relative;
+      }
+      .cltc-update-cluster[data-phase="available"] .cltc-update-version::after {
+        content: "";
+        position: absolute;
+        top: -2px;
+        right: -6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: #e5484d;
+        pointer-events: none;
+      }
+      .cltc-update-cluster .cltc-update-github {
+        display: inline-flex;
+        align-items: center;
+        color: inherit;
+        opacity: 0.72;
+      }
+      .cltc-update-cluster .cltc-update-github:hover {
+        color: var(--color-token-text-primary, inherit);
+        opacity: 1;
+        text-decoration: none;
+      }
+      .cltc-update-cluster .cltc-update-github svg {
+        display: block;
+      }
+
+      /* ===== Settings refresh: shell, groups, data surfaces ===== */
+      .cltc-settings-overlay,
+      .cltc-settings {
+        --cltc-hover: color-mix(in srgb, var(--cltc-text) 4%, transparent);
+        --cltc-active: color-mix(in srgb, var(--cltc-text) 8%, transparent);
+        --cltc-success-soft: color-mix(in srgb, var(--cltc-success) 12%, transparent);
+        --cltc-warning-soft: color-mix(in srgb, var(--cltc-warning) 12%, transparent);
+        --cltc-danger-soft: color-mix(in srgb, var(--cltc-danger) 10%, transparent);
+        --cltc-content-form: 860px;
+        --cltc-content-data: 860px;
+        --cltc-price-head-h: 34px;
+        --cltc-radius-group: 10px;
+      }
+      .cltc-settings-overlay.cltc-settings-embedded {
+        --cltc-hover: color-mix(in srgb, var(--cltc-text) 4%, transparent);
+        --cltc-active: color-mix(in srgb, var(--cltc-text) 8%, transparent);
+      }
+      html.electron-dark .cltc-settings-overlay,
+      html.electron-dark .cltc-settings {
+        --cltc-hover: rgba(255, 255, 255, .045);
+        --cltc-active: rgba(255, 255, 255, .08);
+      }
+      .cltc-settings [hidden] {
+        display: none !important;
+      }
+      .cltc-settings .cltc-settings-shell {
+        grid-template-columns: 216px minmax(0, 1fr);
+      }
+      .cltc-settings .cltc-settings-sidebar {
+        padding: 16px 12px;
+        border-right: 1px solid var(--cltc-border-subtle);
+      }
+      .cltc-settings .cltc-settings-nav {
+        gap: 2px;
+      }
+      .cltc-settings .cltc-nav-group {
+        margin: 14px 10px 4px;
+        color: var(--cltc-muted);
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 16px;
+        letter-spacing: .01em;
+      }
+      .cltc-settings .cltc-nav-group:first-child {
+        margin-top: 0;
+      }
+      .cltc-settings .cltc-settings-nav button {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 36px;
+        padding: 7px 10px;
+      }
+      .cltc-settings .cltc-nav-icon {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        opacity: .72;
+        transition: opacity var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-settings-nav button[data-active="true"] .cltc-nav-icon {
+        opacity: 1;
+      }
+      .cltc-settings .cltc-settings-content {
+        padding: 32px 40px 48px;
+      }
+      .cltc-settings .cltc-settings-content[data-panel-kind="form"] .cltc-settings-section {
+        max-width: var(--cltc-content-form);
+      }
+      .cltc-settings .cltc-settings-content[data-panel-kind="data"] .cltc-settings-section {
+        max-width: var(--cltc-content-data);
+      }
+      .cltc-settings .cltc-settings-section {
+        width: 100%;
+        margin-inline: auto;
+        gap: 24px;
+      }
+      .cltc-settings .cltc-settings-section-heading h2 {
+        font-size: 22px;
+        line-height: 30px;
+        letter-spacing: -.01em;
+      }
+      .cltc-settings .cltc-settings-section-heading p {
+        font-size: 13px;
+        line-height: 20px;
+      }
+      .cltc-settings .cltc-group {
+        display: grid;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-group);
+        background: var(--cltc-surface);
+        overflow: hidden;
+      }
+      .cltc-settings .cltc-group-head {
+        padding: 14px 16px 12px;
+        border-bottom: 1px solid var(--cltc-border-subtle);
+        background: color-mix(in srgb, var(--cltc-surface-secondary) 55%, transparent);
+      }
+      .cltc-settings .cltc-group-head h3 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 18px;
+      }
+      .cltc-settings .cltc-group-head p {
+        margin: 2px 0 0;
+        color: var(--cltc-muted);
+        font-size: 11px;
+        line-height: 16px;
+      }
+      .cltc-settings .cltc-group-body {
+        display: grid;
+      }
+      .cltc-settings .cltc-group-body > .cltc-settings-row,
+      .cltc-settings .cltc-group-body > .cltc-toggle-field {
+        min-height: 52px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--cltc-border-subtle);
+      }
+      .cltc-settings .cltc-group-body > :first-child {
+        border-top: 0;
+      }
+      .cltc-settings .cltc-group-body > .cltc-price-grid {
+        padding: 14px 16px;
+      }
+      .cltc-settings .cltc-group-body > .cltc-sync-block {
+        padding: 12px 16px;
+      }
+      .cltc-settings .cltc-sync-block .cltc-settings-row {
+        min-height: 0;
+        padding: 0;
+        border-top: 0;
+      }
+      .cltc-settings .cltc-settings-row button,
+      .cltc-settings .cltc-settings-row .cltc-link-button,
+      .cltc-settings .cltc-settings-actions button {
+        min-height: 32px;
+        padding: 5px 10px;
+        border: 1px solid var(--cltc-border);
+        border-radius: var(--cltc-radius-control);
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+      .cltc-settings .cltc-settings-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 12px;
+      }
+      .cltc-settings .cltc-inline-status {
+        color: var(--cltc-success);
+        font-size: 12px;
+        line-height: 18px;
+        opacity: 0;
+        transform: translateY(1px);
+        transition: opacity var(--cltc-duration-popover) var(--cltc-ease-out),
+          transform var(--cltc-duration-popover) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-inline-status[data-visible="true"] {
+        opacity: 1;
+        transform: translateY(0);
+      }
+      .cltc-settings .cltc-inline-status[data-tone="error"] {
+        color: var(--cltc-danger);
+      }
+      .cltc-settings-embedded .cltc-profile-save-toast {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        border: 0 !important;
+        overflow: hidden !important;
+        clip: rect(0 0 0 0) !important;
+        white-space: nowrap !important;
+      }
+      .cltc-settings .cltc-profile-card {
+        display: grid;
+        grid-template-columns: 44px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+        padding: 16px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-group);
+        background: var(--cltc-surface);
+      }
+      .cltc-settings .cltc-profile-card[data-disabled="true"] {
+        opacity: .74;
+      }
+      .cltc-settings .cltc-profile-avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: color-mix(in srgb, var(--cltc-text) 9%, transparent);
+        color: var(--cltc-text);
+        font-size: 16px;
+        font-weight: 600;
+        object-fit: cover;
+      }
+      .cltc-settings .cltc-profile-identity {
+        display: grid;
+        min-width: 0;
+        gap: 3px;
+      }
+      .cltc-settings .cltc-profile-identity strong {
+        overflow: hidden;
+        font-size: 14px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cltc-settings .cltc-profile-identity small {
+        color: var(--cltc-muted);
+        font-size: 11px;
+      }
+      .cltc-settings .cltc-profile-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-self: start;
+        min-height: 20px;
+        padding: 0 7px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-pill);
+        color: var(--cltc-muted);
+        font-size: 11px;
+        line-height: 18px;
+      }
+      .cltc-settings .cltc-profile-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--cltc-muted);
+        font-size: 11px;
+      }
+      .cltc-settings .cltc-profile-switch input {
+        appearance: none;
+        position: relative;
+        width: 34px;
+        height: 20px;
+        margin: 0;
+        border: 1px solid var(--cltc-border);
+        border-radius: var(--cltc-radius-pill);
+        background: color-mix(in srgb, var(--cltc-text) 16%, transparent);
+        cursor: pointer;
+        transition: background var(--cltc-duration-press) var(--cltc-ease-out),
+          border-color var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-profile-switch input::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: var(--cltc-radius-pill);
+        background: var(--cltc-muted);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
+        transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
+          background var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-profile-switch input:checked {
+        border-color: var(--cltc-text);
+        background: var(--cltc-text);
+      }
+      .cltc-settings .cltc-profile-switch input:checked::after {
+        transform: translateX(14px);
+        background: var(--cltc-surface);
+      }
+      .cltc-settings .cltc-profile-switch input:focus-visible {
+        outline: 2px solid var(--cltc-focus-ring);
+        outline-offset: 2px;
+      }
+      .cltc-settings .cltc-price-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .cltc-settings .cltc-price-search {
+        flex: 1 1 220px;
+        min-width: 180px;
+        height: 34px;
+        padding: 6px 10px;
+        border: 1px solid var(--cltc-border);
+        border-radius: var(--cltc-radius-control);
+        background: var(--cltc-input);
+        color: var(--cltc-text);
+        font: inherit;
+        outline: none;
+      }
+      .cltc-settings .cltc-price-search:focus {
+        border-color: color-mix(in srgb, var(--cltc-text) 58%, var(--cltc-border));
+        box-shadow: 0 0 0 2px var(--cltc-focus-ring);
+      }
+      .cltc-settings .cltc-price-filter {
+        min-height: 30px;
+        padding: 5px 9px;
+        border: 0;
+        border-radius: var(--cltc-radius-sm);
+        background: transparent;
+        color: var(--cltc-muted);
+        font: inherit;
+        cursor: pointer;
+        transition: background var(--cltc-duration-press) var(--cltc-ease-out),
+          color var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-price-filter[data-active="true"] {
+        background: var(--cltc-active);
+        color: var(--cltc-text);
+        font-weight: 600;
+      }
+      .cltc-settings .cltc-price-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr);
+        align-items: start;
+        gap: 20px;
+      }
+      .cltc-settings .cltc-price-list-pane,
+      .cltc-settings .cltc-price-editor-pane {
+        min-width: 0;
+      }
+      .cltc-settings .cltc-price-editor-pane {
+        position: sticky;
+        top: 16px;
+        align-self: start;
+        padding: 16px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-group);
+        background: var(--cltc-surface);
+      }
+      .cltc-settings .cltc-price-editor-pane .cltc-price-meta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 0 2px;
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .cltc-settings .cltc-price-editor-pane .cltc-price-badge {
+        margin-left: 0;
+      }
+      .cltc-settings .cltc-price-editor-pane .cltc-price-editor {
+        padding-top: 0;
+        border-top: 0;
+      }
+      .cltc-settings .cltc-price-editor-pane .cltc-price-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .cltc-settings .cltc-price-editor-pane .cltc-price-actions button {
+        width: 100%;
+        white-space: nowrap;
+      }
+      .cltc-settings .cltc-price-list {
+        max-height: min(52vh, 520px);
+      }
+      .cltc-settings .cltc-price-row {
+        min-height: 40px;
+      }
+      .cltc-settings .cltc-price-row[data-active="true"] {
+        box-shadow: inset 2px 0 0 var(--cltc-text);
+      }
+      .cltc-settings .cltc-price-unit {
+        margin: 0 0 12px;
+        color: var(--cltc-muted);
+        font-size: 11px;
+        line-height: 16px;
+      }
+      .cltc-settings .cltc-price-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 18px;
+        margin-left: 6px;
+        padding: 0 6px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-pill);
+        color: var(--cltc-muted);
+        font-size: 10px;
+        font-weight: 500;
+        line-height: 16px;
+        vertical-align: middle;
+      }
+      .cltc-settings .cltc-price-badge[data-tone="official"] {
+        color: var(--cltc-success);
+        border-color: color-mix(in srgb, var(--cltc-success) 42%, var(--cltc-border-subtle));
+      }
+      .cltc-settings .cltc-price-badge[data-tone="custom"] {
+        color: var(--cltc-text);
+      }
+      .cltc-settings .cltc-price-badge[data-tone="warn"] {
+        color: var(--cltc-warning);
+        border-color: color-mix(in srgb, var(--cltc-warning) 42%, var(--cltc-border-subtle));
+      }
+      .cltc-settings .cltc-sync-status::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 6px;
+        border-radius: 50%;
+        background: var(--cltc-muted);
+        vertical-align: 1px;
+      }
+      .cltc-settings .cltc-sync-status[data-tone="success"]::before {
+        background: var(--cltc-success);
+      }
+      .cltc-settings .cltc-sync-status[data-tone="warn"] {
+        color: var(--cltc-warning);
+      }
+      .cltc-settings .cltc-sync-status[data-tone="warn"]::before {
+        background: var(--cltc-warning);
+      }
+      .cltc-settings .cltc-price-sync {
+        padding: 8px 12px;
+        border: 1px solid var(--cltc-border-subtle);
+        border-radius: var(--cltc-radius-control);
+        background: var(--cltc-surface-secondary);
+      }
+      .cltc-settings .cltc-price-sync[data-tone="ok"] {
+        border-color: color-mix(in srgb, var(--cltc-success) 28%, var(--cltc-border-subtle));
+      }
+      .cltc-settings .cltc-price-sync[data-tone="warn"] {
+        border-color: color-mix(in srgb, var(--cltc-warning) 36%, var(--cltc-border-subtle));
+        background: var(--cltc-warning-soft);
+        color: var(--cltc-warning);
+      }
+      .cltc-settings .cltc-price-input[aria-invalid="true"] {
+        border-color: var(--cltc-danger);
+        box-shadow: 0 0 0 2px var(--cltc-danger-soft);
+      }
+      .cltc-settings .cltc-price-error {
+        color: var(--cltc-danger);
+        font-size: 11px;
+        line-height: 16px;
+      }
+      .cltc-settings .cltc-price-empty {
+        padding: 24px 12px;
+        color: var(--cltc-muted);
+        font-size: 12px;
+        text-align: center;
+      }
+      .cltc-settings .cltc-analytics-grid line {
+        stroke: var(--cltc-border-subtle);
+        stroke-width: 1;
+        vector-effect: non-scaling-stroke;
+      }
+      .cltc-settings .cltc-analytics-grid text {
+        fill: var(--cltc-muted);
+        font-size: 10px;
+      }
+      .cltc-settings .cltc-analytics-metrics {
+        gap: 24px;
+        border: 0;
+      }
+      .cltc-settings .cltc-analytics-metric {
+        padding: 0;
+        border: 0;
+      }
+      .cltc-settings .cltc-analytics-metric strong {
+        font-size: 24px;
+        line-height: 30px;
+      }
+      .cltc-settings .cltc-analytics-metric small {
+        display: inline-flex;
+        align-items: center;
+        justify-self: start;
+        min-height: 20px;
+        padding: 0 7px;
+        border-radius: var(--cltc-radius-pill);
+        background: color-mix(in srgb, var(--cltc-text) 5%, transparent);
+      }
+      .cltc-settings .cltc-analytics-metric small[data-tone="good"] {
+        background: var(--cltc-success-soft);
+        color: color-mix(in srgb, var(--cltc-success) 82%, var(--cltc-text));
+      }
+      .cltc-settings .cltc-analytics-metric small[data-tone="bad"] {
+        background: var(--cltc-danger-soft);
+        color: color-mix(in srgb, var(--cltc-danger) 86%, var(--cltc-text));
+      }
+      .cltc-settings .cltc-analytics-share {
+        display: block;
+        padding: 0 4px;
+        border-radius: 3px;
+        background: linear-gradient(
+          to right,
+          color-mix(in srgb, var(--cltc-text) 9%, transparent) var(--cltc-share, 0%),
+          transparent var(--cltc-share, 0%)
+        );
+        text-align: right;
+      }
+      .cltc-settings .cltc-analytics-split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        align-items: start;
+        gap: 24px;
+      }
+      /* Density pass: more breathing room and full-bleed sidebar. */
+      .codex-plus-modal-body:has(> .cltc-settings-embedded) {
+        padding: 0 !important;
+      }
+      .codex-plus-modal-content:has(.cltc-settings-embedded) .codex-plus-modal-header,
+      .codex-plus-page-overlay:has(.cltc-settings-embedded) .codex-plus-modal-header {
+        background: #f3f4f6 !important;
+      }
+      html.electron-dark .codex-plus-modal-content:has(.cltc-settings-embedded) .codex-plus-modal-header,
+      html.electron-dark .codex-plus-page-overlay:has(.cltc-settings-embedded) .codex-plus-modal-header {
+        background: #1e1e1e !important;
+      }
+      .cltc-settings-embedded .cltc-settings-modal {
+        grid-template-rows: minmax(0, 1fr);
+      }
+      .cltc-settings .cltc-settings-shell {
+        grid-template-columns: 224px minmax(0, 1fr);
+      }
+      .cltc-settings .cltc-settings-sidebar {
+        padding: 18px 14px;
+      }
+      .cltc-settings .cltc-settings-nav {
+        gap: 3px;
+      }
+      .cltc-settings .cltc-nav-group {
+        margin: 18px 10px 6px;
+      }
+      .cltc-settings .cltc-settings-nav button {
+        min-height: 38px;
+        padding: 8px 10px;
+      }
+      .cltc-settings .cltc-settings-content {
+        padding: 36px 44px 52px;
+        scrollbar-gutter: stable;
+      }
+      .cltc-settings .cltc-settings-section {
+        gap: 28px;
+      }
+      .cltc-settings .cltc-settings-section-heading {
+        gap: 6px;
+      }
+      .cltc-settings .cltc-group-head {
+        padding: 16px 18px 14px;
+      }
+      .cltc-settings .cltc-group-body > .cltc-settings-row,
+      .cltc-settings .cltc-group-body > .cltc-toggle-field {
+        min-height: 56px;
+        padding: 14px 18px;
+      }
+      .cltc-settings .cltc-group-body > .cltc-price-grid {
+        padding: 16px 18px;
+        gap: 16px 14px;
+      }
+      .cltc-settings .cltc-group-body > .cltc-sync-block {
+        padding: 14px 18px;
+      }
+      .cltc-settings .cltc-sync-block {
+        gap: 10px;
+      }
+      .cltc-settings .cltc-profile-card {
+        padding: 18px;
+        gap: 16px;
+      }
+      .cltc-settings .cltc-profile-form {
+        gap: 16px 14px;
+      }
+      .cltc-settings .cltc-price-toolbar {
+        gap: 10px;
+      }
+      .cltc-settings .cltc-price-search {
+        height: 38px;
+        padding: 7px 12px;
+      }
+      .cltc-settings .cltc-price-filter {
+        min-height: 32px;
+        padding: 6px 10px;
+      }
+      .cltc-settings .cltc-price-row {
+        min-height: 44px;
+        padding: 8px 12px;
+        gap: 8px;
+      }
+      .cltc-settings .cltc-price-table-head {
+        min-height: var(--cltc-price-head-h);
+        padding-top: 6px;
+        padding-bottom: 6px;
+        border-bottom: 0;
+      }
+      @media (min-width: 901px) {
+        .cltc-settings .cltc-price-editor-pane {
+          margin-top: var(--cltc-price-head-h);
+        }
+      }
+      .cltc-settings .cltc-price-editor-pane {
+        padding: 18px;
+      }
+      .cltc-settings .cltc-price-editor {
+        gap: 16px;
+      }
+      .cltc-settings .cltc-price-grid {
+        gap: 16px 14px;
+      }
+      .cltc-settings .cltc-price-actions {
+        gap: 10px;
+      }
+      .cltc-settings .cltc-settings-actions {
+        gap: 14px;
+      }
+      .cltc-settings .cltc-price-actions button,
+      .cltc-settings .cltc-settings-actions button {
+        min-height: 34px;
+        padding: 6px 12px;
+      }
+      .cltc-settings .cltc-analytics-metrics {
+        gap: 28px;
+      }
+      .cltc-settings .cltc-analytics-metric {
+        gap: 6px;
+      }
+      .cltc-settings .cltc-analytics-section {
+        gap: 16px;
+      }
+      .cltc-settings .cltc-analytics-model-row {
+        min-height: 42px;
+        padding: 8px 12px;
+      }
+      .cltc-settings .cltc-analytics-model-head {
+        padding: 0 12px;
+      }
+      .cltc-settings .cltc-analytics-models {
+        max-height: 340px;
+      }
+      .cltc-settings .cltc-composition-legend {
+        gap: 10px 14px;
+      }
+      .cltc-settings .cltc-composition-legend span {
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .cltc-settings .cltc-composition-bar {
+        height: 12px;
+      }
+      @keyframes cltc-settings-enter {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      @keyframes cltc-nav-active-in {
+        from {
+          background-color: transparent;
+        }
+        to {
+          background-color: var(--cltc-active);
+        }
+      }
+      @keyframes cltc-sync-pulse {
+        0%, 100% { opacity: .42; }
+        50% { opacity: 1; }
+      }
+      .cltc-settings .cltc-settings-content[data-cltc-panel-enter="true"] .cltc-settings-section {
+        animation: cltc-settings-enter 240ms var(--cltc-ease-out) both;
+        will-change: opacity;
+      }
+      .cltc-settings[data-cltc-nav-enter="true"] .cltc-settings-nav button[data-active="true"] {
+        animation: cltc-nav-active-in 180ms var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-sync-status[data-tone="busy"]::before {
+        animation: cltc-sync-pulse 1.2s ease-in-out infinite;
+      }
+      @media (max-width: 1100px) {
+        .cltc-settings .cltc-analytics-split {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      @media (max-width: 900px) {
+        .cltc-settings .cltc-price-layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .cltc-settings .cltc-price-editor-pane {
+          position: static;
+        }
+      }
+      @media (max-width: 820px) {
+        .cltc-settings .cltc-settings-shell {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        .cltc-settings .cltc-settings-sidebar {
+          display: block;
+          padding: 8px 10px;
+          border-right: 0;
+          border-bottom: 1px solid var(--cltc-border-subtle);
+          overflow-x: auto;
+        }
+        .cltc-settings .cltc-settings-nav {
+          display: flex;
+          min-width: max-content;
+        }
+        .cltc-settings .cltc-nav-group {
+          display: none;
+        }
+        .cltc-settings .cltc-settings-nav button {
+          width: auto;
+          white-space: nowrap;
+        }
+        .cltc-settings .cltc-settings-content {
+          padding: 24px 20px 32px;
+        }
+        .cltc-settings .cltc-profile-card {
+          grid-template-columns: 40px minmax(0, 1fr);
+        }
+        .cltc-settings .cltc-profile-avatar {
+          width: 40px;
+          height: 40px;
+        }
+        .cltc-settings .cltc-profile-switch {
+          grid-column: 1 / -1;
+          justify-self: start;
+        }
+      }
+      @media (max-width: 680px) {
+        .cltc-settings .cltc-settings-content[data-panel-kind] .cltc-settings-section {
+          max-width: 100%;
+        }
+        .cltc-settings .cltc-analytics-metrics {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 18px 20px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .cltc-settings .cltc-inline-status,
+        .cltc-settings .cltc-profile-switch input,
+        .cltc-settings .cltc-profile-switch input::after,
+        .cltc-settings .cltc-nav-icon,
+        .cltc-settings .cltc-price-filter {
+          transition: none;
+        }
+        .cltc-settings .cltc-settings-content[data-cltc-panel-enter="true"] .cltc-settings-section {
+          animation: none;
+          opacity: 1;
+          will-change: auto;
+        }
+        .cltc-settings .cltc-sync-status[data-tone="busy"]::before,
+        .cltc-settings[data-cltc-nav-enter="true"] .cltc-settings-nav button[data-active="true"] {
+          animation: none;
+        }
+      }
     `;
     document.head?.appendChild(style);
   }
@@ -9683,6 +11369,74 @@ const VERSION = "0.7.10-beta1";
     }
   }
 
+  function applyPriceFilter(rootOverride) {
+    const root = rootOverride || settingsEditorRoot();
+    if (!root?.querySelectorAll) return;
+    const query = normalizeText(state.priceSearch, 120).toLowerCase();
+    const filter = state.priceFilter || "all";
+    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    let visible = 0;
+    for (const node of Array.from(root.querySelectorAll("[data-price-pick]") || [])) {
+      const name = node.getAttribute?.("data-price-pick") || "";
+      const label = priceListModelLabel(name);
+      const custom = priceUsable(normalizePrice(overrides[name]));
+      const official = Boolean(DEFAULT_PRICES[name]);
+      const matchesQuery = !query || `${name} ${label}`.toLowerCase().includes(query);
+      const matchesFilter = filter === "all" || (filter === "official" && official) || (filter === "custom" && custom);
+      const hidden = !(matchesQuery && matchesFilter);
+      node.hidden = hidden;
+      if (!hidden) visible += 1;
+    }
+    const empty = typeof root.querySelector === "function" ? root.querySelector("[data-price-empty]") : null;
+    if (empty) empty.hidden = visible > 0;
+  }
+
+  function priceDraftError(root) {
+    for (const field of ["input", "cachedInput", "cacheWrite", "output"]) {
+      const input = root?.querySelector?.(`[data-price-field='${field}']`);
+      if (!input) continue;
+      const raw = String(input.value ?? "").trim();
+      input.removeAttribute?.("aria-invalid");
+      if (raw === "") continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0) return { input, message: "价格需为不小于 0 的数字" };
+    }
+    return null;
+  }
+
+  function syncPriceValidation(rootOverride) {
+    const root = rootOverride || settingsEditorRoot();
+    const error = priceDraftError(root);
+    const errorNode = root?.querySelector?.("[data-price-error]");
+    const save = root?.querySelector?.("[data-action='save-price']");
+    if (error) {
+      error.input?.setAttribute?.("aria-invalid", "true");
+      if (errorNode) {
+        errorNode.hidden = false;
+        errorNode.textContent = error.message;
+      }
+      if (save) save.disabled = true;
+      return false;
+    }
+    if (errorNode) {
+      errorNode.hidden = true;
+      errorNode.textContent = "";
+    }
+    if (save) save.disabled = false;
+    return true;
+  }
+
+  function handleSettingsInput(event) {
+    const search = event.target?.closest?.("[data-price-search]");
+    if (search) {
+      state.priceSearch = String(search.value || "");
+      applyPriceFilter();
+      return;
+    }
+    const field = event.target?.closest?.("[data-price-field]");
+    if (field?.closest?.(".cltc-price-editor")) syncPriceValidation(settingsEditorRoot());
+  }
+
   function handleSettingsClick(event) {
     if (event.target?.classList?.contains("cltc-settings-overlay")) {
       closeEmbeddedSettingsPage();
@@ -9693,7 +11447,7 @@ const VERSION = "0.7.10-beta1";
       const panel = panelButton.getAttribute("data-settings-panel") || "";
       if (["profile", "general", "usage", "pricing"].includes(panel)) {
         state.settingsPanel = panel;
-        renderSettingsOverlay(liveSnapshot(), { animate: true });
+        renderSettingsOverlay(liveSnapshot(), { animate: true, panelSwitch: true });
       }
       return;
     }
@@ -9738,6 +11492,16 @@ const VERSION = "0.7.10-beta1";
       renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
     }
+    const filterButton = event.target.closest?.("[data-price-filter]");
+    if (filterButton) {
+      const value = filterButton.getAttribute("data-price-filter") || "all";
+      state.priceFilter = ["all", "official", "custom"].includes(value) ? value : "all";
+      for (const node of Array.from(settingsEditorRoot()?.querySelectorAll?.("[data-price-filter]") || [])) {
+        node.setAttribute("data-active", String(node.getAttribute("data-price-filter") === state.priceFilter));
+      }
+      applyPriceFilter();
+      return;
+    }
     const picked = event.target.closest?.("[data-price-pick]");
     if (event.target.closest?.("[data-action='save-price']")) {
       savePriceFromEditor();
@@ -9764,6 +11528,14 @@ const VERSION = "0.7.10-beta1";
     }
     if (event.target.closest?.("[data-action='reset-price']")) {
       void restoreDefaultPrices().then(() => renderSettingsOverlay(liveSnapshot(), { animate: true }));
+      return;
+    }
+    if (event.target.closest?.("[data-action='sync-prices']")) {
+      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      void refreshDefaultPrices().then(() => {
+        if (state.destroyed || !state.priceEditorOpen) return;
+        renderSettingsOverlay(liveSnapshot(), { animate: true });
+      });
       return;
     }
     if (event.target.closest?.("[data-action='new-price']")) {
@@ -9845,6 +11617,7 @@ const VERSION = "0.7.10-beta1";
     const root = settingsEditorRoot();
     const model = rootPriceModel();
     if (!model) return false;
+    if (!syncPriceValidation(root)) return false;
     const input = root.querySelector("[data-price-field='input']")?.value;
     const cachedInput = root.querySelector("[data-price-field='cachedInput']")?.value;
     const cacheWrite = root.querySelector("[data-price-field='cacheWrite']")?.value;
@@ -9866,12 +11639,20 @@ const VERSION = "0.7.10-beta1";
   }
 
   function renderProfileSaveToast() {
-    const toast = state.settingsOverlay?.querySelector?.("[data-field='profile-save-status']");
-    if (!toast) return false;
+    const root = settingsEditorRoot();
     const visible = Boolean(state.profileSaveStatus);
+    const tone = state.profileSaveStatusTone || "neutral";
+    const inline = root?.querySelector?.("[data-field='profile-save-inline']");
+    if (inline) {
+      inline.textContent = state.profileSaveStatus || "";
+      inline.dataset.visible = String(visible);
+      inline.dataset.tone = tone;
+    }
+    const toast = root?.querySelector?.("[data-field='profile-save-status']");
+    if (!toast) return false;
     toast.textContent = state.profileSaveStatus || "";
     toast.dataset.visible = String(visible);
-    toast.dataset.tone = state.profileSaveStatusTone || "neutral";
+    toast.dataset.tone = tone;
     return true;
   }
 
@@ -9911,35 +11692,50 @@ const VERSION = "0.7.10-beta1";
     return true;
   }
   function generalSettingsHtml() {
+    const profileEnabled = profileUnlockEnabled();
     return `
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
-          <h2>数据与显示</h2>
-          <p>管理 HUD 显示与本地 Profile 解锁。</p>
+          <h2>常规</h2>
+          <p>管理 HUD 显示、本地资料与历史数据同步。</p>
         </div>
-        <label class="cltc-toggle-field">
-          <span>
-            <strong>显示 HUD</strong>
-            <small>在输入框上方显示本轮、会话与今日统计。</small>
-          </span>
-          <input type="checkbox" data-misc-field="hubVisible"${hubVisible() ? " checked" : ""}>
-        </label>
-        <label class="cltc-toggle-field">
-          <span>
-            <strong>显示 Token 输出速率</strong>
-            <small>显示本轮实时与上一轮平均输出速率。</small>
-          </span>
-          <input type="checkbox" data-misc-field="outputRateVisible"${outputRateVisible() ? " checked" : ""}>
-        </label>
-        <label class="cltc-toggle-field">
-          <span>
-            <strong>启用本地 Profile 解锁</strong>
-            <small>API 模式使用本地资料伪装；官方账号模式只覆盖资料页统计，不改变登录状态。</small>
-          </span>
-          <input type="checkbox" data-misc-field="profileUnlockEnabled"${profileUnlockEnabled() ? " checked" : ""}>
-        </label>
+        <div class="cltc-group">
+          <div class="cltc-group-head">
+            <h3>HUD 显示</h3>
+          </div>
+          <div class="cltc-group-body">
+            <label class="cltc-toggle-field">
+              <span>
+                <strong>显示 HUD</strong>
+                <small>在输入框上方显示本轮、会话与今日统计。</small>
+              </span>
+              <input type="checkbox" role="switch" aria-checked="${String(hubVisible())}" data-misc-field="hubVisible"${hubVisible() ? " checked" : ""}>
+            </label>
+            <label class="cltc-toggle-field"${hubVisible() ? "" : ' data-disabled="true"'}>
+              <span>
+                <strong>显示 Token 输出速率</strong>
+                <small>${hubVisible() ? "显示本轮实时与上一轮平均输出速率。" : "需先开启 HUD。"}</small>
+              </span>
+              <input type="checkbox" role="switch" aria-checked="${String(outputRateVisible())}" data-misc-field="outputRateVisible"${outputRateVisible() ? " checked" : ""}${hubVisible() ? "" : " disabled"}>
+            </label>
+          </div>
+        </div>
+        <div class="cltc-group">
+          <div class="cltc-group-head">
+            <h3>本地资料</h3>
+          </div>
+          <div class="cltc-group-body">
+            <div class="cltc-settings-row cltc-settings-row-link">
+              <span>
+                <strong>本地 Profile</strong>
+                <small>${profileEnabled ? "已启用；本地显示名与套餐在个人资料中管理。" : "未启用；开启后本地资料会覆盖 Profile 展示。"}</small>
+              </span>
+              <button type="button" data-settings-panel="profile">管理</button>
+            </div>
+          </div>
+        </div>
+        ${usageSyncSectionHtml()}
       </section>
-      ${usageSyncSectionHtml()}
     `;
   }
 
@@ -9965,51 +11761,85 @@ const VERSION = "0.7.10-beta1";
   function usageSyncSectionHtml() {
     const busy = state.usageSyncBusy;
     const statusText = usageSyncStatusText();
-    const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" role="status">${escapeHtml(statusText)}</p>` : "";
+    const statusTone = busy ? "busy" : state.usageSyncAutoFailures >= 3 ? "warn" : "success";
+    const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" data-tone="${statusTone}" role="status">${escapeHtml(statusText)}</p>` : "";
     return `
-      <section class="cltc-settings-section">
-        <div class="cltc-sync-block">
-          <div class="cltc-settings-row cltc-sync-row">
-            <span>
-              <strong>历史数据同步</strong>
-              <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。</small>
-            </span>
-            <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
-          </div>
-          ${statusHtml}
+      <div class="cltc-group">
+        <div class="cltc-group-head">
+          <h3>数据同步</h3>
         </div>
-      </section>
+        <div class="cltc-group-body">
+          <div class="cltc-sync-block">
+            <div class="cltc-settings-row cltc-sync-row">
+              <span>
+                <strong>历史数据同步</strong>
+                <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。</small>
+              </span>
+              <button type="button" data-action="sync-usage" data-variant="primary" aria-busy="${String(busy)}"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
+            </div>
+            ${statusHtml}
+          </div>
+        </div>
+      </div>
     `;
   }
 
   function profileSettingsHtml() {
     const prefs = localProfilePrefs();
+    const enabled = profileUnlockEnabled();
     const selectedOption = profilePlanOption(prefs.planType);
     const selectedValue = selectedOption?.value || "custom";
     const customValue = selectedOption ? "" : prefs.planLabel || prefs.planType;
     const optionHtml = PROFILE_PLAN_OPTIONS.map(
       (option) => `<option value="${escapeHtml(option.value)}"${option.value === selectedValue ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
     ).join("");
+    const initial = (normalizeText(prefs.displayName, 64) || "L").slice(0, 1).toUpperCase();
+    const avatarHtml = prefs.imageUrl
+      ? `<img class="cltc-profile-avatar" src="${escapeHtml(prefs.imageUrl)}" alt="">`
+      : `<span class="cltc-profile-avatar" aria-hidden="true">${escapeHtml(initial)}</span>`;
+    const customRowHidden = selectedValue === "custom" ? "" : " hidden";
     return `
-      <section class="cltc-settings-section">
+      <section class="cltc-settings-section"${enabled ? "" : ' data-profile-locked="true"'}>
         <div class="cltc-settings-section-heading">
           <h2>个人资料</h2>
-          <p>这些资料只保存在本地，用于 Codex 个人资料与账号菜单。</p>
+          <p>仅影响本地显示，不会改变账号、订阅或登录状态。</p>
         </div>
-        <div class="cltc-price-grid">
-          <label class="cltc-price-field">
-            <span>Plan 类型</span>
-            <select class="cltc-profile-select" data-profile-field="planType">
-              ${optionHtml}
-              <option value="custom"${selectedValue === "custom" ? " selected" : ""}>自定义</option>
-            </select>
+        <div class="cltc-profile-card" data-disabled="${String(!enabled)}">
+          ${avatarHtml}
+          <div class="cltc-profile-identity">
+            <strong>${escapeHtml(prefs.displayName || "Local Usage")}</strong>
+            <span class="cltc-profile-badge">${escapeHtml(prefs.planLabel || "本地")}</span>
+            <small>本地显示名与套餐徽标</small>
+          </div>
+          <label class="cltc-profile-switch">
+            <span>${enabled ? "已启用" : "未启用"}</span>
+            <input type="checkbox" role="switch" aria-checked="${String(enabled)}" data-misc-field="profileUnlockEnabled"${enabled ? " checked" : ""}>
           </label>
-          <label class="cltc-price-field">
-            <span>自定义</span>
-            <input class="cltc-price-input" data-profile-field="planCustom" type="text" value="${escapeHtml(customValue)}" placeholder="Team Enterprise">
-          </label>
-        </div>        <div class="cltc-price-actions">
-          <button type="button" data-action="save-profile" data-variant="primary">保存更改</button>
+        </div>
+        <div class="cltc-group">
+          <div class="cltc-group-head">
+            <h3>套餐显示</h3>
+            <p>${enabled ? "选择要显示在 Profile 与账号菜单中的套餐。" : "启用本地 Profile 后可编辑。"}</p>
+          </div>
+          <div class="cltc-group-body">
+            <div class="cltc-price-grid cltc-profile-form">
+              <label class="cltc-price-field">
+                <span>Plan 类型</span>
+                <select class="cltc-profile-select" data-profile-field="planType"${enabled ? "" : " disabled"}>
+                  ${optionHtml}
+                  <option value="custom"${selectedValue === "custom" ? " selected" : ""}>自定义</option>
+                </select>
+              </label>
+              <label class="cltc-price-field" data-profile-custom-row${customRowHidden}>
+                <span>自定义</span>
+                <input class="cltc-price-input" data-profile-field="planCustom" type="text" value="${escapeHtml(customValue)}" placeholder="Team Enterprise"${enabled ? "" : " disabled"}>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="cltc-settings-actions">
+          <span class="cltc-inline-status" data-field="profile-save-inline"></span>
+          <button type="button" data-action="save-profile" data-variant="primary"${enabled ? "" : " disabled"}>保存更改</button>
         </div>
       </section>
     `;
@@ -10020,21 +11850,29 @@ const VERSION = "0.7.10-beta1";
     const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
     const model = normalizeText(state.priceEditorModel) || snap.model;
     const models = priceListModels(model);
-    const price = priceFor(model) || { input: "", cachedInput: "", output: "" };
+    const resolvedPrice = priceFor(model);
+    const price = resolvedPrice || { input: "", cachedInput: "", output: "" };
     const value = (field) => (price[field] == null ? "" : String(price[field]));
-    const source = !price ? "未定价" : priceUsable(normalizePrice(overrides[model])) ? "自定义" : DEFAULT_PRICES[model] ? "默认" : "自定义";
-    const profileEnabled = profileUnlockEnabled();
-    const allowedPanels = profileEnabled ? ["profile", "general", "usage", "pricing"] : ["general", "usage", "pricing"];
-    const panel = allowedPanels.includes(state.settingsPanel) ? state.settingsPanel : profileEnabled ? "profile" : "general";
+    const source = !resolvedPrice ? "未定价" : priceUsable(normalizePrice(overrides[model])) ? "自定义" : DEFAULT_PRICES[model] ? "默认" : "自定义";
+    const allowedPanels = ["profile", "general", "usage", "pricing"];
+    const panel = allowedPanels.includes(state.settingsPanel) ? state.settingsPanel : "usage";
     state.settingsPanel = panel;
+    const embedded = Boolean(state.embeddedPageContainer);
     const row = (name) => {
       const item = priceFor(name);
       const cell = (field) => (item?.[field] == null ? "-" : String(item[field]));
       const label = priceListModelLabel(name);
+      const custom = priceUsable(normalizePrice(overrides[name]));
+      const official = Boolean(DEFAULT_PRICES[name]);
+      const badge = custom
+        ? '<span class="cltc-price-badge" data-tone="custom">自定义</span>'
+        : official
+          ? '<span class="cltc-price-badge" data-tone="official">官方</span>'
+          : '<span class="cltc-price-badge" data-tone="warn">未定价</span>';
       const priceLabel = `模型 ${label}，输入 ${cell("input")}，读缓存 ${cell("cachedInput")}，写缓存 ${cell("cacheWrite")}，输出 ${cell("output")}（USD / 1M tokens）`;
       return `
         <button class="cltc-price-row" type="button" data-price-pick="${escapeHtml(name)}" data-active="${String(name === model)}" aria-pressed="${String(name === model)}" aria-label="${escapeHtml(priceLabel)}">
-          <span title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+          <span title="${escapeHtml(label)}">${escapeHtml(label)}${badge}</span>
           <span>${escapeHtml(cell("input"))}</span>
           <span>${escapeHtml(cell("cachedInput"))}</span>
           <span>${escapeHtml(cell("cacheWrite"))}</span>
@@ -10042,72 +11880,94 @@ const VERSION = "0.7.10-beta1";
         </button>
       `;
     };
+    const sync = priceSyncStatus();
+    const sourceTone = source === "未定价" ? "warn" : source === "自定义" ? "custom" : "official";
+    const filterButton = (value, label) =>
+      `<button type="button" class="cltc-price-filter" data-price-filter="${value}" data-active="${String(state.priceFilter === value)}">${label}</button>`;
     const pricingHtml = `
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
           <h2>模型价格</h2>
           <p>按 USD / 1M tokens 设置输入、缓存与输出价格。</p>
         </div>
-        <div class="cltc-price-meta">${escapeHtml(model)} · ${source}</div>
-        <div class="cltc-price-row cltc-price-table-head" aria-hidden="true">
-          <span>模型</span><span>输入</span><span>读缓存</span><span>写缓存</span><span>输出</span>
+        <div class="cltc-price-sync" data-tone="${sync.tone}" role="status" aria-live="polite">
+          <span>${escapeHtml(sync.text)}</span>
+          ${sync.retry ? `<button type="button" data-action="sync-prices">重试</button>` : ""}
         </div>
-        <div class="cltc-price-list">
-          ${models.map(row).join("")}
+        <div class="cltc-price-toolbar">
+          <input class="cltc-price-search" data-price-search type="search" value="${escapeHtml(state.priceSearch)}" placeholder="搜索模型…" aria-label="搜索模型">
+          ${filterButton("all", "全部")}
+          ${filterButton("official", "官方")}
+          ${filterButton("custom", "自定义")}
         </div>
-        <div class="cltc-price-editor">
-          <div class="cltc-price-grid">
-            <label class="cltc-price-field cltc-price-field-full">
-              <span>模型名</span>
-              <input class="cltc-price-input" data-price-field="model" type="text" value="${escapeHtml(model)}">
-            </label>
-            <label class="cltc-price-field">
-              <span>输入</span>
-              <input class="cltc-price-input" data-price-field="input" type="number" min="0" step="0.000001" value="${escapeHtml(value("input"))}">
-            </label>
-            <label class="cltc-price-field">
-              <span>读缓存</span>
-              <input class="cltc-price-input" data-price-field="cachedInput" type="number" min="0" step="0.000001" value="${escapeHtml(value("cachedInput"))}">
-            </label>
-            <label class="cltc-price-field">
-              <span>写缓存</span>
-              <input class="cltc-price-input" data-price-field="cacheWrite" type="number" min="0" step="0.000001" value="${escapeHtml(value("cacheWrite"))}">
-            </label>
-            <label class="cltc-price-field">
-              <span>输出</span>
-              <input class="cltc-price-input" data-price-field="output" type="number" min="0" step="0.000001" value="${escapeHtml(value("output"))}">
-            </label>
+        <div class="cltc-price-layout">
+          <div class="cltc-price-list-pane">
+            <div class="cltc-price-row cltc-price-table-head" aria-hidden="true">
+              <span>模型</span><span>输入</span><span>读缓存</span><span>写缓存</span><span>输出</span>
+            </div>
+            <div class="cltc-price-list">
+              ${models.map(row).join("")}
+              <div class="cltc-price-empty" data-price-empty hidden>没有匹配的模型</div>
+            </div>
           </div>
-          <div class="cltc-price-actions">
-            <button type="button" data-action="reset-price">恢复默认</button>
-            <button type="button" data-action="new-price">新建</button>
-            <button type="button" data-action="delete-price" data-variant="danger">删除</button>
-            <button type="button" data-action="save-price" data-variant="primary">保存</button>
+          <div class="cltc-price-editor-pane">
+            <div class="cltc-price-meta">${escapeHtml(model)}<span class="cltc-price-badge" data-tone="${sourceTone}">${escapeHtml(source)}</span></div>
+            <p class="cltc-price-unit">单位：USD / 1M tokens</p>
+            <div class="cltc-price-editor">
+              <div class="cltc-price-grid">
+                <label class="cltc-price-field cltc-price-field-full">
+                  <span>模型名</span>
+                  <input class="cltc-price-input" data-price-field="model" type="text" value="${escapeHtml(model)}">
+                </label>
+                <label class="cltc-price-field">
+                  <span>输入</span>
+                  <input class="cltc-price-input" data-price-field="input" type="number" min="0" step="0.000001" value="${escapeHtml(value("input"))}">
+                </label>
+                <label class="cltc-price-field">
+                  <span>读缓存</span>
+                  <input class="cltc-price-input" data-price-field="cachedInput" type="number" min="0" step="0.000001" value="${escapeHtml(value("cachedInput"))}">
+                </label>
+                <label class="cltc-price-field">
+                  <span>写缓存</span>
+                  <input class="cltc-price-input" data-price-field="cacheWrite" type="number" min="0" step="0.000001" value="${escapeHtml(value("cacheWrite"))}">
+                </label>
+                <label class="cltc-price-field">
+                  <span>输出</span>
+                  <input class="cltc-price-input" data-price-field="output" type="number" min="0" step="0.000001" value="${escapeHtml(value("output"))}">
+                </label>
+              </div>
+              <div class="cltc-price-error" data-price-error hidden></div>
+              <div class="cltc-price-actions">
+                <button type="button" data-action="new-price">新建</button>
+                <button type="button" data-action="delete-price" data-variant="danger">隐藏</button>
+                <button type="button" data-action="reset-price" title="清除所有自定义价格并重新同步">重置全部</button>
+                <button type="button" data-action="save-price" data-variant="primary">保存</button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
     `;
     const content =
       panel === "profile" ? profileSettingsHtml() : panel === "general" ? generalSettingsHtml() : panel === "usage" ? usageAnalyticsHtml() : pricingHtml;
+    const panelKind = panel === "usage" || panel === "pricing" ? "data" : "form";
     return `
-      <div class="cltc-settings-modal" role="dialog" aria-modal="true" aria-label="Codex Token Cost 设置" data-price-model="${escapeHtml(model)}" data-settings-active="${panel}">
+      <div class="cltc-settings-modal" role="${embedded ? "region" : "dialog"}"${embedded ? "" : ' aria-modal="true"'} aria-label="Codex Token Cost 设置" data-price-model="${escapeHtml(model)}" data-settings-active="${panel}">
         <div class="cltc-price-head">
           <span class="cltc-price-title">Codex Token Cost</span>
         </div>
         <div class="cltc-settings-shell">
           <aside class="cltc-settings-sidebar">
-            <nav class="cltc-settings-nav" aria-label="设置分组">
-              ${profileEnabled ? `<button type="button" data-settings-panel="profile" data-active="${String(panel === "profile")}">个人资料</button>` : ""}
-              <button type="button" data-settings-panel="general" data-active="${String(panel === "general")}">数据与显示</button>
-              <button type="button" data-settings-panel="usage" data-active="${String(panel === "usage")}">使用统计</button>
-              <button type="button" data-settings-panel="pricing" data-active="${String(panel === "pricing")}">模型价格</button>
+            <nav class="cltc-settings-nav" aria-label="设置分组" role="tablist" aria-orientation="vertical">
+              <div class="cltc-nav-group">监控</div>
+              <button type="button" data-settings-panel="usage" id="cltc-tab-usage" role="tab" aria-selected="${String(panel === "usage")}" aria-controls="cltc-settings-panel" tabindex="${panel === "usage" ? "0" : "-1"}" data-active="${String(panel === "usage")}">${NAV_ICON_USAGE}<span>使用统计</span></button>
+              <div class="cltc-nav-group">配置</div>
+              <button type="button" data-settings-panel="profile" id="cltc-tab-profile" role="tab" aria-selected="${String(panel === "profile")}" aria-controls="cltc-settings-panel" tabindex="${panel === "profile" ? "0" : "-1"}" data-active="${String(panel === "profile")}">${NAV_ICON_PROFILE}<span>个人资料</span></button>
+              <button type="button" data-settings-panel="general" id="cltc-tab-general" role="tab" aria-selected="${String(panel === "general")}" aria-controls="cltc-settings-panel" tabindex="${panel === "general" ? "0" : "-1"}" data-active="${String(panel === "general")}">${NAV_ICON_GENERAL}<span>常规</span></button>
+              <button type="button" data-settings-panel="pricing" id="cltc-tab-pricing" role="tab" aria-selected="${String(panel === "pricing")}" aria-controls="cltc-settings-panel" tabindex="${panel === "pricing" ? "0" : "-1"}" data-active="${String(panel === "pricing")}">${NAV_ICON_PRICING}<span>模型价格</span></button>
             </nav>
-            <div class="cltc-settings-footer">
-              <span>Tianzora</span>
-              <span class="cltc-settings-version">v${VERSION}</span>
-            </div>
           </aside>
-          <div class="cltc-settings-content" role="region">
+          <div class="cltc-settings-content" id="cltc-settings-panel" role="tabpanel" aria-labelledby="cltc-tab-${panel}" data-panel-kind="${panelKind}">
             ${content}
           </div>
         </div>
@@ -10493,6 +12353,27 @@ const VERSION = "0.7.10-beta1";
       return;
     }
     if (event.key === "Tab" && trapSettingsFocus(event)) return;
+    const navButton = event.target?.closest?.("[data-settings-panel]");
+    if (navButton && ["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      const nav = navButton.closest?.(".cltc-settings-nav");
+      const buttons = Array.from(nav?.querySelectorAll?.("[data-settings-panel]") || []);
+      const index = buttons.indexOf(navButton);
+      if (index >= 0) {
+        event.preventDefault?.();
+        const nextIndex =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? buttons.length - 1
+              : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+        const next = buttons[nextIndex];
+        if (next) {
+          next.focus?.();
+          next.click?.();
+        }
+        return;
+      }
+    }
     handleAnalyticsKeydown(event);
   }
 
@@ -10505,6 +12386,8 @@ const VERSION = "0.7.10-beta1";
     "data-analytics-preset",
     "data-analytics-metric",
     "data-analytics-model",
+    "data-price-search",
+    "data-price-filter",
     "data-chart-index",
   ];
   const SETTINGS_FOCUS_SELECTOR = SETTINGS_FOCUS_ATTRIBUTES.map((attribute) => `[${attribute}]`).join(",");
@@ -10610,6 +12493,7 @@ const VERSION = "0.7.10-beta1";
       state.settingsOverlay.setAttribute("data-codex-plus-ext", codexPlusScriptKey());
       state.settingsOverlay.dataset.cltcEntering = "true";
       state.settingsOverlay.addEventListener("click", handleSettingsClick);
+      state.settingsOverlay.addEventListener("input", handleSettingsInput);
       state.settingsOverlay.addEventListener("change", handleSettingsChange);
       state.settingsOverlay.addEventListener("keydown", handleSettingsKeydown);
     }
@@ -10628,6 +12512,7 @@ const VERSION = "0.7.10-beta1";
     const contentScrollTop = state.settingsOverlay.querySelector(".cltc-settings-content")?.scrollTop || 0;
     const listScrollTop = state.settingsOverlay.querySelector(".cltc-price-list")?.scrollTop || 0;
     state.settingsOverlay.innerHTML = pricePopoverHtml(snap);
+    applyPriceFilter(state.settingsOverlay);
     const content = state.settingsOverlay.querySelector(".cltc-settings-content");
     const list = state.settingsOverlay.querySelector(".cltc-price-list");
     if (content) content.scrollTop = contentScrollTop;
@@ -11031,6 +12916,7 @@ const VERSION = "0.7.10-beta1";
       saveHubVisible(Boolean(hubToggle.checked));
       syncHubVisibility();
       scheduleHubVisibilitySync(0);
+      if (state.priceEditorOpen) renderSettingsOverlay(liveSnapshot());
       return;
     }
     const outputRateToggle = event.target?.closest?.("[data-misc-field='outputRateVisible']");
@@ -11045,11 +12931,20 @@ const VERSION = "0.7.10-beta1";
       renderSettingsOverlay(liveSnapshot());
       return;
     }
+    const planTypeField = event.target?.closest?.("[data-profile-field='planType']");
+    if (planTypeField) {
+      const customRow = settingsEditorRoot()?.querySelector?.("[data-profile-custom-row]");
+      if (customRow) customRow.hidden = planTypeField.value !== "custom";
+      return;
+    }
   }
 
+  // 设置页运行时外壳（标题栏、更新入口等）属于设置界面本身，不算“点击外部”。
   function handleDocumentPointerDown(event) {
     if (state.embeddedPageContainer) {
       if (state.embeddedPageContainer.contains?.(event.target)) return;
+      if (event.target?.closest?.(".codex-plus-modal-content, .codex-plus-page-overlay")) return;
+      if (state.updateClusterEl?.contains?.(event.target)) return;
       closeEmbeddedSettingsPage();
       return;
     }
@@ -11298,6 +13193,7 @@ const VERSION = "0.7.10-beta1";
     installCodexPlusEmbeddedPage();
     refreshCodexppHistory();
     scheduleUsageAutoSync();
+    updateScheduleAutoCheck();
     render();
     void refreshDefaultPrices();
   }
@@ -11310,10 +13206,16 @@ const VERSION = "0.7.10-beta1";
   }
 
   function destroy() {
+    // 运行时可能在旧实例已被替换后才调用它注册的清理函数（stale cleanup）：
+    // 仅当全局引用仍指向本实例时才执行全局清理，避免旧清理误伤新实例。
+    const ownsGlobals = window.__codexLiveTokenCost?.destroy === destroy;
     state.started = false;
     state.destroyed = true;
     window.clearTimeout(state.startTimer);
     state.startTimer = 0;
+    if (state.updateAutoCheckTimer) window.clearTimeout(state.updateAutoCheckTimer);
+    state.updateAutoCheckTimer = 0;
+    updateClearStatusTimer();
     stopProfileUiReadinessCoordinator();
     stopSidebarProfileIdentitySync();
     state.profileUiAuthCacheKey = "";
@@ -11324,15 +13226,17 @@ const VERSION = "0.7.10-beta1";
     cancelOutputRateRefresh();
     if (state.profileSaveStatusTimer) window.clearTimeout(state.profileSaveStatusTimer);
     if (state.settingsOverlayCloseTimer) window.clearTimeout(state.settingsOverlayCloseTimer);
+    if (state.settingsPanelEnterTimer) window.clearTimeout(state.settingsPanelEnterTimer);
+    state.settingsPanelEnterTimer = 0;
     cancelSettingsFocusFrame();
     if (state.analyticsSegmentSwitchFrame && typeof window.cancelAnimationFrame === "function") {
       window.cancelAnimationFrame(state.analyticsSegmentSwitchFrame);
     }
     if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
     if (state.hubVisibilityTimer) window.clearTimeout(state.hubVisibilityTimer);
-    state.priceRemoteAbortController?.abort?.();
     state.priceRemoteRequest = null;
-    state.priceRemoteAbortController = null;
+    if (state.priceSyncRetryTimer) window.clearTimeout(state.priceSyncRetryTimer);
+    state.priceSyncRetryTimer = 0;
     state.profileSaveStatusTimer = 0;
     state.settingsOverlayCloseTimer = 0;
     state.analyticsSegmentSwitchFrame = 0;
@@ -11354,43 +13258,47 @@ const VERSION = "0.7.10-beta1";
     state.profileDataRefreshAttemptAt = 0;
     state.profileDataRefreshAt = 0;
     state.profileDataRefreshPromise = null;
-    if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock === VERSION) {
-      Array.prototype.filter = Array.prototype.__codexLiveTokenCostOriginalFilter;
-    }
-    if (Promise.prototype.then.__codexLiveTokenCostProfileUnlock === VERSION) {
-      Promise.prototype.then = Promise.prototype.__codexLiveTokenCostOriginalThen;
-    }
-    if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) {
-      RegExp.prototype.test = RegExp.prototype.__codexLiveTokenCostOriginalTest;
-    }
-    if (window.electronBridge?.sendMessageFromView?.__codexLiveTokenCostProfileUnlock === VERSION) {
-      try {
-        window.electronBridge.sendMessageFromView = window.electronBridge.__codexLiveTokenCostOriginalSendMessageFromView;
-      } catch {
-        // Read-only preload bridges cannot be restored by assignment.
+    if (ownsGlobals) {
+      if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock === VERSION) {
+        Array.prototype.filter = Array.prototype.__codexLiveTokenCostOriginalFilter;
       }
+      if (Promise.prototype.then.__codexLiveTokenCostProfileUnlock === VERSION) {
+        Promise.prototype.then = Promise.prototype.__codexLiveTokenCostOriginalThen;
+      }
+      if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) {
+        RegExp.prototype.test = RegExp.prototype.__codexLiveTokenCostOriginalTest;
+      }
+      if (window.electronBridge?.sendMessageFromView?.__codexLiveTokenCostProfileUnlock === VERSION) {
+        try {
+          window.electronBridge.sendMessageFromView = window.electronBridge.__codexLiveTokenCostOriginalSendMessageFromView;
+        } catch {
+          // Read-only preload bridges cannot be restored by assignment.
+        }
+      }
+      if (window.__codexLiveTokenCostProfileMessageIntercept === VERSION) {
+        window.removeEventListener("codex-message-from-view", handleProfileFetchEvent, true);
+        window.removeEventListener("message", handleProfileFetchResponseEvent, true);
+        delete window.__codexLiveTokenCostProfileMessageIntercept;
+      }
+      uninstallLocalMessageCapture();
     }
-    if (window.__codexLiveTokenCostProfileMessageIntercept === VERSION) {
-      window.removeEventListener("codex-message-from-view", handleProfileFetchEvent, true);
-      window.removeEventListener("message", handleProfileFetchResponseEvent, true);
-      delete window.__codexLiveTokenCostProfileMessageIntercept;
-    }
-    uninstallLocalMessageCapture();
     state.profileRequestIds.clear();
     state.codexModulePromises.clear();
     state.officialThreadRuntimeStates.clear();
     state.runtimeSessionBindings.clear();
-    if (window.__codexLiveTokenCostBridgeHook === VERSION) delete window.__codexLiveTokenCostBridgeHook;
-    if (window.__codexLiveTokenCostProfileRequestPatch === VERSION) delete window.__codexLiveTokenCostProfileRequestPatch;
-    if (window.__codexLiveTokenCostProfilePhotoPatch === VERSION) delete window.__codexLiveTokenCostProfilePhotoPatch;
-    if (window.__codexLiveTokenCostProfileAuthPatch === VERSION) delete window.__codexLiveTokenCostProfileAuthPatch;
-    if (window.fetch?.__codexLiveTokenCostWrapped === VERSION) window.fetch = window.fetch.__codexLiveTokenCostOriginal;
-    if (window.WebSocket?.__codexLiveTokenCostWrapped === VERSION) window.WebSocket = window.WebSocket.__codexLiveTokenCostOriginal;
-    const Xhr = window.XMLHttpRequest;
-    if (Xhr?.prototype?.__codexLiveTokenCostWrapped === VERSION) {
-      Xhr.prototype.open = Xhr.prototype.__codexLiveTokenCostOriginalOpen;
-      Xhr.prototype.send = Xhr.prototype.__codexLiveTokenCostOriginalSend;
-      delete Xhr.prototype.__codexLiveTokenCostWrapped;
+    if (ownsGlobals) {
+      if (window.__codexLiveTokenCostBridgeHook === VERSION) delete window.__codexLiveTokenCostBridgeHook;
+      if (window.__codexLiveTokenCostProfileRequestPatch === VERSION) delete window.__codexLiveTokenCostProfileRequestPatch;
+      if (window.__codexLiveTokenCostProfilePhotoPatch === VERSION) delete window.__codexLiveTokenCostProfilePhotoPatch;
+      if (window.__codexLiveTokenCostProfileAuthPatch === VERSION) delete window.__codexLiveTokenCostProfileAuthPatch;
+      if (window.fetch?.__codexLiveTokenCostWrapped === VERSION) window.fetch = window.fetch.__codexLiveTokenCostOriginal;
+      if (window.WebSocket?.__codexLiveTokenCostWrapped === VERSION) window.WebSocket = window.WebSocket.__codexLiveTokenCostOriginal;
+      const Xhr = window.XMLHttpRequest;
+      if (Xhr?.prototype?.__codexLiveTokenCostWrapped === VERSION) {
+        Xhr.prototype.open = Xhr.prototype.__codexLiveTokenCostOriginalOpen;
+        Xhr.prototype.send = Xhr.prototype.__codexLiveTokenCostOriginalSend;
+        delete Xhr.prototype.__codexLiveTokenCostWrapped;
+      }
     }
     while (disposers.length) {
       const dispose = disposers.pop();
@@ -11400,7 +13308,7 @@ const VERSION = "0.7.10-beta1";
     clearLocalTurnTimer();
     stopCadencedShimmer();
     state.root?.remove();
-    if (typeof state.embeddedPageDispose === "function") {
+    if (ownsGlobals && typeof state.embeddedPageDispose === "function") {
       try {
         state.embeddedPageDispose();
       } catch {
@@ -11409,13 +13317,19 @@ const VERSION = "0.7.10-beta1";
       state.embeddedPageDispose = null;
     }
     state.embeddedPageContainer = null;
+    state.updateClusterEl?.remove?.();
+    state.updateClusterEl = null;
+    state.updateBusy = false;
+    state.updatePhase = "";
     state.settingsOverlay?.remove?.();
     state.settingsOverlay = null;
-    document.getElementById(STYLE_ID)?.remove();
+    if (ownsGlobals) document.getElementById(STYLE_ID)?.remove();
     if (window.__codexLiveTokenCostActiveBridge === state.activeBridge) delete window.__codexLiveTokenCostActiveBridge;
     state.activeBridge = null;
-    delete window.__codexLiveTokenCost;
-    if (window.__codexLiveTokenCostVersion === VERSION) delete window.__codexLiveTokenCostVersion;
+    if (ownsGlobals) {
+      delete window.__codexLiveTokenCost;
+      if (window.__codexLiveTokenCostVersion === VERSION) delete window.__codexLiveTokenCostVersion;
+    }
     if (window.__CODEX_LIVE_TOKEN_COST_TEST__ && disposers.length !== 0) {
       throw new Error("Codex Token Cost: disposers not drained");
     }
@@ -11613,7 +13527,11 @@ const VERSION = "0.7.10-beta1";
       startNewPriceModel,
       restoreDefaultPrices,
       refreshDefaultPrices,
-      remotePriceTable,
+      priceUpstreamSnapshot,
+      priceModelShownByDefault,
+      priceListableUsedNames,
+      priceSyncStatus,
+      priceSyncDownloadCommand,
       trapSettingsFocus,
       deletePriceForModel,
       visiblePrices,
@@ -11628,6 +13546,30 @@ const VERSION = "0.7.10-beta1";
       turnCost,
       localUsageExport,
       debugSessionState,
+      compareUpdateVersions,
+      updateParseVersion,
+      updateDownloadCommand,
+      updateCheckCommand,
+      updateCommandPathJoin,
+      updateSourceLooksValid,
+      updateClusterHtml,
+      handleUpdateClusterClick,
+      checkForUpdateNow,
+      runScriptUpdate,
+      updateStateSnapshot: () => ({
+        phase: state.updatePhase,
+        busy: state.updateBusy,
+        remoteVersion: state.updateRemoteVersion,
+        errorKind: state.updateErrorKind,
+        error: state.updateError,
+      }),
+      updateResetState: () => {
+        state.updateBusy = false;
+        state.updatePhase = "";
+        state.updateRemoteVersion = "";
+        state.updateErrorKind = "";
+        state.updateError = "";
+      },
       activeModelInfo,
       spoofProfileAccountPayload,
       spoofProfileAccountsCheckPayload,

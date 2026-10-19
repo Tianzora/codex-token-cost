@@ -10,7 +10,6 @@
 !scripts/codex-live-token-cost.js
 !scripts/codex-live-token-cost-reload.cjs
 !scripts/codex-usage-backfill.cjs
-!scripts/prices.json
 !scripts/deploy-userscript.ps1
 !scripts/deploy-userscript.sh
 !docs/
