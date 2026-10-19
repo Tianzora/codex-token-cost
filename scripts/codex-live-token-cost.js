@@ -6428,11 +6428,14 @@ const VERSION = "0.7.10-beta1";
             <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}">30 天</button>
             <button type="button" data-analytics-preset="custom" data-active="${String(preset === "custom")}">自定义</button>
           </div>
-          <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar"${preset === "custom" ? "" : " hidden"}>
-            ${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}
-          </button>
-          ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
-          <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
+          <div class="cltc-analytics-date-range"${preset === "custom" ? "" : " hidden"}>
+            <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar" data-empty="${customStart && customEnd ? "false" : "true"}">
+              <svg class="cltc-date-range-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2.25" y="3.75" width="11.5" height="9.5" rx="2.25"/><path d="M2.25 6.75h11.5"/><path d="M5.5 2.25v3"/><path d="M10.5 2.25v3"/></svg>
+              <span class="cltc-date-range-label">${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}</span>
+            </button>
+            ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
+            <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
+          </div>
         </div>
         <div class="cltc-analytics-metrics">
           ${metricRow("总 Token", fmtCount(current.totalTokens), { current: current.totalTokens, previous: previous.totalTokens })}
@@ -9077,6 +9080,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-segmented button,
       .cltc-settings .cltc-date-range-trigger,
+      .cltc-settings .cltc-date-range-clear,
       .cltc-settings .cltc-analytics-filter,
       .cltc-settings .cltc-analytics-expand,
       .cltc-settings .cltc-analytics-degraded {
@@ -9125,15 +9129,41 @@ const VERSION = "0.7.10-beta1";
         min-width: 116px;
       }
       .cltc-settings .cltc-date-range-trigger {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        max-width: 100%;
         border: 1px solid var(--cltc-border);
         color: var(--cltc-text);
+        font-variant-numeric: tabular-nums;
       }
-      .cltc-settings .cltc-date-range-trigger[hidden] {
-        display: none;
+      .cltc-settings .cltc-date-range-trigger[data-empty="true"] {
+        color: var(--cltc-muted);
+      }
+      .cltc-settings .cltc-date-range-trigger[data-open="true"] {
+        border-color: color-mix(in srgb, var(--cltc-text) 30%, transparent);
+        background: var(--cltc-hover);
+      }
+      .cltc-settings .cltc-date-range-icon {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: .78;
+      }
+      .cltc-settings .cltc-date-range-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .cltc-settings .cltc-date-range-clear {
-        border: 1px solid var(--cltc-border);
-        color: var(--cltc-muted);
+        flex: none;
       }
       .cltc-settings .cltc-date-range-clear:focus-visible {
         background: var(--cltc-popover);
@@ -9150,38 +9180,14 @@ const VERSION = "0.7.10-beta1";
         opacity: 0;
         pointer-events: none;
       }
-      .cltc-settings .cltc-analytics-control-label {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        color: var(--cltc-muted);
-        font-size: 11px;
-        white-space: nowrap;
-      }
-      .cltc-settings .cltc-analytics-control {
-        min-height: 32px;
-        min-width: 112px;
-        padding: 5px 9px;
-        border: 1px solid var(--cltc-border);
-        border-radius: var(--cltc-radius-sm);
-        background: var(--cltc-input);
-        color: var(--cltc-text);
-        font: inherit;
-      }
-      .cltc-settings .cltc-analytics-control:focus-visible {
-        outline: 2px solid var(--cltc-focus-ring);
-        outline-offset: 2px;
-      }
       .cltc-settings .cltc-analytics-date-range {
-        display: inline-flex;
+        display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
+        min-width: 0;
       }
       .cltc-settings .cltc-analytics-date-range[hidden] {
         display: none;
-      }
-      .cltc-settings .cltc-analytics-date-range .cltc-analytics-control {
-        min-width: 132px;
       }
       .cltc-settings .cltc-analytics-filter,
       .cltc-settings .cltc-analytics-filter,
@@ -9448,11 +9454,13 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings button[data-variant="primary"]:hover {
           background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
         }
-        .cltc-settings .cltc-analytics-control:hover {
+        .cltc-settings .cltc-date-range-trigger:hover {
+          background: var(--cltc-hover);
+        }
+        .cltc-settings .cltc-date-range-clear:hover {
           background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
-          box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
         }
       }
       @media (max-width: 680px) {
@@ -9501,6 +9509,12 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings .cltc-analytics-section-head {
           align-items: flex-start;
           flex-wrap: wrap;
+        }
+        .cltc-settings .cltc-analytics-date-range {
+          width: 100%;
+        }
+        .cltc-settings .cltc-date-range-trigger {
+          flex: 1 1 auto;
         }
         .cltc-settings .cltc-analytics-metrics {
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -10168,7 +10182,8 @@ const VERSION = "0.7.10-beta1";
       span.flatpickr-weekday {
         line-height: 36px !important;
         font-size: 12px !important;
-        font-weight: 600 !important;
+        font-weight: 500 !important;
+        color: var(--color-token-text-secondary, #52525b) !important;
       }
       .flatpickr-calendar.multiMonth .flatpickr-innerContainer,
       .flatpickr-calendar.multiMonth .flatpickr-rContainer,
@@ -10205,6 +10220,10 @@ const VERSION = "0.7.10-beta1";
       html.electron-dark .flatpickr-day:focus {
         background: color-mix(in srgb, var(--cltc-calendar-accent) 34%, transparent) !important;
       }
+      .flatpickr-day.flatpickr-disabled:hover,
+      .flatpickr-day.flatpickr-disabled:focus {
+        background: transparent !important;
+      }
       .flatpickr-day.selected,
       .flatpickr-day.startRange,
       .flatpickr-day.endRange {
@@ -10225,9 +10244,9 @@ const VERSION = "0.7.10-beta1";
         content: "";
         position: absolute;
         z-index: -2;
-        top: 5px;
+        top: 4px;
         right: 0;
-        bottom: 5px;
+        bottom: 4px;
         left: 0;
         background: color-mix(in srgb, var(--cltc-calendar-accent) 12%, transparent);
         pointer-events: none;
@@ -10277,6 +10296,26 @@ const VERSION = "0.7.10-beta1";
       .flatpickr-day.flatpickr-disabled {
         color: var(--color-token-text-tertiary, #9ca3af) !important;
         opacity: .42;
+      }
+      .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange) {
+        font-weight: 600;
+      }
+      .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange)::before {
+        content: "";
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--cltc-calendar-accent);
+        opacity: .5;
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+      html.electron-dark .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange)::before {
+        background: #a1a1aa;
+        opacity: .6;
       }
       @media (max-width: 680px) {
         .flatpickr-calendar,
@@ -10365,6 +10404,8 @@ const VERSION = "0.7.10-beta1";
           state.analyticsPreset = "custom";
         },
         onClose(selectedDates) {
+          const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
+          if (trigger) delete trigger.dataset.open;
           const complete = selectedDates.length === 2;
           if (complete) {
             state.analyticsCustomStart = localDateKey(selectedDates[0]);
@@ -10378,6 +10419,8 @@ const VERSION = "0.7.10-beta1";
         },
       });
       state.analyticsCalendar.open();
+      const trigger = root.querySelector?.("[data-action='open-analytics-calendar']");
+      if (trigger) trigger.dataset.open = "true";
       return true;
     } catch (error) {
       const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
@@ -10953,30 +10996,6 @@ const VERSION = "0.7.10-beta1";
   }
 
   function handleSettingsChange(event) {
-    const analyticsPreset = event.target?.closest?.("[data-analytics-preset]");
-    if (analyticsPreset) {
-      state.analyticsPreset = ["today", "7d", "30d", "custom"].includes(analyticsPreset.value) ? analyticsPreset.value : "today";
-      renderSettingsOverlay(liveSnapshot(), { animate: false });
-      return;
-    }
-    const analyticsMetric = event.target?.closest?.("[data-analytics-metric]");
-    if (analyticsMetric) {
-      state.analyticsMetric = analyticsMetric.value === "cost" ? "cost" : "tokens";
-      renderSettingsOverlay(liveSnapshot(), { animate: false });
-      return;
-    }
-    const analyticsDate = event.target?.closest?.("[data-analytics-start], [data-analytics-end]");
-    if (analyticsDate) {
-      const start = state.settingsOverlay?.querySelector?.("[data-analytics-start]")?.value || "";
-      const end = state.settingsOverlay?.querySelector?.("[data-analytics-end]")?.value || "";
-      state.analyticsCustomStart = start;
-      state.analyticsCustomEnd = end;
-      if (parseLocalDateInput(start) && parseLocalDateInput(end) && parseLocalDateInput(end) >= parseLocalDateInput(start)) {
-        state.analyticsPreset = "custom";
-        renderSettingsOverlay(liveSnapshot(), { animate: false });
-      }
-      return;
-    }
     const hubToggle = event.target?.closest?.("[data-misc-field='hubVisible']");
     if (hubToggle) {
       saveHubVisible(Boolean(hubToggle.checked));

@@ -127,8 +127,8 @@ assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
 assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
-assert.equal(code.includes("data-analytics-start"), true);
-assert.equal(code.includes("data-analytics-end"), true);
+assert.equal(code.includes("data-analytics-start"), false);
+assert.equal(code.includes("data-analytics-end"), false);
 assert.equal(code.includes('if (state.analyticsPreset === "custom") window.setTimeout(() => void openAnalyticsCalendar(), 0);'), false);
 assert.equal(code.includes("cltc-analytics-tooltip"), true);
 assert.equal(code.includes('container.addEventListener("pointerdown", handleEmbeddedControlPointerDown, true)'), true);
@@ -232,7 +232,7 @@ assert.match(code, /\.cltc-settings \.cltc-price-row\[data-active="true"\] \{[\s
 assert.match(code, /#\$\{ROOT_ID\} \.cltc-toggle-field input,[\s\S]*?background: color-mix\(in srgb, var\(--cltc-text\) 16%, transparent\);/);
 assert.match(code, /\.cltc-settings \.cltc-toggle-field input::after \{[\s\S]*?background: var\(--cltc-muted\);/);
 assert.match(code, /\.cltc-settings \.cltc-toggle-field input:checked::after \{\s*transform: translateX\(14px\);\s*background: var\(--cltc-surface\);\s*\}/);
-assert.match(code, /\.cltc-settings \.cltc-analytics-control \{[\s\S]*?background: var\(--cltc-input\);/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-empty="true"\] \{[\s\S]*?color: var\(--cltc-muted\);/);
 assert.match(code, /\.cltc-settings \.cltc-analytics-filter \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
 assert.match(code, /\.cltc-settings \.cltc-composition-bar \{[\s\S]*?background: var\(--cltc-surface-secondary\);/);
 assert.equal(code.includes("function updateRollingValueSlot(slot, key, value)"), true);
@@ -365,7 +365,8 @@ assert.equal(code.includes("startTimer: 0"), true);
 assert.match(code, /state\.startTimer = trackTimer\(window\.setTimeout\(start, 1200\)\);/);
 assert.match(code, /function scheduleStart\(\) \{[\s\S]*?if \(state\.started \|\| state\.destroyed\) return;[\s\S]*?state\.startTimer = trackTimer\(window\.setTimeout\(start, 1200\)\);/);
 assert.match(code, /function destroy\(\) \{[\s\S]*?window\.clearTimeout\(state\.startTimer\);\s+state\.startTimer = 0;/);
-assert.match(code, /\.cltc-settings \.cltc-analytics-control \{/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-date-range \{/);
+assert.equal(code.includes(".cltc-analytics-control"), false);
 assert.match(code, /data-cltc-segment-index="/);
 assert.match(code, /data-analytics-preset="today"/);
 assert.match(code, /data-analytics-preset="7d"/);
@@ -378,6 +379,15 @@ assert.match(code, /data-analytics-metric="tokens"/);
 assert.match(code, /data-analytics-metric="cost"/);
 assert.match(code, /\.cltc-settings \.cltc-segmented \{/);
 assert.match(code, /\.cltc-settings \.cltc-date-range-trigger \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-empty="true"\] \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-open="true"\] \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-icon \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-label \{/);
+assert.match(code, /span\.flatpickr-weekday \{\s+line-height: 36px !important;\s+font-size: 12px !important;\s+font-weight: 500 !important;\s+color: var\(--color-token-text-secondary, #52525b\) !important;\s+\}/);
+assert.match(code, /\.flatpickr-day\.inRange::before,\s+\.flatpickr-day\.startRange::before,\s+\.flatpickr-day\.endRange::before \{\s+content: "";\s+position: absolute;\s+z-index: -2;\s+top: 4px;\s+right: 0;\s+bottom: 4px;\s+left: 0;/);
+assert.match(code, /\.flatpickr-day\.today:not\(\.selected\):not\(\.startRange\):not\(\.endRange\):not\(\.inRange\) \{/);
+assert.match(code, /\.flatpickr-day\.today:not\(\.selected\):not\(\.startRange\):not\(\.endRange\):not\(\.inRange\)::before \{/);
+assert.match(code, /\.flatpickr-day\.flatpickr-disabled:hover,\s+\.flatpickr-day\.flatpickr-disabled:focus \{\s+background: transparent !important;\s+\}/);
 assert.match(code, /function openAnalyticsCalendar\(\)/);
 assert.match(code, /function destroyAnalyticsCalendar\(\)/);
 assert.match(code, /function ensureFlatpickr\(\)/);
@@ -642,6 +652,12 @@ assert.equal(code.includes("recentLedgerModel()"), true);
 assert.equal(code.includes("cleanupMisdetectedGpt5Model"), false);
 assert.equal(code.includes("cltc-button"), true);
 assert.equal(code.includes('addEventListener("change", handleSettingsChange)'), true);
+assert.equal(code.includes('closest?.("[data-analytics-preset]")'), false);
+assert.equal(code.includes('state.analyticsPreset = ["today", "7d", "30d", "custom"].includes('), false);
+assert.equal(code.includes('const analyticsMetric = event.target?.closest?.("[data-analytics-metric]")'), false);
+assert.equal(code.includes('closest?.("[data-analytics-start], [data-analytics-end]")'), false);
+assert.equal(code.includes('trigger.dataset.open = "true";'), true);
+assert.equal(code.includes("delete trigger.dataset.open;"), true);
 assert.equal(code.includes('addEventListener("input", handleInput'), false);
 assert.equal(code.includes("installHubVisibilityObserver"), true);
 assert.equal(code.includes("isHubEntryNode"), false);
@@ -1352,6 +1368,11 @@ assert.equal(analyticsHtml.includes('data-analytics-preset="7d"'), true);
 assert.equal(analyticsHtml.includes('data-analytics-preset="30d"'), true);
 assert.equal(analyticsHtml.includes('data-analytics-preset="custom"'), true);
 assert.equal(analyticsHtml.includes('data-action="open-analytics-calendar"'), true);
+assert.equal(analyticsHtml.includes('<div class="cltc-analytics-date-range" hidden>'), true);
+assert.equal(analyticsHtml.includes('class="cltc-date-range-icon"'), true);
+assert.equal(analyticsHtml.includes('class="cltc-date-range-label"'), true);
+assert.equal(analyticsHtml.includes('data-empty="true"'), true);
+assert.equal(analyticsHtml.includes("选择日期范围"), true);
 assert.equal(analyticsHtml.includes('data-analytics-metric="tokens"'), true);
 assert.equal(analyticsHtml.includes('data-analytics-metric="cost"'), true);
 assert.equal(analyticsHtml.includes("总 Token"), true);
@@ -1373,6 +1394,18 @@ const costAnalyticsHtml = api.usageAnalyticsHtml({
 assert.equal(costAnalyticsHtml.includes('data-analytics-preset="7d"'), true);
 assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-preset="7d" data-active="true">7 天</button>'), true);
 assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-metric="cost" data-active="true">花费</button>'), true);
+const customRangeHtml = api.usageAnalyticsHtml({
+  now: localBoundaryTime,
+  preset: "custom",
+  customStart: "2026-07-01",
+  customEnd: "2026-07-11",
+  turns: visibleAnalyticsTurns,
+});
+assert.equal(customRangeHtml.includes('<div class="cltc-analytics-date-range">'), true);
+assert.equal(customRangeHtml.includes('data-empty="false"'), true);
+assert.equal(customRangeHtml.includes("2026-07-01 – 2026-07-11"), true);
+assert.equal(customRangeHtml.includes('data-action="clear-analytics-range"'), true);
+assert.equal(customRangeHtml.includes('<div class="cltc-analytics-date-range" hidden>'), false);
 assert.equal(analyticsHtml.includes("写缓存"), true);
 assert.equal(analyticsHtml.includes("模型明细"), true);
 const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
