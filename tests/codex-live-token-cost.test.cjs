@@ -383,6 +383,12 @@ assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-empty="true"
 assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-open="true"\] \{/);
 assert.match(code, /\.cltc-settings \.cltc-date-range-icon \{/);
 assert.match(code, /\.cltc-settings \.cltc-date-range-label \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-chevron \{/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger \{[\s\S]{0,320}?background: var\(--cltc-input\);/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-empty="false"\] \.cltc-date-range-label \{\s+font-weight: 500;\s+\}/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-open="true"\] \{\s+background: color-mix\(in srgb, var\(--cltc-text\) 12%, var\(--cltc-input\)\);\s+\}/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger\[data-open="true"\] \.cltc-date-range-chevron \{\s+transform: rotate\(180deg\);\s+\}/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger:hover \{\s+background: color-mix\(in srgb, var\(--cltc-text\) 8%, var\(--cltc-input\)\);\s+\}/);
 assert.match(code, /span\.flatpickr-weekday \{\s+line-height: 36px !important;\s+font-size: 12px !important;\s+font-weight: 500 !important;\s+color: var\(--color-token-text-secondary, #52525b\) !important;\s+\}/);
 assert.match(code, /\.flatpickr-day\.inRange::before,\s+\.flatpickr-day\.startRange::before,\s+\.flatpickr-day\.endRange::before \{\s+content: "";\s+position: absolute;\s+z-index: -2;\s+top: 4px;\s+right: 0;\s+bottom: 4px;\s+left: 0;/);
 assert.match(code, /\.flatpickr-day\.today:not\(\.selected\):not\(\.startRange\):not\(\.endRange\):not\(\.inRange\) \{/);
@@ -1371,6 +1377,7 @@ assert.equal(analyticsHtml.includes('data-action="open-analytics-calendar"'), tr
 assert.equal(analyticsHtml.includes('<div class="cltc-analytics-date-range" hidden>'), true);
 assert.equal(analyticsHtml.includes('class="cltc-date-range-icon"'), true);
 assert.equal(analyticsHtml.includes('class="cltc-date-range-label"'), true);
+assert.equal(analyticsHtml.includes('class="cltc-date-range-chevron"'), true);
 assert.equal(analyticsHtml.includes('data-empty="true"'), true);
 assert.equal(analyticsHtml.includes("选择日期范围"), true);
 assert.equal(analyticsHtml.includes('data-analytics-metric="tokens"'), true);

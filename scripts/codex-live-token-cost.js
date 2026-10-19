@@ -6432,6 +6432,7 @@ const VERSION = "0.7.10-beta1";
             <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar" data-empty="${customStart && customEnd ? "false" : "true"}">
               <svg class="cltc-date-range-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2.25" y="3.75" width="11.5" height="9.5" rx="2.25"/><path d="M2.25 6.75h11.5"/><path d="M5.5 2.25v3"/><path d="M10.5 2.25v3"/></svg>
               <span class="cltc-date-range-label">${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}</span>
+              <svg class="cltc-date-range-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4.5 6.25l3.5 3.5 3.5-3.5"/></svg>
             </button>
             ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
             <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
@@ -9117,7 +9118,7 @@ const VERSION = "0.7.10-beta1";
         font-weight: 600;
       }
       .cltc-settings .cltc-date-range-trigger:focus-visible {
-        background: var(--cltc-popover);
+        background: color-mix(in srgb, var(--cltc-text) 8%, var(--cltc-input));
         color: var(--cltc-text);
         outline: none;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
@@ -9134,16 +9135,20 @@ const VERSION = "0.7.10-beta1";
         gap: 7px;
         min-width: 0;
         max-width: 100%;
-        border: 1px solid var(--cltc-border);
+        padding: 5px 10px;
+        border: 1px solid transparent;
+        background: var(--cltc-input);
         color: var(--cltc-text);
         font-variant-numeric: tabular-nums;
       }
       .cltc-settings .cltc-date-range-trigger[data-empty="true"] {
         color: var(--cltc-muted);
       }
+      .cltc-settings .cltc-date-range-trigger[data-empty="false"] .cltc-date-range-label {
+        font-weight: 500;
+      }
       .cltc-settings .cltc-date-range-trigger[data-open="true"] {
-        border-color: color-mix(in srgb, var(--cltc-text) 30%, transparent);
-        background: var(--cltc-hover);
+        background: color-mix(in srgb, var(--cltc-text) 12%, var(--cltc-input));
       }
       .cltc-settings .cltc-date-range-icon {
         flex: none;
@@ -9155,6 +9160,21 @@ const VERSION = "0.7.10-beta1";
         stroke-linecap: round;
         stroke-linejoin: round;
         opacity: .78;
+      }
+      .cltc-settings .cltc-date-range-chevron {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: .55;
+        transition: transform var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-date-range-trigger[data-open="true"] .cltc-date-range-chevron {
+        transform: rotate(180deg);
       }
       .cltc-settings .cltc-date-range-label {
         min-width: 0;
@@ -9455,7 +9475,7 @@ const VERSION = "0.7.10-beta1";
           background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
         }
         .cltc-settings .cltc-date-range-trigger:hover {
-          background: var(--cltc-hover);
+          background: color-mix(in srgb, var(--cltc-text) 8%, var(--cltc-input));
         }
         .cltc-settings .cltc-date-range-clear:hover {
           background: var(--cltc-hover);
