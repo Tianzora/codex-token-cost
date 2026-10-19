@@ -8367,7 +8367,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings-overlay {
         --cltc-text: var(--color-token-text-primary, light-dark(#111827, #f4f4f5));
-        --cltc-muted: var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa));
+        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
         --cltc-border: var(--color-token-border-light, light-dark(#d1d5db, #3f3f46));
         --cltc-border-subtle: var(--color-token-border-light, light-dark(#e5e7eb, #323238));
         --cltc-surface: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
@@ -8598,12 +8598,6 @@ const VERSION = "0.7.10-beta1";
         color: var(--cltc-muted);
         font-size: 11px;
       }
-      .cltc-settings .cltc-settings-version {
-        opacity: .68;
-      }
-      .cltc-settings .cltc-settings-footer span + span {
-        margin-left: 8px;
-      }
       .cltc-settings .cltc-settings-nav {
         display: grid;
         gap: 2px;
@@ -8774,7 +8768,7 @@ const VERSION = "0.7.10-beta1";
       #${ROOT_ID} .cltc-price-row[data-active="true"],
       .cltc-settings .cltc-price-row[data-active="true"] {
         background: var(--cltc-active);
-        font-weight: 650;
+        font-weight: 600;
       }
       .cltc-settings .cltc-price-table-head {
         min-height: 30px;
@@ -8788,6 +8782,7 @@ const VERSION = "0.7.10-beta1";
         margin-top: -12px;
         color: var(--cltc-muted);
         font-size: 12px;
+        line-height: 17px;
       }
       .cltc-settings .cltc-price-editor {
         display: grid;
@@ -8890,6 +8885,7 @@ const VERSION = "0.7.10-beta1";
         background: transparent;
         color: var(--cltc-muted);
         font-size: 12px;
+        line-height: 17px;
       }
       #${ROOT_ID} .cltc-price-input,
       #${ROOT_ID} .cltc-profile-select,
@@ -8991,7 +8987,7 @@ const VERSION = "0.7.10-beta1";
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 32px;
+        min-height: 34px;
         padding: 6px 10px;
         border: 1px solid var(--cltc-border);
         border-radius: var(--cltc-radius-control, 8px);
@@ -9136,7 +9132,7 @@ const VERSION = "0.7.10-beta1";
         min-width: 0;
         max-width: 100%;
         padding: 5px 10px;
-        border: 1px solid transparent;
+        border: 1px solid var(--cltc-border);
         background: var(--cltc-input);
         color: var(--cltc-text);
         font-variant-numeric: tabular-nums;
@@ -9592,7 +9588,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings-overlay.cltc-settings-embedded {
         --cltc-text: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#111827, #f4f4f5)));
-        --cltc-muted: var(--codex-plus-text-tertiary, var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa)));
+        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
         --cltc-border: var(--codex-plus-border, var(--color-token-border-light, light-dark(#d1d5db, #3f3f46)));
         --cltc-border-subtle: var(--codex-plus-border-subtle, var(--color-token-border-light, light-dark(#e5e7eb, #323238)));
         --cltc-surface: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));

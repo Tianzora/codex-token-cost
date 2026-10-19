@@ -164,6 +164,16 @@ const settingsSidebarRule = code.match(/\.cltc-settings \.cltc-settings-sidebar 
 const settingsFooterRule = code.match(/\.cltc-settings \.cltc-settings-footer \{([\s\S]*?)\n      \}/)?.[1] || "";
 assert.equal(settingsSidebarRule.includes("border-right"), false);
 assert.equal(settingsFooterRule.includes("margin-top: auto"), false);
+assert.equal(code.includes(".cltc-settings .cltc-settings-version"), false);
+assert.equal(code.includes(".cltc-settings .cltc-settings-footer span + span"), false);
+assert.equal(code.includes("--cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent)"), true);
+assert.equal(code.includes("--cltc-muted: var(--codex-plus-text-tertiary"), false);
+assert.equal(code.includes("font-weight: 650"), false);
+assert.match(code, /\.cltc-settings \.cltc-price-row\[data-active="true"\] \{[\s\S]*?font-weight: 600;[\s\S]*?\}/);
+assert.match(code, /\.cltc-settings \.cltc-date-range-trigger \{[\s\S]{0,320}?border: 1px solid var\(--cltc-border\);/);
+assert.match(code, /\.cltc-settings \.cltc-price-meta \{[\s\S]*?line-height: 17px;[\s\S]*?\}/);
+assert.match(code, /#\$\{ROOT_ID\} \.cltc-price-field span,[\s\S]*?line-height: 17px;[\s\S]*?\}/);
+assert.match(code, /\.cltc-settings \.cltc-settings-row \.cltc-link-button \{[\s\S]{0,220}?min-height: 34px;/);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
 assert.equal(code.includes(".cltc-profile-select:open"), true);
 assert.equal(code.includes(".cltc-profile-select option"), true);
