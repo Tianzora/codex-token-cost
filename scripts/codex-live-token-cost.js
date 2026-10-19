@@ -9934,7 +9934,7 @@ const VERSION = "0.7.10-beta1";
           <div class="cltc-settings-row cltc-sync-row">
             <span>
               <strong>历史数据同步</strong>
-              <small>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量；启动后自动静默同步（无需选择文件夹），重复同步不会重复计数。</small>
+              <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。</small>
             </span>
             <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
           </div>

@@ -543,7 +543,8 @@ assert.equal(code.includes(".cltc-settings-section + .cltc-settings-section .clt
 assert.equal(code.includes('busy ? "正在同步…" : "立即同步"'), true);
 assert.equal(code.includes("已启用 · 上次静默检查"), false);
 assert.equal(code.includes("usageSyncAutoStatusText"), false);
-assert.equal(code.includes("启动后自动静默同步（无需选择文件夹），重复同步不会重复计数。"), true);
+assert.equal(code.includes("自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。"), true);
+assert.equal(code.includes("（无需选择文件夹）"), false);
 assert.equal(code.includes("自动同步：已启用"), false);
 assert.equal(code.includes("点「立即同步」可手动重试"), true);
 assert.equal(code.includes('花费 ${valueSlot("session-cost")}'), true);
@@ -1507,7 +1508,7 @@ assert.equal(api.generalSettingsHtml().includes("管理 HUD 显示与本地 Prof
 const syncSectionHtml = api.generalSettingsHtml();
 assert.equal(syncSectionHtml.includes("<h2>历史数据同步</h2>"), false);
 assert.equal(syncSectionHtml.includes("<strong>历史数据同步</strong>"), true);
-assert.equal(syncSectionHtml.includes("读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量；启动后自动静默同步（无需选择文件夹），重复同步不会重复计数。"), true);
+assert.equal(syncSectionHtml.includes("自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。"), true);
 assert.equal(syncSectionHtml.includes("cltc-settings-row cltc-sync-row"), true);
 assert.equal(syncSectionHtml.includes("<strong>自动同步</strong>"), false);
 assert.equal(syncSectionHtml.includes('data-field="usage-sync-auto"'), false);
