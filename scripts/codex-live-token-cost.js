@@ -8662,15 +8662,6 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-settings-section + .cltc-settings-section {
         border-top: 1px solid var(--cltc-border-subtle);
-        padding-top: 16px;
-      }
-      .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading h2 {
-        font-size: 13px;
-        line-height: 1.45;
-      }
-      .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading p {
-        font-size: 12px;
-        line-height: 17px;
       }
       .cltc-settings .cltc-settings-section-heading {
         display: grid;
@@ -9925,23 +9916,12 @@ const VERSION = "0.7.10-beta1";
 
   function usageSyncStatusText() {
     if (state.usageSyncBusy) return state.usageSyncStatus || "正在同步…";
+    if (state.usageSyncAutoFailures >= 3) return "通道暂不可用，将按长间隔自动重试；点「立即同步」可手动重试";
     if (state.usageSyncStatus) return state.usageSyncStatus;
     const result = usageSyncLastResult();
     if (!result) return "";
     const range = result.firstDay ? ` · 覆盖 ${result.firstDay} ~ ${result.lastDay}` : "";
     return `上次同步：写入 ${result.imported} 轮 · 去重 ${result.deduped} · 跳过 ${result.skipped}${range}（${new Date(result.at).toLocaleString()}）`;
-  }
-
-  function usageSyncAutoStatusText() {
-    if (state.usageSyncAutoFailures >= 3) return "通道暂不可用，将按长间隔自动重试；点「立即同步」可手动重试";
-    const last = toCount(state.usageSyncAutoAt);
-    if (last) {
-      const time = new Date(last);
-      const stamp = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
-      return `已启用 · 上次静默检查 ${stamp}`;
-    }
-    if (!state.usageSyncClient) return "启动后自动检查（首选 Codex 本地通道，无需选择文件夹）";
-    return "已连接 Codex 本地通道，无需选择文件夹";
   }
 
   function usageSyncSectionHtml() {
@@ -9950,15 +9930,11 @@ const VERSION = "0.7.10-beta1";
     const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status">${escapeHtml(statusText)}</p>` : "";
     return `
       <section class="cltc-settings-section">
-        <div class="cltc-settings-section-heading">
-          <h2>历史数据同步</h2>
-          <p>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量。默认经 Codex 本地接口静默同步，无需选择文件夹；重复同步不会重复计数。</p>
-        </div>
         <div class="cltc-sync-block">
           <div class="cltc-settings-row cltc-sync-row">
             <span>
-              <strong>自动同步</strong>
-              <small data-field="usage-sync-auto">${escapeHtml(usageSyncAutoStatusText())}</small>
+              <strong>历史数据同步</strong>
+              <small>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量；启动后自动静默同步（无需选择文件夹），重复同步不会重复计数。</small>
             </span>
             <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
           </div>
