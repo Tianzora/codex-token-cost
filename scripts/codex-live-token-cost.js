@@ -8661,7 +8661,8 @@ const VERSION = "0.7.10-beta1";
         gap: 20px;
       }
       .cltc-settings .cltc-settings-section + .cltc-settings-section {
-        margin-top: 16px;
+        border-top: 1px solid var(--cltc-border-subtle);
+        padding-top: 16px;
       }
       .cltc-settings .cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading h2 {
         font-size: 13px;
@@ -8695,6 +8696,9 @@ const VERSION = "0.7.10-beta1";
         min-height: 66px;
         padding: 14px 0;
         border-top: 1px solid var(--cltc-border-subtle);
+      }
+      .cltc-settings .cltc-sync-row {
+        border-top: none;
       }
       .cltc-settings .cltc-settings-row strong,
       .cltc-settings .cltc-toggle-field strong {
