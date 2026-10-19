@@ -4327,7 +4327,7 @@ const VERSION = "0.7.10-beta1";
     } catch (error) {
       const name = (error && error.name) || "";
       if (name === "AbortError") state.usageSyncStatus = "已取消选择数据目录";
-      else if (name === "NotFoundError") state.usageSyncStatus = "数据目录不可用（可能已移动），请重新点「同步」并选择 .codex 文件夹";
+      else if (name === "NotFoundError") state.usageSyncStatus = "数据目录不可用（可能已移动），请重新点「立即同步」并选择 .codex 文件夹";
       else if (name === "NotAllowedError" || name === "SecurityError") state.usageSyncStatus = `目录访问被拒绝：${(error && error.message) || ""}`;
       else state.usageSyncStatus = `同步失败：${(error && error.message) || error}`;
     } finally {
@@ -6278,7 +6278,7 @@ const VERSION = "0.7.10-beta1";
     const value = Number(current);
     const before = Number(previous);
     if (!Number.isFinite(value) || !Number.isFinite(before)) return "暂无对比";
-    if (!before) return value ? "较上期新增" : "与上期持平";
+    if (!before) return value ? "较上期新增" : "暂无对比";
     const percent = Math.round(((value - before) / before) * 100);
     if (!percent) return "与上期持平";
     return `较上期 ${percent > 0 ? "+" : ""}${percent}%`;
@@ -6342,6 +6342,7 @@ const VERSION = "0.7.10-beta1";
     const stagger = buckets.length > 60 ? 18 : buckets.length > 30 ? 24 : 32;
     const barWidth = Math.max(2, (width - inset.left - inset.right - gap * Math.max(0, buckets.length - 1)) / Math.max(1, buckets.length));
     const labelEvery = Math.max(1, Math.ceil(buckets.length / 7));
+    const hasData = buckets.some((item) => item.value > 0);
     const bars = buckets
       .map((item, index) => {
         const barHeight = item.value ? Math.max(2, (item.value / max) * chartHeight) : 1;
@@ -6352,8 +6353,9 @@ const VERSION = "0.7.10-beta1";
         const tooltipX = Math.max(2, Math.min(width - tooltipWidth - 2, x + barWidth / 2 - tooltipWidth / 2));
         const tooltipY = Math.max(2, y - 25);
         const label = index % labelEvery === 0 || index === buckets.length - 1 ? `<text x="${x + barWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(item.label)}</text>` : "";
+        if (!hasData) return label;
         return `<g class="cltc-analytics-bar">
-          <rect tabindex="0" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
+          <rect tabindex="${index === 0 ? "0" : "-1"}" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
           <g class="cltc-analytics-tooltip" aria-hidden="true">
             <rect x="${tooltipX}" y="${tooltipY}" width="${tooltipWidth}" height="20" rx="5"></rect>
             <text x="${tooltipX + tooltipWidth / 2}" y="${tooltipY + 14}" text-anchor="middle">${escapeHtml(display)}</text>
@@ -6362,7 +6364,8 @@ const VERSION = "0.7.10-beta1";
         </g>`;
       })
       .join("");
-    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${bars}</svg>`;
+    const empty = hasData ? "" : `<text class="cltc-analytics-chart-empty" x="${width / 2}" y="${inset.top + chartHeight / 2}" text-anchor="middle" dominant-baseline="middle">暂无数据</text>`;
+    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}${bars}</svg>`;
   }
 
   function usageAnalyticsHtml(options = {}) {
@@ -6423,16 +6426,20 @@ const VERSION = "0.7.10-beta1";
         </div>
         <div class="cltc-analytics-toolbar">
           <div class="cltc-segmented" data-cltc-segment-index="${["today", "7d", "30d", "custom"].indexOf(preset)}" role="group" aria-label="统计时间范围">
-            <button type="button" data-analytics-preset="today" data-active="${String(preset === "today")}">今日</button>
-            <button type="button" data-analytics-preset="7d" data-active="${String(preset === "7d")}">7 天</button>
-            <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}">30 天</button>
-            <button type="button" data-analytics-preset="custom" data-active="${String(preset === "custom")}">自定义</button>
+            <button type="button" data-analytics-preset="today" data-active="${String(preset === "today")}" aria-pressed="${String(preset === "today")}">今日</button>
+            <button type="button" data-analytics-preset="7d" data-active="${String(preset === "7d")}" aria-pressed="${String(preset === "7d")}">7 天</button>
+            <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}" aria-pressed="${String(preset === "30d")}">30 天</button>
+            <button type="button" data-analytics-preset="custom" data-active="${String(preset === "custom")}" aria-pressed="${String(preset === "custom")}">自定义</button>
           </div>
-          <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar"${preset === "custom" ? "" : " hidden"}>
-            ${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}
-          </button>
-          ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
-          <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
+          <div class="cltc-analytics-date-range"${preset === "custom" ? "" : " hidden"}>
+            <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar" data-empty="${customStart && customEnd ? "false" : "true"}">
+              <svg class="cltc-date-range-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect x="2.25" y="3.75" width="11.5" height="9.5" rx="2.25"/><path d="M2.25 6.75h11.5"/><path d="M5.5 2.25v3"/><path d="M10.5 2.25v3"/></svg>
+              <span class="cltc-date-range-label">${customStart && customEnd ? `${escapeHtml(customStart)} – ${escapeHtml(customEnd)}` : "选择日期范围"}</span>
+              <svg class="cltc-date-range-chevron" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4.5 6.25l3.5 3.5 3.5-3.5"/></svg>
+            </button>
+            ${preset === "custom" && customStart && customEnd ? `<button type="button" class="cltc-date-range-clear" data-action="clear-analytics-range">清除</button>` : ""}
+            <input class="cltc-analytics-date-input" data-analytics-date-input type="text" tabindex="-1" aria-hidden="true">
+          </div>
         </div>
         <div class="cltc-analytics-metrics">
           ${metricRow("总 Token", fmtCount(current.totalTokens), { current: current.totalTokens, previous: previous.totalTokens })}
@@ -6444,8 +6451,8 @@ const VERSION = "0.7.10-beta1";
           <div class="cltc-analytics-section-head">
             <div><h3>趋势</h3><p>${preset === "today" ? "按小时" : Math.ceil((range.endMs - range.startMs) / 86_400_000) + 1 > 90 ? "按周" : "按日"}</p></div>
             <div class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="${metric === "cost" ? 1 : 0}" role="group" aria-label="趋势指标">
-              <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}">Token</button>
-              <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}">花费</button>
+              <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}" aria-pressed="${String(metric === "tokens")}">Token</button>
+              <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}" aria-pressed="${String(metric === "cost")}">花费</button>
             </div>
           </div>
           ${analyticsChartSvg(filtered, range, metric)}
@@ -8363,7 +8370,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings-overlay {
         --cltc-text: var(--color-token-text-primary, light-dark(#111827, #f4f4f5));
-        --cltc-muted: var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa));
+        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
         --cltc-border: var(--color-token-border-light, light-dark(#d1d5db, #3f3f46));
         --cltc-border-subtle: var(--color-token-border-light, light-dark(#e5e7eb, #323238));
         --cltc-surface: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
@@ -8594,12 +8601,6 @@ const VERSION = "0.7.10-beta1";
         color: var(--cltc-muted);
         font-size: 11px;
       }
-      .cltc-settings .cltc-settings-version {
-        opacity: .68;
-      }
-      .cltc-settings .cltc-settings-footer span + span {
-        margin-left: 8px;
-      }
       .cltc-settings .cltc-settings-nav {
         display: grid;
         gap: 2px;
@@ -8660,6 +8661,9 @@ const VERSION = "0.7.10-beta1";
         display: grid;
         gap: 20px;
       }
+      .cltc-settings .cltc-settings-section + .cltc-settings-section {
+        border-top: 1px solid var(--cltc-border-subtle);
+      }
       .cltc-settings .cltc-settings-section-heading {
         display: grid;
         gap: 4px;
@@ -8685,12 +8689,16 @@ const VERSION = "0.7.10-beta1";
         padding: 14px 0;
         border-top: 1px solid var(--cltc-border-subtle);
       }
+      .cltc-settings .cltc-sync-row {
+        border-top: none;
+      }
       .cltc-settings .cltc-settings-row strong,
       .cltc-settings .cltc-toggle-field strong {
         display: block;
         font-weight: 500;
       }
-      .cltc-settings .cltc-toggle-field small {
+      .cltc-settings .cltc-toggle-field small,
+      .cltc-settings .cltc-settings-row small {
         display: block;
         margin-top: 2px;
         color: var(--cltc-muted);
@@ -8699,7 +8707,7 @@ const VERSION = "0.7.10-beta1";
       }
       #${ROOT_ID} .cltc-sync-status,
       .cltc-settings .cltc-sync-status {
-        margin-top: 3px;
+        margin: 0;
         color: var(--cltc-muted);
         font-size: 12px;
         line-height: 17px;
@@ -8763,7 +8771,7 @@ const VERSION = "0.7.10-beta1";
       #${ROOT_ID} .cltc-price-row[data-active="true"],
       .cltc-settings .cltc-price-row[data-active="true"] {
         background: var(--cltc-active);
-        font-weight: 650;
+        font-weight: 600;
       }
       .cltc-settings .cltc-price-table-head {
         min-height: 30px;
@@ -8777,6 +8785,7 @@ const VERSION = "0.7.10-beta1";
         margin-top: -12px;
         color: var(--cltc-muted);
         font-size: 12px;
+        line-height: 17px;
       }
       .cltc-settings .cltc-price-editor {
         display: grid;
@@ -8833,7 +8842,7 @@ const VERSION = "0.7.10-beta1";
         margin: 0;
         border: 1px solid var(--cltc-border);
         border-radius: var(--cltc-radius-pill);
-        background: var(--cltc-surface-secondary);
+        background: color-mix(in srgb, var(--cltc-text) 16%, transparent);
         cursor: pointer;
         transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
           background var(--cltc-duration-press) var(--cltc-ease-out),
@@ -8848,9 +8857,10 @@ const VERSION = "0.7.10-beta1";
         width: 14px;
         height: 14px;
         border-radius: var(--cltc-radius-pill);
-        background: var(--cltc-surface);
+        background: var(--cltc-muted);
         box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
-        transition: transform var(--cltc-duration-press) var(--cltc-ease-out);
+        transition: transform var(--cltc-duration-press) var(--cltc-ease-out),
+          background var(--cltc-duration-press) var(--cltc-ease-out);
       }
       #${ROOT_ID} .cltc-toggle-field input:checked,
       .cltc-settings .cltc-toggle-field input:checked {
@@ -8860,6 +8870,7 @@ const VERSION = "0.7.10-beta1";
       #${ROOT_ID} .cltc-toggle-field input:checked::after,
       .cltc-settings .cltc-toggle-field input:checked::after {
         transform: translateX(14px);
+        background: var(--cltc-surface);
       }
       #${ROOT_ID} .cltc-toggle-field input:active,
       .cltc-settings .cltc-toggle-field input:active {
@@ -8877,6 +8888,7 @@ const VERSION = "0.7.10-beta1";
         background: transparent;
         color: var(--cltc-muted);
         font-size: 12px;
+        line-height: 17px;
       }
       #${ROOT_ID} .cltc-price-input,
       #${ROOT_ID} .cltc-profile-select,
@@ -8965,15 +8977,9 @@ const VERSION = "0.7.10-beta1";
         gap: 8px;
         justify-content: flex-end;
       }
-      .cltc-settings .cltc-usage-sync-status {
-        margin: 0;
-        color: var(--cltc-muted);
-        font-size: 13px;
-        line-height: 19px;
-      }
-      #${ROOT_ID} .cltc-price-actions-left,
-      .cltc-settings .cltc-price-actions-left {
-        justify-content: flex-start;
+      .cltc-settings .cltc-sync-block {
+        display: grid;
+        gap: 8px;
       }
       #${ROOT_ID} .cltc-price-actions button,
       #${ROOT_ID} .cltc-price-actions .cltc-link-button,
@@ -8984,7 +8990,7 @@ const VERSION = "0.7.10-beta1";
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 32px;
+        min-height: 34px;
         padding: 6px 10px;
         border: 1px solid var(--cltc-border);
         border-radius: var(--cltc-radius-control, 8px);
@@ -9074,6 +9080,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-segmented button,
       .cltc-settings .cltc-date-range-trigger,
+      .cltc-settings .cltc-date-range-clear,
       .cltc-settings .cltc-analytics-filter,
       .cltc-settings .cltc-analytics-expand,
       .cltc-settings .cltc-analytics-degraded {
@@ -9110,7 +9117,7 @@ const VERSION = "0.7.10-beta1";
         font-weight: 600;
       }
       .cltc-settings .cltc-date-range-trigger:focus-visible {
-        background: var(--cltc-popover);
+        background: color-mix(in srgb, var(--cltc-text) 8%, var(--cltc-input));
         color: var(--cltc-text);
         outline: none;
         box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
@@ -9122,15 +9129,60 @@ const VERSION = "0.7.10-beta1";
         min-width: 116px;
       }
       .cltc-settings .cltc-date-range-trigger {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+        max-width: 100%;
+        padding: 5px 10px;
         border: 1px solid var(--cltc-border);
+        background: var(--cltc-input);
         color: var(--cltc-text);
+        font-variant-numeric: tabular-nums;
       }
-      .cltc-settings .cltc-date-range-trigger[hidden] {
-        display: none;
+      .cltc-settings .cltc-date-range-trigger[data-empty="true"] {
+        color: var(--cltc-muted);
+      }
+      .cltc-settings .cltc-date-range-trigger[data-empty="false"] .cltc-date-range-label {
+        font-weight: 500;
+      }
+      .cltc-settings .cltc-date-range-trigger[data-open="true"] {
+        background: color-mix(in srgb, var(--cltc-text) 12%, var(--cltc-input));
+      }
+      .cltc-settings .cltc-date-range-icon {
+        flex: none;
+        width: 14px;
+        height: 14px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: .78;
+      }
+      .cltc-settings .cltc-date-range-chevron {
+        flex: none;
+        width: 12px;
+        height: 12px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.4;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: .55;
+        transition: transform var(--cltc-duration-press) var(--cltc-ease-out);
+      }
+      .cltc-settings .cltc-date-range-trigger[data-open="true"] .cltc-date-range-chevron {
+        transform: rotate(180deg);
+      }
+      .cltc-settings .cltc-date-range-label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .cltc-settings .cltc-date-range-clear {
-        border: 1px solid var(--cltc-border);
-        color: var(--cltc-muted);
+        flex: none;
       }
       .cltc-settings .cltc-date-range-clear:focus-visible {
         background: var(--cltc-popover);
@@ -9147,38 +9199,14 @@ const VERSION = "0.7.10-beta1";
         opacity: 0;
         pointer-events: none;
       }
-      .cltc-settings .cltc-analytics-control-label {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        color: var(--cltc-muted);
-        font-size: 11px;
-        white-space: nowrap;
-      }
-      .cltc-settings .cltc-analytics-control {
-        min-height: 32px;
-        min-width: 112px;
-        padding: 5px 9px;
-        border: 1px solid var(--cltc-border);
-        border-radius: var(--cltc-radius-sm);
-        background: var(--cltc-input);
-        color: var(--cltc-text);
-        font: inherit;
-      }
-      .cltc-settings .cltc-analytics-control:focus-visible {
-        outline: 2px solid var(--cltc-focus-ring);
-        outline-offset: 2px;
-      }
       .cltc-settings .cltc-analytics-date-range {
-        display: inline-flex;
+        display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
+        min-width: 0;
       }
       .cltc-settings .cltc-analytics-date-range[hidden] {
         display: none;
-      }
-      .cltc-settings .cltc-analytics-date-range .cltc-analytics-control {
-        min-width: 132px;
       }
       .cltc-settings .cltc-analytics-filter,
       .cltc-settings .cltc-analytics-filter,
@@ -9289,11 +9317,15 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus,
       .cltc-settings .cltc-analytics-chart rect[data-chart-index]:focus-visible {
-        stroke: rgb(76, 78, 80) !important;
+        stroke: var(--cltc-text) !important;
       }
       .cltc-settings .cltc-analytics-chart text {
         fill: var(--cltc-muted);
-        font-size: 9px;
+        font-size: 11px;
+      }
+      .cltc-settings .cltc-analytics-chart .cltc-analytics-chart-empty {
+        fill: var(--cltc-muted);
+        font-size: 13px;
       }
       .cltc-settings .cltc-analytics-tooltip {
         opacity: 0;
@@ -9369,7 +9401,7 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings .cltc-analytics-model-head {
         padding: 0 9px;
         color: var(--cltc-muted);
-        font-size: 10px;
+        font-size: 11px;
       }
       .cltc-settings .cltc-analytics-models {
         max-height: 320px;
@@ -9401,7 +9433,7 @@ const VERSION = "0.7.10-beta1";
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 11px;
+        font-size: 12px;
       }
       .cltc-settings .cltc-analytics-expand {
         justify-self: start;
@@ -9445,11 +9477,13 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings button[data-variant="primary"]:hover {
           background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
         }
-        .cltc-settings .cltc-analytics-control:hover {
+        .cltc-settings .cltc-date-range-trigger:hover {
+          background: color-mix(in srgb, var(--cltc-text) 8%, var(--cltc-input));
+        }
+        .cltc-settings .cltc-date-range-clear:hover {
           background: var(--cltc-hover);
           color: var(--cltc-text);
           outline: none;
-          box-shadow: 0 1px 2px color-mix(in srgb, var(--cltc-shadow) 34%, transparent);
         }
       }
       @media (max-width: 680px) {
@@ -9498,6 +9532,12 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings .cltc-analytics-section-head {
           align-items: flex-start;
           flex-wrap: wrap;
+        }
+        .cltc-settings .cltc-analytics-date-range {
+          width: 100%;
+        }
+        .cltc-settings .cltc-date-range-trigger {
+          flex: 1 1 auto;
         }
         .cltc-settings .cltc-analytics-metrics {
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9555,7 +9595,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings-overlay.cltc-settings-embedded {
         --cltc-text: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#111827, #f4f4f5)));
-        --cltc-muted: var(--codex-plus-text-tertiary, var(--color-token-text-tertiary, light-dark(#6b7280, #a1a1aa)));
+        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
         --cltc-border: var(--codex-plus-border, var(--color-token-border-light, light-dark(#d1d5db, #3f3f46)));
         --cltc-border-subtle: var(--codex-plus-border-subtle, var(--color-token-border-light, light-dark(#e5e7eb, #323238)));
         --cltc-surface: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
@@ -9878,7 +9918,7 @@ const VERSION = "0.7.10-beta1";
         </div>
         <label class="cltc-toggle-field">
           <span>
-            <strong>显示 HUB</strong>
+            <strong>显示 HUD</strong>
             <small>在输入框上方显示本轮、会话与今日统计。</small>
           </span>
           <input type="checkbox" data-misc-field="hubVisible"${hubVisible() ? " checked" : ""}>
@@ -9913,6 +9953,7 @@ const VERSION = "0.7.10-beta1";
 
   function usageSyncStatusText() {
     if (state.usageSyncBusy) return state.usageSyncStatus || "正在同步…";
+    if (state.usageSyncAutoFailures >= 3) return "通道暂不可用，将按长间隔自动重试；点「立即同步」可手动重试";
     if (state.usageSyncStatus) return state.usageSyncStatus;
     const result = usageSyncLastResult();
     if (!result) return "";
@@ -9920,33 +9961,22 @@ const VERSION = "0.7.10-beta1";
     return `上次同步：写入 ${result.imported} 轮 · 去重 ${result.deduped} · 跳过 ${result.skipped}${range}（${new Date(result.at).toLocaleString()}）`;
   }
 
-  function usageSyncAutoStatusText() {
-    if (state.usageSyncAutoFailures >= 3) return "自动同步：通道暂不可用，将按长间隔自动重试；也可点「同步」立即重试";
-    const last = toCount(state.usageSyncAutoAt);
-    if (last) {
-      const time = new Date(last);
-      const stamp = `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
-      return `自动同步：已启用 · 上次静默检查 ${stamp}`;
-    }
-    if (!state.usageSyncClient) return "自动同步：启动后会自动检查（首选 Codex 本地通道，无需选择文件夹）";
-    return "自动同步：已连接 Codex 本地通道，无需选择文件夹";
-  }
-
   function usageSyncSectionHtml() {
     const busy = state.usageSyncBusy;
     const statusText = usageSyncStatusText();
-    const statusHtml = statusText ? `<p class="cltc-usage-sync-status">${escapeHtml(statusText)}</p>` : "";
+    const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" role="status">${escapeHtml(statusText)}</p>` : "";
     return `
       <section class="cltc-settings-section">
-        <div class="cltc-settings-section-heading">
-          <h2>历史数据同步</h2>
-          <p>读取本机 Codex 会话记录，回填插件未运行期间产生的 token 用量。默认走自动通道：通过 Codex 应用的本地接口静默读取 .codex 会话（含 .jsonl 与 .jsonl.zst），插件启动后与运行期间自动增量同步，无需选择文件夹；点击「同步」可立即触发一次。仅在自动通道不可用时才需要手动选择 .codex 数据文件夹。重复同步不会重复计数。</p>
+        <div class="cltc-sync-block">
+          <div class="cltc-settings-row cltc-sync-row">
+            <span>
+              <strong>历史数据同步</strong>
+              <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。</small>
+            </span>
+            <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
+          </div>
+          ${statusHtml}
         </div>
-        <div class="cltc-price-actions cltc-price-actions-left">
-          <button type="button" data-action="sync-usage" data-variant="primary"${busy ? " disabled" : ""}>同步</button>
-        </div>
-        <p class="cltc-usage-sync-status" data-field="usage-sync-auto">${escapeHtml(usageSyncAutoStatusText())}</p>
-        ${statusHtml}
       </section>
     `;
   }
@@ -9999,9 +10029,11 @@ const VERSION = "0.7.10-beta1";
     const row = (name) => {
       const item = priceFor(name);
       const cell = (field) => (item?.[field] == null ? "-" : String(item[field]));
+      const label = priceListModelLabel(name);
+      const priceLabel = `模型 ${label}，输入 ${cell("input")}，读缓存 ${cell("cachedInput")}，写缓存 ${cell("cacheWrite")}，输出 ${cell("output")}（USD / 1M tokens）`;
       return `
-        <button class="cltc-price-row" type="button" data-price-pick="${escapeHtml(name)}" data-active="${String(name === model)}">
-          <span title="${escapeHtml(priceListModelLabel(name))}">${escapeHtml(priceListModelLabel(name))}</span>
+        <button class="cltc-price-row" type="button" data-price-pick="${escapeHtml(name)}" data-active="${String(name === model)}" aria-pressed="${String(name === model)}" aria-label="${escapeHtml(priceLabel)}">
+          <span title="${escapeHtml(label)}">${escapeHtml(label)}</span>
           <span>${escapeHtml(cell("input"))}</span>
           <span>${escapeHtml(cell("cachedInput"))}</span>
           <span>${escapeHtml(cell("cacheWrite"))}</span>
@@ -10074,7 +10106,7 @@ const VERSION = "0.7.10-beta1";
               <span class="cltc-settings-version">v${VERSION}</span>
             </div>
           </aside>
-          <div class="cltc-settings-content" role="region" aria-live="polite">
+          <div class="cltc-settings-content" role="region">
             ${content}
           </div>
         </div>
@@ -10175,7 +10207,8 @@ const VERSION = "0.7.10-beta1";
       span.flatpickr-weekday {
         line-height: 36px !important;
         font-size: 12px !important;
-        font-weight: 600 !important;
+        font-weight: 500 !important;
+        color: var(--color-token-text-secondary, #52525b) !important;
       }
       .flatpickr-calendar.multiMonth .flatpickr-innerContainer,
       .flatpickr-calendar.multiMonth .flatpickr-rContainer,
@@ -10212,6 +10245,10 @@ const VERSION = "0.7.10-beta1";
       html.electron-dark .flatpickr-day:focus {
         background: color-mix(in srgb, var(--cltc-calendar-accent) 34%, transparent) !important;
       }
+      .flatpickr-day.flatpickr-disabled:hover,
+      .flatpickr-day.flatpickr-disabled:focus {
+        background: transparent !important;
+      }
       .flatpickr-day.selected,
       .flatpickr-day.startRange,
       .flatpickr-day.endRange {
@@ -10232,9 +10269,9 @@ const VERSION = "0.7.10-beta1";
         content: "";
         position: absolute;
         z-index: -2;
-        top: 5px;
+        top: 4px;
         right: 0;
-        bottom: 5px;
+        bottom: 4px;
         left: 0;
         background: color-mix(in srgb, var(--cltc-calendar-accent) 12%, transparent);
         pointer-events: none;
@@ -10284,6 +10321,26 @@ const VERSION = "0.7.10-beta1";
       .flatpickr-day.flatpickr-disabled {
         color: var(--color-token-text-tertiary, #9ca3af) !important;
         opacity: .42;
+      }
+      .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange) {
+        font-weight: 600;
+      }
+      .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange)::before {
+        content: "";
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: var(--cltc-calendar-accent);
+        opacity: .5;
+        transform: translateX(-50%);
+        pointer-events: none;
+      }
+      html.electron-dark .flatpickr-day.today:not(.selected):not(.startRange):not(.endRange):not(.inRange)::before {
+        background: #a1a1aa;
+        opacity: .6;
       }
       @media (max-width: 680px) {
         .flatpickr-calendar,
@@ -10372,6 +10429,8 @@ const VERSION = "0.7.10-beta1";
           state.analyticsPreset = "custom";
         },
         onClose(selectedDates) {
+          const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
+          if (trigger) delete trigger.dataset.open;
           const complete = selectedDates.length === 2;
           if (complete) {
             state.analyticsCustomStart = localDateKey(selectedDates[0]);
@@ -10385,6 +10444,8 @@ const VERSION = "0.7.10-beta1";
         },
       });
       state.analyticsCalendar.open();
+      const trigger = root.querySelector?.("[data-action='open-analytics-calendar']");
+      if (trigger) trigger.dataset.open = "true";
       return true;
     } catch (error) {
       const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
@@ -10412,12 +10473,16 @@ const VERSION = "0.7.10-beta1";
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     const bar = event.target?.closest?.("[data-chart-index]");
     if (!bar) return;
-    const bars = Array.from(state.settingsOverlay?.querySelectorAll?.("[data-chart-index]") || []);
+    const chart = bar.ownerSVGElement || bar.closest?.(".cltc-analytics-chart");
+    const bars = Array.from(chart?.querySelectorAll?.("[data-chart-index]") || []);
     const index = bars.indexOf(bar);
     if (index < 0) return;
     event.preventDefault?.();
     const next = bars[Math.max(0, Math.min(bars.length - 1, index + (event.key === "ArrowRight" ? 1 : -1)))];
-    next?.focus?.();
+    if (next) {
+      bars.forEach((node) => node.setAttribute?.("tabindex", node === next ? "0" : "-1"));
+      next.focus?.();
+    }
   }
 
   function handleSettingsKeydown(event) {
@@ -10960,30 +11025,6 @@ const VERSION = "0.7.10-beta1";
   }
 
   function handleSettingsChange(event) {
-    const analyticsPreset = event.target?.closest?.("[data-analytics-preset]");
-    if (analyticsPreset) {
-      state.analyticsPreset = ["today", "7d", "30d", "custom"].includes(analyticsPreset.value) ? analyticsPreset.value : "today";
-      renderSettingsOverlay(liveSnapshot(), { animate: false });
-      return;
-    }
-    const analyticsMetric = event.target?.closest?.("[data-analytics-metric]");
-    if (analyticsMetric) {
-      state.analyticsMetric = analyticsMetric.value === "cost" ? "cost" : "tokens";
-      renderSettingsOverlay(liveSnapshot(), { animate: false });
-      return;
-    }
-    const analyticsDate = event.target?.closest?.("[data-analytics-start], [data-analytics-end]");
-    if (analyticsDate) {
-      const start = state.settingsOverlay?.querySelector?.("[data-analytics-start]")?.value || "";
-      const end = state.settingsOverlay?.querySelector?.("[data-analytics-end]")?.value || "";
-      state.analyticsCustomStart = start;
-      state.analyticsCustomEnd = end;
-      if (parseLocalDateInput(start) && parseLocalDateInput(end) && parseLocalDateInput(end) >= parseLocalDateInput(start)) {
-        state.analyticsPreset = "custom";
-        renderSettingsOverlay(liveSnapshot(), { animate: false });
-      }
-      return;
-    }
     const hubToggle = event.target?.closest?.("[data-misc-field='hubVisible']");
     if (hubToggle) {
       saveHubVisible(Boolean(hubToggle.checked));
@@ -11501,6 +11542,7 @@ const VERSION = "0.7.10-beta1";
         analytics: state.analyticsRollupSaveError,
       }),
       usageAnalyticsHtml,
+      analyticsComparisonText,
       analyticsChartBuckets,
       renderEmbeddedSettingsPage,
       installCodexPlusEmbeddedPage,
