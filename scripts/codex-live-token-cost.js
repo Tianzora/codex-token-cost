@@ -6278,7 +6278,7 @@ const VERSION = "0.7.10-beta1";
     const value = Number(current);
     const before = Number(previous);
     if (!Number.isFinite(value) || !Number.isFinite(before)) return "暂无对比";
-    if (!before) return value ? "较上期新增" : "与上期持平";
+    if (!before) return value ? "较上期新增" : "暂无对比";
     const percent = Math.round(((value - before) / before) * 100);
     if (!percent) return "与上期持平";
     return `较上期 ${percent > 0 ? "+" : ""}${percent}%`;
@@ -6342,6 +6342,7 @@ const VERSION = "0.7.10-beta1";
     const stagger = buckets.length > 60 ? 18 : buckets.length > 30 ? 24 : 32;
     const barWidth = Math.max(2, (width - inset.left - inset.right - gap * Math.max(0, buckets.length - 1)) / Math.max(1, buckets.length));
     const labelEvery = Math.max(1, Math.ceil(buckets.length / 7));
+    const hasData = buckets.some((item) => item.value > 0);
     const bars = buckets
       .map((item, index) => {
         const barHeight = item.value ? Math.max(2, (item.value / max) * chartHeight) : 1;
@@ -6352,6 +6353,7 @@ const VERSION = "0.7.10-beta1";
         const tooltipX = Math.max(2, Math.min(width - tooltipWidth - 2, x + barWidth / 2 - tooltipWidth / 2));
         const tooltipY = Math.max(2, y - 25);
         const label = index % labelEvery === 0 || index === buckets.length - 1 ? `<text x="${x + barWidth / 2}" y="${height - 10}" text-anchor="middle">${escapeHtml(item.label)}</text>` : "";
+        if (!hasData) return label;
         return `<g class="cltc-analytics-bar">
           <rect tabindex="0" role="graphics-symbol" aria-label="${escapeHtml(`${item.label}，${display}`)}" data-chart-index="${index}" style="--cltc-chart-bar-delay:${index * stagger}ms" x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" rx="2"><title>${escapeHtml(`${item.label} · ${display}`)}</title></rect>
           <g class="cltc-analytics-tooltip" aria-hidden="true">
@@ -6362,7 +6364,8 @@ const VERSION = "0.7.10-beta1";
         </g>`;
       })
       .join("");
-    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${bars}</svg>`;
+    const empty = hasData ? "" : `<text class="cltc-analytics-chart-empty" x="${width / 2}" y="${inset.top + chartHeight / 2}" text-anchor="middle" dominant-baseline="middle">暂无数据</text>`;
+    return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}${bars}</svg>`;
   }
 
   function usageAnalyticsHtml(options = {}) {
@@ -6423,10 +6426,10 @@ const VERSION = "0.7.10-beta1";
         </div>
         <div class="cltc-analytics-toolbar">
           <div class="cltc-segmented" data-cltc-segment-index="${["today", "7d", "30d", "custom"].indexOf(preset)}" role="group" aria-label="统计时间范围">
-            <button type="button" data-analytics-preset="today" data-active="${String(preset === "today")}">今日</button>
-            <button type="button" data-analytics-preset="7d" data-active="${String(preset === "7d")}">7 天</button>
-            <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}">30 天</button>
-            <button type="button" data-analytics-preset="custom" data-active="${String(preset === "custom")}">自定义</button>
+            <button type="button" data-analytics-preset="today" data-active="${String(preset === "today")}" aria-pressed="${String(preset === "today")}">今日</button>
+            <button type="button" data-analytics-preset="7d" data-active="${String(preset === "7d")}" aria-pressed="${String(preset === "7d")}">7 天</button>
+            <button type="button" data-analytics-preset="30d" data-active="${String(preset === "30d")}" aria-pressed="${String(preset === "30d")}">30 天</button>
+            <button type="button" data-analytics-preset="custom" data-active="${String(preset === "custom")}" aria-pressed="${String(preset === "custom")}">自定义</button>
           </div>
           <div class="cltc-analytics-date-range"${preset === "custom" ? "" : " hidden"}>
             <button type="button" class="cltc-date-range-trigger" data-action="open-analytics-calendar" data-empty="${customStart && customEnd ? "false" : "true"}">
@@ -6448,8 +6451,8 @@ const VERSION = "0.7.10-beta1";
           <div class="cltc-analytics-section-head">
             <div><h3>趋势</h3><p>${preset === "today" ? "按小时" : Math.ceil((range.endMs - range.startMs) / 86_400_000) + 1 > 90 ? "按周" : "按日"}</p></div>
             <div class="cltc-segmented cltc-segmented-compact" data-cltc-segment-index="${metric === "cost" ? 1 : 0}" role="group" aria-label="趋势指标">
-              <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}">Token</button>
-              <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}">花费</button>
+              <button type="button" data-analytics-metric="tokens" data-active="${String(metric === "tokens")}" aria-pressed="${String(metric === "tokens")}">Token</button>
+              <button type="button" data-analytics-metric="cost" data-active="${String(metric === "cost")}" aria-pressed="${String(metric === "cost")}">花费</button>
             </div>
           </div>
           ${analyticsChartSvg(filtered, range, metric)}
@@ -9318,7 +9321,11 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-analytics-chart text {
         fill: var(--cltc-muted);
-        font-size: 9px;
+        font-size: 11px;
+      }
+      .cltc-settings .cltc-analytics-chart .cltc-analytics-chart-empty {
+        fill: var(--cltc-muted);
+        font-size: 13px;
       }
       .cltc-settings .cltc-analytics-tooltip {
         opacity: 0;
@@ -9394,7 +9401,7 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings .cltc-analytics-model-head {
         padding: 0 9px;
         color: var(--cltc-muted);
-        font-size: 10px;
+        font-size: 11px;
       }
       .cltc-settings .cltc-analytics-models {
         max-height: 320px;
@@ -9426,7 +9433,7 @@ const VERSION = "0.7.10-beta1";
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 11px;
+        font-size: 12px;
       }
       .cltc-settings .cltc-analytics-expand {
         justify-self: start;
@@ -9957,7 +9964,7 @@ const VERSION = "0.7.10-beta1";
   function usageSyncSectionHtml() {
     const busy = state.usageSyncBusy;
     const statusText = usageSyncStatusText();
-    const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status">${escapeHtml(statusText)}</p>` : "";
+    const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" role="status">${escapeHtml(statusText)}</p>` : "";
     return `
       <section class="cltc-settings-section">
         <div class="cltc-sync-block">
@@ -10022,9 +10029,11 @@ const VERSION = "0.7.10-beta1";
     const row = (name) => {
       const item = priceFor(name);
       const cell = (field) => (item?.[field] == null ? "-" : String(item[field]));
+      const label = priceListModelLabel(name);
+      const priceLabel = `模型 ${label}，输入 ${cell("input")}，读缓存 ${cell("cachedInput")}，写缓存 ${cell("cacheWrite")}，输出 ${cell("output")}（USD / 1M tokens）`;
       return `
-        <button class="cltc-price-row" type="button" data-price-pick="${escapeHtml(name)}" data-active="${String(name === model)}">
-          <span title="${escapeHtml(priceListModelLabel(name))}">${escapeHtml(priceListModelLabel(name))}</span>
+        <button class="cltc-price-row" type="button" data-price-pick="${escapeHtml(name)}" data-active="${String(name === model)}" aria-pressed="${String(name === model)}" aria-label="${escapeHtml(priceLabel)}">
+          <span title="${escapeHtml(label)}">${escapeHtml(label)}</span>
           <span>${escapeHtml(cell("input"))}</span>
           <span>${escapeHtml(cell("cachedInput"))}</span>
           <span>${escapeHtml(cell("cacheWrite"))}</span>
@@ -10097,7 +10106,7 @@ const VERSION = "0.7.10-beta1";
               <span class="cltc-settings-version">v${VERSION}</span>
             </div>
           </aside>
-          <div class="cltc-settings-content" role="region" aria-live="polite">
+          <div class="cltc-settings-content" role="region">
             ${content}
           </div>
         </div>
@@ -11529,6 +11538,7 @@ const VERSION = "0.7.10-beta1";
         analytics: state.analyticsRollupSaveError,
       }),
       usageAnalyticsHtml,
+      analyticsComparisonText,
       analyticsChartBuckets,
       renderEmbeddedSettingsPage,
       installCodexPlusEmbeddedPage,

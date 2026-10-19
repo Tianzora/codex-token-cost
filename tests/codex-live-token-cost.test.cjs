@@ -134,7 +134,7 @@ assert.equal(code.includes("cltc-analytics-tooltip"), true);
 assert.equal(code.includes('container.addEventListener("pointerdown", handleEmbeddedControlPointerDown, true)'), true);
 assert.equal(code.includes('button.addEventListener("pointerdown", handleEmbeddedProfileSavePointerDown)'), true);
 assert.match(code, /rect\[data-chart-index\][\s\S]*?stroke: transparent !important;/);
-assert.match(code, /rect\[data-chart-index\]:focus-visible[\s\S]*?stroke: rgb\(76, 78, 80\) !important;/);
+assert.match(code, /rect\[data-chart-index\]:focus-visible[\s\S]*?stroke: var\(--cltc-text\) !important;/);
 assert.equal(code.includes("@keyframes cltc-analytics-bar-grow"), true);
 assert.equal(code.includes("transform-box: fill-box;"), true);
 assert.equal(code.includes("transform-origin: center bottom;"), true);
@@ -174,6 +174,24 @@ assert.match(code, /\.cltc-settings \.cltc-date-range-trigger \{[\s\S]{0,320}?bo
 assert.match(code, /\.cltc-settings \.cltc-price-meta \{[\s\S]*?line-height: 17px;[\s\S]*?\}/);
 assert.match(code, /#\$\{ROOT_ID\} \.cltc-price-field span,[\s\S]*?line-height: 17px;[\s\S]*?\}/);
 assert.match(code, /\.cltc-settings \.cltc-settings-row \.cltc-link-button \{[\s\S]{0,220}?min-height: 34px;/);
+assert.equal(code.includes("const hasData = buckets.some((item) => item.value > 0);"), true);
+assert.equal(code.includes('class="cltc-analytics-chart-empty"'), true);
+assert.equal(code.includes("暂无数据"), true);
+assert.match(code, /\.cltc-settings \.cltc-analytics-chart text \{\s*fill: var\(--cltc-muted\);\s*font-size: 11px;\s*\}/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-chart \.cltc-analytics-chart-empty \{[\s\S]*?font-size: 13px;[\s\S]*?\}/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-model-head \{[\s\S]*?font-size: 11px;[\s\S]*?\}/);
+assert.match(code, /\.cltc-settings \.cltc-analytics-model-row span \{[\s\S]*?font-size: 12px;[\s\S]*?\}/);
+assert.equal(code.includes('data-analytics-preset="today" data-active="${String(preset === "today")}" aria-pressed="${String(preset === "today")}"'), true);
+assert.equal(code.includes('data-analytics-preset="7d" data-active="${String(preset === "7d")}" aria-pressed="${String(preset === "7d")}"'), true);
+assert.equal(code.includes('data-analytics-preset="30d" data-active="${String(preset === "30d")}" aria-pressed="${String(preset === "30d")}"'), true);
+assert.equal(code.includes('data-analytics-preset="custom" data-active="${String(preset === "custom")}" aria-pressed="${String(preset === "custom")}"'), true);
+assert.equal(code.includes('data-analytics-metric="tokens" data-active="${String(metric === "tokens")}" aria-pressed="${String(metric === "tokens")}"'), true);
+assert.equal(code.includes('data-analytics-metric="cost" data-active="${String(metric === "cost")}" aria-pressed="${String(metric === "cost")}"'), true);
+assert.equal(code.includes('data-active="${String(name === model)}" aria-pressed="${String(name === model)}" aria-label="${escapeHtml(priceLabel)}"'), true);
+assert.equal(code.includes('class="cltc-settings-content" role="region" aria-live="polite"'), false);
+assert.equal(code.includes('tabindex="${index === 0 ? "0" : "-1"}"'), true);
+assert.match(code, /bars\.forEach\(\(node\) => node\.setAttribute\?\.\("tabindex", node === next \? "0" : "-1"\)\);/);
+assert.equal(code.includes('<p class="cltc-sync-status" data-field="usage-sync-status" role="status">'), true);
 assert.equal(code.includes("@media (max-width: 680px)"), true);
 assert.equal(code.includes(".cltc-profile-select:open"), true);
 assert.equal(code.includes(".cltc-profile-select option"), true);
@@ -930,6 +948,11 @@ vm.runInNewContext(code, context, { filename: scriptPath });
 
 const api = context.__codexLiveTokenCostTest;
 assert.equal(context.Promise.prototype.then.__codexLiveTokenCostProfileUnlock, undefined);
+assert.equal(typeof api.analyticsComparisonText, "function");
+assert.equal(api.analyticsComparisonText(0, 0), "暂无对比");
+assert.equal(api.analyticsComparisonText(5, 0), "较上期新增");
+assert.equal(api.analyticsComparisonText(5, 5), "与上期持平");
+assert.equal(api.analyticsComparisonText(0, 5), "较上期 -100%");
 assert.equal(typeof api.spoofProfileAccountPayload, "function");
 assert.equal(typeof api.beginLocalTurn, "function");
 assert.equal(typeof api.persistLocalCurrentTurn, "function");
@@ -1409,8 +1432,8 @@ const costAnalyticsHtml = api.usageAnalyticsHtml({
   turns: visibleAnalyticsTurns,
 });
 assert.equal(costAnalyticsHtml.includes('data-analytics-preset="7d"'), true);
-assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-preset="7d" data-active="true">7 天</button>'), true);
-assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-metric="cost" data-active="true">花费</button>'), true);
+assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-preset="7d" data-active="true" aria-pressed="true">7 天</button>'), true);
+assert.equal(costAnalyticsHtml.includes('<button type="button" data-analytics-metric="cost" data-active="true" aria-pressed="true">花费</button>'), true);
 const customRangeHtml = api.usageAnalyticsHtml({
   now: localBoundaryTime,
   preset: "custom",
