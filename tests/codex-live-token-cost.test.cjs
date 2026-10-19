@@ -582,7 +582,7 @@ assert.equal(code.includes("grid-template-columns: minmax(0, 1fr) auto"), true);
 assert.equal(code.includes("cltc-price-actions-left"), false);
 assert.equal(code.includes(".cltc-settings .cltc-sync-block"), true);
 assert.equal(code.includes(".cltc-usage-sync-status"), false);
-assert.match(code, /\.cltc-settings \.cltc-settings-section \+ \.cltc-settings-section \{\s*border-top: 1px solid var\(--cltc-border-subtle\);\s*\}/);
+assert.match(code, /\.cltc-settings \.cltc-settings-section \+ \.cltc-settings-section \{\s*border-top: 1px solid var\(--cltc-border-subtle\);\s*margin-top: 20px;\s*\}/);
 assert.match(code, /\.cltc-settings \.cltc-sync-row \{\s*border-top: none;\s*\}/);
 assert.equal(code.includes(".cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading h2"), false);
 assert.equal(code.includes(".cltc-settings-section + .cltc-settings-section .cltc-settings-section-heading p"), false);

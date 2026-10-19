@@ -8663,6 +8663,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-settings-section + .cltc-settings-section {
         border-top: 1px solid var(--cltc-border-subtle);
+        margin-top: 20px;
       }
       .cltc-settings .cltc-settings-section-heading {
         display: grid;
