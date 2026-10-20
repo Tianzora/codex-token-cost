@@ -1052,6 +1052,7 @@ const context = {
   String,
   RegExp,
   URL,
+  TextEncoder,
   TextDecoder,
   atob(value) {
     return Buffer.from(value, "base64").toString("binary");
@@ -2298,9 +2299,11 @@ assert.equal(context.localStorage.getItem("__codexLiveTokenCostPriceOverridesV1"
 assert.equal(api.costPricedLabel(unpricedCost, unpricedUsage), " 未定价");
 assert.equal(api.priceListModels("gpt-5.4-cyber").includes("gpt-5.4-cyber"), true);
 assert.equal(api.priceListModelLabel("gpt-5.4-cyber"), "gpt-5.4-cyber · 未定价");
-assert.equal(context.__codexLiveTokenCost.setModelPrice("zero-price-model", { input: 0, cachedInput: 0, output: 0 }), false);
-assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "zero-price-model"), false);
-// —— 自定义价格编辑器：空价格保存必须给出错误、保留草稿，不能静默失败 ——
+assert.equal(context.__codexLiveTokenCost.setModelPrice("zero-price-model", { input: 0, cachedInput: 0, output: 0 }), true);
+assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "zero-price-model"), true);
+assert.deepEqual(JSON.parse(JSON.stringify(api.priceFor("zero-price-model"))), { input: 0, cachedInput: 0, cacheWrite: null, output: 0 });
+assert.equal(context.__codexLiveTokenCost.setModelPrice("negative-price-model", { input: -1, output: 0 }), false);
+// —— 自定义价格编辑器：允许 0 价格；只有四个字段全空时才报错 ——
 const priceEditorField = (value) => ({ value, setAttribute() {}, removeAttribute() {} });
 const makePriceEditorRoot = (fields) => {
   const nodes = {};
@@ -2312,11 +2315,12 @@ const makePriceEditorRoot = (fields) => {
 };
 const emptyPriceRoot = makePriceEditorRoot({ input: "", cachedInput: "", cacheWrite: "", output: "" });
 const emptyPriceError = api.priceSaveDraftError(emptyPriceRoot);
-assert.equal(emptyPriceError.message, "请至少填写一个大于 0 的价格");
+assert.equal(emptyPriceError.message, "请至少填写一个价格");
 assert.equal(emptyPriceError.input, emptyPriceRoot.querySelector("[data-price-field='input']"));
-assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "0", cachedInput: "", cacheWrite: "", output: "0" })).message, "请至少填写一个大于 0 的价格");
+assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "0", cachedInput: "", cacheWrite: "", output: "0" })), null);
 assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "1.5", cachedInput: "", cacheWrite: "", output: "" })), null);
 assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "abc", cachedInput: "", cacheWrite: "", output: "" })).message, "价格需为不小于 0 的数字");
+assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "-1", cachedInput: "", cacheWrite: "", output: "" })).message, "价格需为不小于 0 的数字");
 api.setPriceDraft(null);
 api.capturePriceDraft(makePriceEditorRoot({ model: "custom-draft-model", input: "2", cachedInput: "", cacheWrite: "", output: "8" }));
 assert.equal(
@@ -2334,8 +2338,24 @@ try {
   assert.equal(api.settingsEditorRoot(), zeroSaveRoot);
   assert.equal(api.savePriceFromEditor(), false);
   assert.equal(zeroSaveRoot.errorNode.hidden, false);
-  assert.equal(zeroSaveRoot.errorNode.textContent, "请至少填写一个大于 0 的价格");
+  assert.equal(zeroSaveRoot.errorNode.textContent, "请至少填写一个价格");
   assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "custom-zero-save"), false);
+} finally {
+  context.document.querySelector = originalDocumentQuerySelectorForPrices;
+}
+// 显式输入 0 可以保存：免费/本地模型应显示“自定义”而不是“未定价”
+const zeroPricedRoot = makePriceEditorRoot({ model: "custom-zero-priced", input: "0", cachedInput: "0", cacheWrite: "0", output: "0" });
+context.document.querySelector = function querySelectorForZeroPrice(selector) {
+  if (selector === ".cltc-settings-embedded") return zeroPricedRoot;
+  return originalDocumentQuerySelectorForPrices.call(context.document, selector);
+};
+try {
+  assert.equal(api.savePriceFromEditor(), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.priceFor("custom-zero-priced"))), { input: 0, cachedInput: 0, cacheWrite: 0, output: 0 });
+  const zeroPricedCost = api.costForModelUsage({ input: 1000, output: 100, cached: 0, total: 1100 }, "custom-zero-priced");
+  assert.equal(zeroPricedCost.priced, true);
+  assert.equal(zeroPricedCost.value, 0);
+  assert.equal(api.priceListModelLabel("custom-zero-priced"), "custom-zero-priced");
 } finally {
   context.document.querySelector = originalDocumentQuerySelectorForPrices;
 }
@@ -5189,9 +5209,11 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(api.priceSyncStatus().tone, "warn");
     assert.equal(api.priceSyncStatus().text.includes("沿用"), true);
     priceHostState.failCommand = false;
+    await api.priceCacheIdle();
     priceCommandCalls.length = 0;
     priceReadCalls.length = 0;
     priceRemoveCalls.length = 0;
+    priceWriteCalls.length = 0;
 
     priceHostState.upstream = syncedUpstream;
     assert.equal(await api.refreshDefaultPrices(), true);
@@ -5211,8 +5233,22 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(priceWriteCalls.length, 1);
     assert.equal(priceWriteCalls[0].path, priceCachePath);
     const writtenCache = JSON.parse(Buffer.from(priceWriteCalls[0].dataBase64, "base64").toString("utf8"));
+    assert.equal(writtenCache.version, 3);
     assert.equal(writtenCache.prices["gpt-5.6-sol"].input, 4.5);
     assert.equal(writtenCache.meta["gpt-9-nebula"].mode, "responses");
+    // 同步落盘的文件同时镜像自定义价格，供离线/清空 localStorage 时恢复。
+    assert.equal(writtenCache.overrides["zero-price-model"].input, 0);
+    // 模型名可能是中文：缓存写入必须按 UTF-8 编码，不能直接 btoa。
+    const overridesBeforeUnicode = storage.get("__codexLiveTokenCostPriceOverridesV1");
+    assert.equal(
+      context.__codexLiveTokenCost.setModelPrice("模型-零价", { input: 0, cachedInput: 0, cacheWrite: 0, output: 0 }),
+      true,
+    );
+    await api.priceCacheFlush();
+    const unicodeCache = JSON.parse(Buffer.from(priceWriteCalls.at(-1).dataBase64, "base64").toString("utf8"));
+    assert.equal(unicodeCache.overrides["模型-零价"].output, 0);
+    storage.set("__codexLiveTokenCostPriceOverridesV1", overridesBeforeUnicode);
+    await api.priceCacheFlush();
     assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
     assert.equal(api.priceFor("gpt-9-nebula").output, 50);
     // 价格已收录但不在官方模型列表：默认不展示，显式传入/使用过才出现。
@@ -5263,6 +5299,22 @@ const profileLifecycleTest = Promise.resolve()
     const restoredOverrides = JSON.parse(storage.get("__codexLiveTokenCostPriceOverridesV1"));
     assert.equal(Object.hasOwn(restoredOverrides, "gpt-5.6-sol"), false);
     assert.equal(Object.hasOwn(restoredOverrides, "gpt-9-nebula"), false);
+
+    // 文件缓存可在 localStorage 丢失时恢复自定义价格；已有 localStorage 时以它为准。
+    await api.priceCacheIdle();
+    const overridesBeforeFileRestore = storage.get("__codexLiveTokenCostPriceOverridesV1");
+    storage.delete("__codexLiveTokenCostPriceOverridesV1");
+    assert.equal(
+      api.priceCacheRestoreOverrides({ overrides: { "cached-custom-model": { input: 0, cachedInput: 0, cacheWrite: 0, output: 0 } } }),
+      true,
+    );
+    assert.equal(api.priceFor("cached-custom-model").input, 0);
+    assert.equal(api.priceCacheRestoreOverrides({ overrides: { "cached-custom-model": { input: 9, output: 9 } } }), false);
+    assert.equal(api.priceFor("cached-custom-model").input, 0);
+    if (overridesBeforeFileRestore == null) storage.delete("__codexLiveTokenCostPriceOverridesV1");
+    else storage.set("__codexLiveTokenCostPriceOverridesV1", overridesBeforeFileRestore);
+
+    await api.priceCacheIdle();
     currentNow = priceTestNow;
     context.codexPlus = savedCodexPlusForPrices;
     delete context.localStorage.removeItem;

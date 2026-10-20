@@ -787,6 +787,69 @@ const rolloutTurnRow = {
 
   delete context.__codexPlusNativeHostClients;
 
+  // --- 11. client discovery fallback: React fiber trees (host map unavailable) ---
+  const fallbackClient = { hostId: "local", disposed: false, async sendRequest() {} };
+  const fiberLeaf = {
+    child: null,
+    sibling: null,
+    return: null,
+    memoizedProps: null,
+    memoizedState: { memoizedState: fallbackClient, next: null },
+    dependencies: null,
+  };
+  const fiberRoot = { child: fiberLeaf, sibling: null, return: null, memoizedProps: null, memoizedState: null, dependencies: null };
+
+  // host map wins over fiber discovery; channel is reported for diagnostics
+  api.usageSyncResetClient();
+  context.__codexPlusNativeHostClients = new Map([["local", { ref: { deref: () => autoClient } }]]);
+  context.__codexRoot = { _internalRoot: { current: fiberRoot } };
+  assert.equal(api.usageSyncResolveClient(), autoClient, "host map must take precedence over fiber discovery");
+  assert.equal(api.usageSyncState().clientChannel, "host-map");
+  delete context.__codexPlusNativeHostClients;
+
+  // no host map: downward scan from the React root finds the client in hook state
+  api.usageSyncResetClient();
+  assert.equal(api.usageSyncResolveClient(), fallbackClient, "react root scan must find the app-server client");
+  assert.equal(api.usageSyncState().clientChannel, "fiber-tree");
+  assert.equal(api.usageSyncResolveClient(), fallbackClient, "fiber discovery result must be cached");
+
+  // disposed clients are skipped; later hooks in the same component still resolve
+  api.usageSyncResetClient();
+  const disposedClient = { hostId: "local", disposed: true, async sendRequest() {} };
+  const liveClient = { hostId: "local", disposed: false, async sendRequest() {} };
+  const chainedLeaf = {
+    child: null,
+    sibling: null,
+    return: null,
+    memoizedProps: null,
+    memoizedState: { memoizedState: disposedClient, next: { memoizedState: liveClient, next: null } },
+    dependencies: null,
+  };
+  context.__codexRoot = { _internalRoot: { current: { child: chainedLeaf, sibling: null, return: null, memoizedProps: null, memoizedState: null, dependencies: null } } };
+  assert.equal(api.usageSyncResolveClient(), liveClient, "disposed clients must be skipped");
+
+  // DOM anchors are tried before the root scan (cheap ancestor walk)
+  api.usageSyncResetClient();
+  const anchorClient = { hostId: "local", disposed: false, async sendRequest() {} };
+  const anchorNode = { __reactFiber$test: { memoizedProps: { value: anchorClient }, memoizedState: null, dependencies: null, return: null } };
+  const originalQuerySelector = context.document.querySelector;
+  context.document.querySelector = (selector) => (selector === "[data-codex-composer-root]" ? anchorNode : null);
+  assert.equal(api.usageSyncResolveClient(), anchorClient, "DOM anchor ancestor walk must be used before the root scan");
+  assert.equal(api.usageSyncState().clientChannel, "fiber-ancestor");
+  context.document.querySelector = originalQuerySelector;
+
+  // react container keys on DOM nodes are an independent root source
+  api.usageSyncResetClient();
+  context.__codexRoot = null;
+  const containerRoot = { child: fiberLeaf, sibling: null, return: null, memoizedProps: null, memoizedState: null, dependencies: null };
+  const containerNode = { __reactContainer$test: containerRoot };
+  const originalQuerySelectorAll = context.document.querySelectorAll;
+  context.document.querySelectorAll = (selector) => (String(selector).includes("#root") ? [containerNode] : []);
+  assert.equal(api.usageSyncResolveClient(), fallbackClient, "react container keys must provide a root fallback");
+  assert.equal(api.usageSyncState().clientChannel, "fiber-tree");
+  context.document.querySelectorAll = originalQuerySelectorAll;
+  context.__codexRoot = undefined;
+
   console.log("backfill + quota regression tests passed");
 })().catch((error) => {
   setImmediate(() => {

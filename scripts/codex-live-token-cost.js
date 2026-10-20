@@ -422,6 +422,7 @@ const VERSION = "0.7.10-beta1";
     priceSyncError: "",
     priceSyncedAt: 0,
     priceFileCacheLoaded: false,
+    priceCacheWritePromise: null,
     priceEditorOpen: false,
     priceEditorModel: "",
     priceDraft: null,
@@ -439,6 +440,7 @@ const VERSION = "0.7.10-beta1";
     usageSyncDirHandle: null,
     usageSyncDbPromise: null,
     usageSyncClient: null,
+    usageSyncClientChannel: "",
     usageSyncAutoTimer: 0,
     usageSyncAutoAt: 0,
     usageSyncAutoFailures: 0,
@@ -1280,8 +1282,22 @@ const VERSION = "0.7.10-beta1";
 
   // 本地文件缓存：同步成功后把紧凑价格表写到用户脚本目录，启动时先读它，
   // 这样即使本次上游不可达（或 localStorage 已满）也不会丢失已有定价。
+  // v3 起同一文件还镜像保存用户的「自定义价格」，作为 localStorage 之外的备份。
   function priceCachePath(targetPath) {
     return `${targetPath}.prices.cache.json`;
+  }
+
+  function priceCacheRestoreOverrides(cached) {
+    const overrides = normalizePriceTable(cached?.overrides);
+    if (!Object.keys(overrides).length) return false;
+    try {
+      // localStorage 存在（即使为空对象）时以它为准，避免把用户已删除的价格又恢复回来。
+      if (localStorage.getItem(PRICE_OVERRIDES_KEY) != null) return false;
+      localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function priceCacheLoad(client, targetPath) {
@@ -1290,22 +1306,82 @@ const VERSION = "0.7.10-beta1";
       const parsed = JSON.parse(text);
       const prices = normalizePriceTable(parsed?.prices);
       const count = Object.keys(prices).length;
-      if (count < PRICE_SYNC_MIN_MODELS || count > PRICE_SYNC_MAX_MODELS) return null;
-      return { prices, meta: normalizePriceMeta(parsed?.meta), fetchedAt: toCount(parsed?.fetchedAt) };
+      const pricesValid = count >= PRICE_SYNC_MIN_MODELS && count <= PRICE_SYNC_MAX_MODELS;
+      return {
+        prices: pricesValid ? prices : {},
+        meta: pricesValid ? normalizePriceMeta(parsed?.meta) : {},
+        fetchedAt: pricesValid ? toCount(parsed?.fetchedAt) : 0,
+        overrides: normalizePriceTable(parsed?.overrides),
+      };
     } catch {
       return null;
     }
   }
 
+  async function priceCacheWrite(client, targetPath, payload) {
+    await updateWriteBase64(client, priceCachePath(targetPath), updateEncodeBase64Text(JSON.stringify(payload)));
+  }
+
+  async function priceCacheWriteNow() {
+    let client = null;
+    let target = null;
+    try {
+      client = appServerSyncClient();
+      if (!client) return false;
+      target = await updateResolveTarget();
+    } catch {
+      return false;
+    }
+    let prices = DEFAULT_PRICES;
+    let meta = DEFAULT_PRICE_META;
+    let fetchedAt = toCount(state.priceSyncedAt) || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+    if (!Object.keys(prices).length) {
+      // 还没拿到上游表时，合并文件里已有的数据，避免只写自定义价格把旧表覆盖掉。
+      const existing = await priceCacheLoad(client, target.targetPath);
+      prices = existing?.prices || {};
+      meta = Object.keys(meta).length ? meta : existing?.meta || {};
+      fetchedAt = fetchedAt || existing?.fetchedAt || 0;
+    }
+    try {
+      await priceCacheWrite(client, target.targetPath, {
+        version: 3,
+        fetchedAt,
+        prices,
+        meta,
+        overrides: loadJson(PRICE_OVERRIDES_KEY, {}),
+        overridesUpdatedAt: Date.now(),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 串行化写入：连续保存价格时按调用顺序落盘，避免旧快照覆盖新快照。
+  function priceCacheFlush() {
+    if (!state.priceCacheWritePromise) state.priceCacheWritePromise = Promise.resolve();
+    const run = state.priceCacheWritePromise.then(
+      () => priceCacheWriteNow(),
+      () => priceCacheWriteNow(),
+    );
+    state.priceCacheWritePromise = run;
+    const settle = () => {
+      if (state.priceCacheWritePromise === run) state.priceCacheWritePromise = null;
+    };
+    run.then(settle, settle);
+    return run;
+  }
+
   async function priceCacheSave(client, targetPath, snapshot) {
     try {
-      const payload = JSON.stringify({
-        version: 2,
+      await priceCacheWrite(client, targetPath, {
+        version: 3,
         fetchedAt: Date.now(),
         prices: snapshot.prices,
         meta: snapshot.meta,
+        overrides: loadJson(PRICE_OVERRIDES_KEY, {}),
+        overridesUpdatedAt: Date.now(),
       });
-      await updateWriteBase64(client, priceCachePath(targetPath), btoa(payload));
     } catch {
       // 文件缓存失败不影响本次同步结果；下次成功同步会再次尝试。
     }
@@ -1345,7 +1421,8 @@ const VERSION = "0.7.10-beta1";
         cacheWrite: priceUsdPerMillionTokens(entry.cache_creation_input_token_cost),
         output: priceUsdPerMillionTokens(entry.output_cost_per_token),
       });
-      if (!priceUsable(price)) continue;
+      if (!price) continue;
+      if (![price.input, price.cachedInput, price.cacheWrite, price.output].some((value) => Number(value) > 0)) continue;
       prices[model] = price;
       meta[model] = {
         mode: normalizeText(entry.mode, 40).toLowerCase(),
@@ -1451,9 +1528,29 @@ const VERSION = "0.7.10-beta1";
         state.priceFileCacheLoaded = true;
         const cached = await priceCacheLoad(client, target.targetPath);
         if (cached) {
-          DEFAULT_PRICES = cached.prices;
-          DEFAULT_PRICE_META = cached.meta;
-          if (cached.fetchedAt) state.priceSyncedAt = cached.fetchedAt;
+          if (Object.keys(cached.prices).length) {
+            DEFAULT_PRICES = cached.prices;
+            DEFAULT_PRICE_META = cached.meta;
+            if (cached.fetchedAt) state.priceSyncedAt = cached.fetchedAt;
+          }
+          const restoredOverrides = priceCacheRestoreOverrides(cached);
+          const storedOverrides = loadJson(PRICE_OVERRIDES_KEY, {});
+          // v2 → v3 升级：把 localStorage 里已有的自定义价补写进文件。
+          if (Object.keys(storedOverrides).length && !Object.keys(cached.overrides).length) {
+            try {
+              await priceCacheWrite(client, target.targetPath, {
+                version: 3,
+                fetchedAt: cached.fetchedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt) || 0,
+                prices: DEFAULT_PRICES,
+                meta: DEFAULT_PRICE_META,
+                overrides: storedOverrides,
+                overridesUpdatedAt: Date.now(),
+              });
+            } catch {
+              // 升级补写失败不影响本次启动；下次保存价格时会再次写入。
+            }
+          }
+          if (restoredOverrides && state.started) render();
         }
       }
       const cachedAt = Math.max(toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt), toCount(state.priceSyncedAt));
@@ -2614,8 +2711,15 @@ const VERSION = "0.7.10-beta1";
     };
   }
 
+  // 价格为 0 是合法配置（例如免费/本地模型）；负数或非数字才无效。
   function priceUsable(price) {
-    return Boolean(price && [price.input, price.cachedInput, price.cacheWrite, price.output].some((value) => Number(value) > 0));
+    if (!price || typeof price !== "object") return false;
+    const input = Number(price.input);
+    const output = Number(price.output);
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return false;
+    return [price.cachedInput, price.cacheWrite].every(
+      (value) => value == null || (Number.isFinite(Number(value)) && Number(value) >= 0),
+    );
   }
 
   function priceFor(model) {
@@ -2956,7 +3060,7 @@ const VERSION = "0.7.10-beta1";
     for (const model of autoZeroModels) {
       const key = Object.keys(overrides).find((item) => item.toLowerCase() === model.toLowerCase());
       const price = normalizePrice(key ? overrides[key] : null);
-      if (key && price && !priceUsable(price)) {
+      if (key && price && ![price.input, price.cachedInput, price.cacheWrite, price.output].some((value) => Number(value) > 0)) {
         delete overrides[key];
         changed = true;
       }
@@ -2982,6 +3086,7 @@ const VERSION = "0.7.10-beta1";
       if (changed) {
         localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
         saveHiddenPriceModels(hidden);
+        void priceCacheFlush();
       }
       localStorage.setItem(PRICE_MIGRATION_KEY, PRICE_MIGRATION_VERSION);
     } catch {
@@ -4228,13 +4333,23 @@ const VERSION = "0.7.10-beta1";
   // 无弹窗；仅在通道不可用时才回退到手动选择目录。
   // ---------------------------------------------------------------------------
 
+  // App-server 通道发现：宿主注入的 host-client map 是首选契约；若宿主未暴露
+  // （Codex++ 版本差异 / 注入时序），再退回 React fiber 树扫描。fiber 扫描分两步：
+  // 先从 composer / 标题等 DOM 锚点向上找（便宜），再从 React 根向下遍历（兜底）。
+  // 结果缓存；客户端被 dispose 后 isAppServerSyncClient 会自动判定失效并重新发现。
+  const APP_SERVER_FIBER_SCAN_LIMIT = 20000;
+
   function isAppServerSyncClient(value) {
-    return Boolean(
-      value &&
-        typeof value === "object" &&
+    if (!value || typeof value !== "object") return false;
+    try {
+      return (
         typeof value.sendRequest === "function" &&
-        (typeof value.sendAppServerExtensionRequest === "function" || normalizeText(value.hostId, 40) === "local"),
-    );
+        value.disposed !== true &&
+        (typeof value.sendAppServerExtensionRequest === "function" || normalizeText(value.hostId, 40) === "local")
+      );
+    } catch {
+      return false;
+    }
   }
 
   function appServerSyncClientFromHostMap() {
@@ -4262,18 +4377,74 @@ const VERSION = "0.7.10-beta1";
     return null;
   }
 
+  function appServerSyncClientFromFiberFields(fiber) {
+    if (!fiber || typeof fiber !== "object") return null;
+    const candidates = [fiber.memoizedProps?.value, fiber.memoizedProps?.client, fiber.stateNode];
+    for (let dependency = fiber.dependencies?.firstContext; dependency; dependency = dependency.next) {
+      candidates.push(dependency.memoizedValue);
+    }
+    for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+      candidates.push(hook.memoizedState);
+      candidates.push(hook.memoizedState?.current);
+    }
+    for (const candidate of candidates) {
+      if (isAppServerSyncClient(candidate)) return candidate;
+    }
+    return null;
+  }
+
   function appServerSyncClientFromFiberNode(node) {
     if (!node || typeof node !== "object") return null;
     const fiberKey = Object.keys(node).find((key) => key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$"));
     for (let fiber = fiberKey ? node[fiberKey] : null; fiber; fiber = fiber.return) {
-      const candidates = [fiber.memoizedProps?.value];
-      for (let dependency = fiber.dependencies?.firstContext; dependency; dependency = dependency.next) candidates.push(dependency.memoizedValue);
-      for (let hook = fiber.memoizedState; hook; hook = hook.next) {
-        candidates.push(hook.memoizedState);
-        candidates.push(hook.memoizedState?.current);
-      }
-      const client = candidates.find((value) => isAppServerSyncClient(value));
+      const client = appServerSyncClientFromFiberFields(fiber);
       if (client) return client;
+    }
+    return null;
+  }
+
+  function appServerSyncReactRoots(doc = document) {
+    const roots = [];
+    const seen = new Set();
+    const addRoot = (fiber) => {
+      if (!fiber || typeof fiber !== "object" || seen.has(fiber)) return;
+      seen.add(fiber);
+      roots.push(fiber);
+    };
+    try {
+      addRoot(globalThis.__codexRoot?._internalRoot?.current);
+    } catch {
+      // 宿主内部结构不可读时忽略
+    }
+    const addContainer = (node) => {
+      if (!node || typeof node !== "object") return;
+      try {
+        const key = Object.keys(node).find((name) => name.startsWith("__reactContainer$"));
+        if (!key) return;
+        addRoot(node[key]?.stateNode?.current || node[key]);
+      } catch {
+        // 非 React 容器
+      }
+    };
+    addContainer(doc?.body);
+    const containers = doc?.querySelectorAll?.("#root, body > div") || [];
+    for (const node of containers) addContainer(node);
+    return roots;
+  }
+
+  function appServerSyncClientFromFiberTree(rootFiber) {
+    const pending = [rootFiber];
+    const visited = new Set();
+    let scanned = 0;
+    while (pending.length && scanned < APP_SERVER_FIBER_SCAN_LIMIT) {
+      const fiber = pending.pop();
+      if (!fiber || typeof fiber !== "object" || visited.has(fiber)) continue;
+      visited.add(fiber);
+      scanned += 1;
+      const client = appServerSyncClientFromFiberFields(fiber);
+      if (client) return client;
+      if (fiber.child) pending.push(fiber.child);
+      if (fiber.sibling) pending.push(fiber.sibling);
     }
     return null;
   }
@@ -4292,9 +4463,29 @@ const VERSION = "0.7.10-beta1";
     return null;
   }
 
+  function appServerSyncClientFromReactRoots(doc = document) {
+    for (const root of appServerSyncReactRoots(doc)) {
+      const client = appServerSyncClientFromFiberTree(root);
+      if (client) return client;
+    }
+    return null;
+  }
+
   function appServerSyncClient() {
     if (isAppServerSyncClient(state.usageSyncClient)) return state.usageSyncClient;
-    state.usageSyncClient = appServerSyncClientFromHostMap() || appServerSyncClientFromDocument() || null;
+    state.usageSyncClient = null;
+    let client = appServerSyncClientFromHostMap();
+    let channel = client ? "host-map" : "";
+    if (!client) {
+      client = appServerSyncClientFromDocument();
+      channel = client ? "fiber-ancestor" : "";
+    }
+    if (!client) {
+      client = appServerSyncClientFromReactRoots();
+      channel = client ? "fiber-tree" : "";
+    }
+    state.usageSyncClient = client || null;
+    state.usageSyncClientChannel = channel;
     return state.usageSyncClient;
   }
 
@@ -4420,6 +4611,17 @@ const VERSION = "0.7.10-beta1";
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
     return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  // btoa 只接受 Latin-1；模型名可能是中文，先按 UTF-8 编码再转 base64。
+  function updateEncodeBase64Text(value) {
+    const bytes = new TextEncoder().encode(String(value));
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+    return window.btoa(binary);
   }
 
   function updateCacheBustUrl() {
@@ -11407,19 +11609,19 @@ const VERSION = "0.7.10-beta1";
     return true;
   }
 
-  // 保存前的额外校验：价格可以留空，但至少要有一项大于 0，否则 setModelPrice
-  // 会拒绝写入，旧实现随后 render() 会把用户刚输入的草稿直接冲掉。
+  // 保存前校验：0 是合法价格；负数/非数字由 priceDraftError 拦截。
+  // 只阻止“四个字段全空”，避免空表单把已有价格覆盖成 0。
   function priceSaveDraftError(root) {
     const formatError = priceDraftError(root);
     if (formatError) return formatError;
-    const hasPositive = ["input", "cachedInput", "cacheWrite", "output"].some((field) => {
+    const hasValue = ["input", "cachedInput", "cacheWrite", "output"].some((field) => {
       const raw = String(root?.querySelector?.(`[data-price-field='${field}']`)?.value ?? "").trim();
-      return raw !== "" && Number(raw) > 0;
+      return raw !== "";
     });
-    if (hasPositive) return null;
+    if (hasValue) return null;
     return {
       input: root?.querySelector?.("[data-price-field='input']"),
-      message: "请至少填写一个大于 0 的价格",
+      message: "请至少填写一个价格",
     };
   }
 
@@ -11593,6 +11795,7 @@ const VERSION = "0.7.10-beta1";
     const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
     for (const model of Object.keys(DEFAULT_PRICES)) delete overrides[model];
     localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+    void priceCacheFlush();
     const hidden = hiddenPriceModels();
     for (const model of Object.keys(DEFAULT_PRICES)) hidden.delete(model);
     saveHiddenPriceModels(hidden);
@@ -11619,6 +11822,7 @@ const VERSION = "0.7.10-beta1";
     const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
     delete overrides[name];
     localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+    void priceCacheFlush();
     const hidden = hiddenPriceModels();
     hidden.add(name);
     saveHiddenPriceModels(hidden);
@@ -11796,6 +12000,7 @@ const VERSION = "0.7.10-beta1";
       status: state.usageSyncStatus || "",
       result: state.usageSyncResult ? { ...state.usageSyncResult } : null,
       handleStored: Boolean(state.usageSyncDirHandle),
+      clientChannel: state.usageSyncClientChannel || "",
     };
   }
 
@@ -13398,12 +13603,15 @@ const VERSION = "0.7.10-beta1";
     setModelPrice(model, price) {
       state.priceSaveError = "";
       const name = String(model || "").trim();
+      const rawValues = [price?.input, price?.cachedInput, price?.cacheWrite, price?.output];
+      if (rawValues.some((value) => value != null && value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0))) return false;
       const normalized = normalizePrice(price);
       if (!name || !normalized || !priceUsable(normalized)) return false;
       const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
       overrides[name] = normalized;
       try {
         localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+        void priceCacheFlush();
       } catch {
         // localStorage 接近配额时 setItem 会抛 QuotaExceededError；必须把失败
         // 原因带回编辑器，否则界面看起来“点了保存但什么都没发生”。
@@ -13563,6 +13771,10 @@ const VERSION = "0.7.10-beta1";
       usageSyncCollectRowsViaAppServer: (client, options) => usageSyncCollectRowsViaAppServer(client, options || {}),
       usageSyncResolveCodexRoot: (client) => usageSyncResolveCodexRoot(client),
       usageSyncResolveClient: () => appServerSyncClient(),
+      usageSyncResetClient: () => {
+        state.usageSyncClient = null;
+        state.usageSyncClientChannel = "";
+      },
       usageSyncRootFromRolloutPath: (value) => usageSyncRootFromRolloutPath(value),
       usageSyncJoinPath: (dir, name) => usageSyncJoinPath(dir, name),
       usageSyncBase64ToBytes: (value) => usageSyncBase64ToBytes(value),
@@ -13601,6 +13813,9 @@ const VERSION = "0.7.10-beta1";
       startNewPriceModel,
       restoreDefaultPrices,
       refreshDefaultPrices,
+      priceCacheIdle: () => state.priceCacheWritePromise || Promise.resolve(),
+      priceCacheFlush: () => priceCacheFlush(),
+      priceCacheRestoreOverrides: (cached) => priceCacheRestoreOverrides(cached),
       priceUpstreamSnapshot,
       priceModelShownByDefault,
       priceListableUsedNames,
