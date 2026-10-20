@@ -301,10 +301,13 @@ assert.equal(code.includes("grid-template-columns: max-content minmax(0, 1fr)"),
 assert.equal(code.includes("grid-template-columns: 176px minmax(0, 1fr)"), false);
 const settingsSidebarRule = code.match(/\.cltc-settings \.cltc-settings-sidebar \{([\s\S]*?)\n      \}/)?.[1] || "";
 assert.equal(settingsSidebarRule.includes("border-right"), false);
+assert.equal(settingsSidebarRule.includes("border-radius"), false);
+const settingsSidebarRules = [...code.matchAll(/\.cltc-settings \.cltc-settings-sidebar \{([^}]*)\}/g)].map((match) => match[1]);
+assert.equal(settingsSidebarRules.some((rule) => rule.includes("border-right: 1px")), false);
 assert.equal(code.includes("cltc-settings-footer"), false);
 assert.equal(code.includes("cltc-settings-version"), false);
 assert.equal(code.includes("cltc-update-cluster"), true);
-assert.equal(code.includes("--cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent)"), true);
+assert.equal(code.includes("--cltc-muted: var(--color-token-text-secondary"), true);
 assert.equal(code.includes("--cltc-muted: var(--codex-plus-text-tertiary"), false);
 assert.equal(code.includes("font-weight: 650"), false);
 assert.match(code, /\.cltc-settings \.cltc-price-row\[data-active="true"\] \{[\s\S]*?font-weight: 600;[\s\S]*?\}/);
@@ -343,17 +346,32 @@ assert.equal(code.includes("background: rgba(0, 0, 0, .28)"), false);
 assert.equal(code.includes("scrollbar-width: thin"), true);
 assert.equal(code.includes("color-scheme: light dark"), true);
 assert.equal(code.includes("--cltc-text: var(--color-token-text-primary, light-dark(#111827, #f4f4f5))"), true);
-assert.equal(code.includes("--cltc-hover: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)))"), true);
-assert.equal(code.includes("--cltc-border: var(--color-token-border-light, light-dark(#d1d5db, #3f3f46))"), true);
-assert.equal(code.includes("--cltc-surface-secondary: var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a))"), true);
-assert.equal(code.includes("--cltc-popover: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)))"), true);
-assert.equal(code.includes("--cltc-input: var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)))"), true);
-assert.equal(code.includes("--cltc-sidebar-surface: var(--cltc-surface-secondary)"), true);
-assert.equal(code.includes("--cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)))"), true);
+assert.equal(code.includes("--cltc-hover: var(--color-token-interactive-bg-secondary-hover, light-dark(rgba(0, 0, 0, .053), rgba(255, 255, 255, .078)))"), true);
+assert.equal(code.includes("--cltc-border: var(--color-token-border, light-dark(rgba(0, 0, 0, .08), rgba(255, 255, 255, .085)))"), true);
+assert.equal(code.includes("--cltc-surface-secondary: var(--color-token-bg-primary, light-dark(#f6f6f6, #141414))"), true);
+assert.equal(code.includes("--cltc-popover: var(--color-token-dropdown-background, light-dark(#ffffff, #2d2d2d))"), true);
+assert.equal(code.includes("--cltc-input: var(--color-token-bg-primary, light-dark(#f6f6f6, #141414))"), true);
+assert.equal(code.includes("--cltc-chrome: var(--color-token-side-bar-background"), true);
+assert.equal(code.includes("--cltc-canvas: var(--color-token-main-surface-primary"), true);
+assert.equal(code.includes("--cltc-sidebar-surface: var(--cltc-chrome)"), true);
+assert.equal(code.includes('html[data-theme="dark"] .cltc-settings-overlay'), true);
+assert.equal(code.includes("background: var(--color-token-side-bar-background, #f6f6f6) !important"), true);
+assert.equal(code.includes("color: var(--color-token-text-primary, #1a1c1f) !important"), true);
+assert.equal(code.includes("background: #1e1e1e !important"), false);
+assert.equal(code.includes("background: #141414 !important"), false);
+assert.equal(code.includes("--cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .053), rgba(255, 255, 255, .078)))"), true);
+assert.equal(code.includes("--codex-plus-"), false);
 assert.equal(code.includes("--cltc-font-family: var(--font-family-sans, var(--font-sans,"), true);
 assert.equal(code.includes("--cltc-radius-control: var(--radius-lg, 8px)"), true);
 assert.equal(code.includes("--cltc-focus-ring: var(--color-token-focus-border,"), true);
 assert.equal(code.includes("--cltc-success: var(--color-token-success, #10a37f)"), true);
+assert.equal(code.includes("--cltc-warning: var(--color-token-warning, light-dark(#b45309, #f0b35e))"), true);
+assert.equal(code.includes('.cltc-settings .cltc-settings-actions button[data-variant="primary"]'), true);
+assert.equal(code.includes('.cltc-settings .cltc-settings-row button[data-variant="primary"]'), true);
+assert.match(
+  code,
+  /\.cltc-settings button\[data-variant="primary"\]:hover \{\s+border-color: var\(--cltc-primary\);\s+background: color-mix\(in srgb, var\(--cltc-primary\) 88%, var\(--cltc-canvas\)\);\s+color: var\(--cltc-primary-text\);\s+\}/,
+);
 assert.equal(code.includes(".cltc-settings *::before"), true);
 assert.equal(code.includes("border-radius: var(--cltc-radius-modal)"), true);
 assert.equal(code.includes("--cltc-arc-bg: light-dark(rgb(246, 246, 246), rgba(255, 255, 255, .08))"), true);
@@ -378,12 +396,12 @@ assert.equal(code.includes("html.electron-dark #${ROOT_ID}"), true);
 assert.equal(code.includes("color-scheme: dark"), true);
 assert.equal(code.includes("--cltc-surface: #2d2d2d"), true);
 assert.equal(code.includes("--cltc-input: #2d2d2d"), true);
-assert.equal(code.includes("--cltc-surface: rgb(22, 22, 22)"), true);
-assert.equal(code.includes("--cltc-surface-secondary: rgb(30, 30, 30)"), true);
-assert.equal(code.includes("--cltc-popover: rgb(22, 22, 22)"), true);
-assert.equal(code.includes("--cltc-input: rgb(22, 22, 22)"), true);
-assert.equal(code.includes("--cltc-sidebar-surface: rgb(30, 30, 30)"), true);
-assert.equal(code.includes("--cltc-active: rgba(255, 255, 255, .08)"), true);
+assert.equal(code.includes("--cltc-surface: rgb(22, 22, 22)"), false);
+assert.equal(code.includes("--cltc-surface-secondary: rgb(30, 30, 30)"), false);
+assert.equal(code.includes("--cltc-popover: rgb(22, 22, 22)"), false);
+assert.equal(code.includes("--cltc-input: rgb(22, 22, 22)"), false);
+assert.equal(code.includes("--cltc-sidebar-surface: rgb(30, 30, 30)"), false);
+assert.equal(code.includes("--cltc-active: rgba(255, 255, 255, .08)"), false);
 assert.equal(code.includes("--cltc-arc-bg: rgb(31, 31, 31)"), true);
 assert.equal(code.includes("--cltc-text: #d4d4d8"), true);
 assert.equal(code.includes("--cltc-muted: rgba(255, 255, 255, .498)"), true);
@@ -433,7 +451,7 @@ assert.equal(code.includes("--cltc-duration-popover: 180ms;"), true);
 assert.equal(code.includes("--cltc-duration-modal: 200ms;"), true);
 assert.equal(code.includes("--cltc-duration-data: 160ms;"), true);
 const settingsOverlayTokenBlock = code.match(
-  /\.cltc-settings-overlay \{\n([\s\S]*?)\n      \}\n      html\.electron-dark \.cltc-settings \{/,
+  /\.cltc-settings-overlay \{\n([\s\S]*?)\n      \}\n      html\[data-theme="dark"\] \.cltc-settings-overlay,/,
 );
 assert.ok(settingsOverlayTokenBlock);
 for (const declaration of [
@@ -482,9 +500,14 @@ assert.match(code, /function installCodexPlusEmbeddedPage\(\) \{[\s\S]*?typeof w
 assert.match(code, /state\.embeddedPageDispose = window\.codexPlus\.registerPage\(/);
 assert.match(code, /render: \(\{ container, close \}\) => \{[\s\S]*?embeddedPageClose = typeof close === "function" \? close : null;[\s\S]*?renderEmbeddedSettingsPage\(container\);/);
 assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \{[\s\S]*?position: static;[\s\S]*?width: 100%;[\s\S]*?height: 100%;/);
+assert.match(code, /\.codex-plus-modal-body:has\(> \.cltc-settings-embedded\) \{[\s\S]*?padding: 0 !important;[\s\S]*?overflow: hidden !important;[\s\S]*?scrollbar-gutter: auto !important;/);
+assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \{[\s\S]*?background: var\(--cltc-chrome\);/);
+assert.equal(code.includes('html[data-theme="dark"] .cltc-settings-overlay.cltc-settings-embedded'), false);
+assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \.cltc-settings-content \{[\s\S]*?background: var\(--cltc-canvas\);[\s\S]*?border-radius: var\(--cltc-radius-modal\) 8px 8px 8px;/);
+assert.equal(code.includes('html[data-theme="dark"] .cltc-settings-overlay.cltc-settings-embedded .cltc-settings-content'), false);
 assert.match(code, /\.cltc-settings-overlay\.cltc-settings-embedded \.cltc-price-head \{[\s\S]*?display: none;/);
-assert.equal(code.includes("--cltc-text: var(--codex-plus-text, var(--color-token-text-primary"), true);
-assert.equal(code.includes("--cltc-surface-secondary: var(--codex-plus-bg-secondary"), true);
+assert.equal(code.includes("--cltc-text: var(--codex-plus-text"), false);
+assert.equal(code.includes("--cltc-surface-secondary: var(--codex-plus-bg-secondary"), false);
 assert.match(code, /const SETTINGS_FOCUS_ATTRIBUTES = \[[\s\S]*?"data-settings-panel"[\s\S]*?"data-chart-index"[\s\S]*?\];/);
 assert.match(code, /function settingsFocusKey\(node, root\) \{[\s\S]*?root\?\.contains\?\.\(node\)[\s\S]*?return \{ attribute, value \};/);
 assert.match(code, /function isSettingsFocusable\(node\) \{[\s\S]*?node\.disabled[\s\S]*?tabIndex[\s\S]*?return \/\^\(A\|BUTTON\|INPUT\|SELECT\|TEXTAREA\)\$\//);
@@ -2277,6 +2300,45 @@ assert.equal(api.priceListModels("gpt-5.4-cyber").includes("gpt-5.4-cyber"), tru
 assert.equal(api.priceListModelLabel("gpt-5.4-cyber"), "gpt-5.4-cyber · 未定价");
 assert.equal(context.__codexLiveTokenCost.setModelPrice("zero-price-model", { input: 0, cachedInput: 0, output: 0 }), false);
 assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "zero-price-model"), false);
+// —— 自定义价格编辑器：空价格保存必须给出错误、保留草稿，不能静默失败 ——
+const priceEditorField = (value) => ({ value, setAttribute() {}, removeAttribute() {} });
+const makePriceEditorRoot = (fields) => {
+  const nodes = {};
+  for (const [field, value] of Object.entries(fields)) nodes[`[data-price-field='${field}']`] = priceEditorField(value);
+  nodes["[data-price-model]"] = null;
+  const errorNode = { hidden: true, textContent: "" };
+  nodes["[data-price-error]"] = errorNode;
+  return { errorNode, querySelector(selector) { return nodes[selector] || null; } };
+};
+const emptyPriceRoot = makePriceEditorRoot({ input: "", cachedInput: "", cacheWrite: "", output: "" });
+const emptyPriceError = api.priceSaveDraftError(emptyPriceRoot);
+assert.equal(emptyPriceError.message, "请至少填写一个大于 0 的价格");
+assert.equal(emptyPriceError.input, emptyPriceRoot.querySelector("[data-price-field='input']"));
+assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "0", cachedInput: "", cacheWrite: "", output: "0" })).message, "请至少填写一个大于 0 的价格");
+assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "1.5", cachedInput: "", cacheWrite: "", output: "" })), null);
+assert.equal(api.priceSaveDraftError(makePriceEditorRoot({ input: "abc", cachedInput: "", cacheWrite: "", output: "" })).message, "价格需为不小于 0 的数字");
+api.setPriceDraft(null);
+api.capturePriceDraft(makePriceEditorRoot({ model: "custom-draft-model", input: "2", cachedInput: "", cacheWrite: "", output: "8" }));
+assert.equal(
+  JSON.stringify(api.priceDraftSnapshot()),
+  JSON.stringify({ model: "custom-draft-model", input: "2", cachedInput: "", cacheWrite: "", output: "8" }),
+);
+api.setPriceDraft(null);
+const zeroSaveRoot = makePriceEditorRoot({ model: "custom-zero-save", input: "", cachedInput: "", cacheWrite: "", output: "" });
+const originalDocumentQuerySelectorForPrices = context.document.querySelector;
+context.document.querySelector = function querySelectorForPrices(selector) {
+  if (selector === ".cltc-settings-embedded") return zeroSaveRoot;
+  return originalDocumentQuerySelectorForPrices.call(context.document, selector);
+};
+try {
+  assert.equal(api.settingsEditorRoot(), zeroSaveRoot);
+  assert.equal(api.savePriceFromEditor(), false);
+  assert.equal(zeroSaveRoot.errorNode.hidden, false);
+  assert.equal(zeroSaveRoot.errorNode.textContent, "请至少填写一个大于 0 的价格");
+  assert.equal(Object.hasOwn(context.__codexLiveTokenCost.prices(), "custom-zero-save"), false);
+} finally {
+  context.document.querySelector = originalDocumentQuerySelectorForPrices;
+}
 const unpricedDailyBucket = api.addTurnToDailyBucket(
   api.emptyDailyUsageBucket("2026-07-04"),
   { model: "gpt-5.4-cyber" },
@@ -5137,6 +5199,8 @@ const profileLifecycleTest = Promise.resolve()
     const syncCommand = priceCommandCalls[0];
     assert.equal(syncCommand[0], "curl");
     assert.equal(syncCommand.includes("--fail"), true);
+    // command/exec 对无输出命令约 10s 判超时；必须让 curl 协商 gzip 压缩传输。
+    assert.equal(syncCommand.includes("--compressed"), true);
     assert.equal(syncCommand[syncCommand.indexOf("-o") + 1], priceTempPath);
     assert.equal(
       syncCommand.at(-1).startsWith("https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json?cltc_price="),

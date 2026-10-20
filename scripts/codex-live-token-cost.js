@@ -424,6 +424,8 @@ const VERSION = "0.7.10-beta1";
     priceFileCacheLoaded: false,
     priceEditorOpen: false,
     priceEditorModel: "",
+    priceDraft: null,
+    priceSaveError: "",
     priceSearch: "",
     priceFilter: "all",
     settingsPanel: "usage",
@@ -1386,6 +1388,9 @@ const VERSION = "0.7.10-beta1";
       "-sS",
       "-L",
       "--fail",
+      // 上游 JSON 未压缩约 2.9 MB；command/exec 通道无输出约 10s 即判超时（退出码 124）。
+      // 走 gzip 后传输量大幅下降（实测整表 <1s），否则弱网下必然半途截断。
+      "--compressed",
       "--connect-timeout", "8",
       "--max-time", "20",
       "--retry", "2",
@@ -8778,6 +8783,7 @@ const VERSION = "0.7.10-beta1";
 
   function closeSettingsEditor() {
     state.priceEditorOpen = false;
+    state.priceDraft = null;
     state.analyticsModel = "";
     state.analyticsModelsExpanded = false;
     render(true);
@@ -8861,6 +8867,7 @@ const VERSION = "0.7.10-beta1";
   function closeEmbeddedSettingsPage() {
     if (!state.embeddedPageContainer) return closeSettingsEditor();
     state.priceEditorOpen = false;
+    state.priceDraft = null;
     state.embeddedPageContainer = null;
     if (embeddedPageClose) embeddedPageClose();
     else closeSettingsEditor();
@@ -9224,22 +9231,24 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings-overlay {
         --cltc-text: var(--color-token-text-primary, light-dark(#111827, #f4f4f5));
-        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
-        --cltc-border: var(--color-token-border-light, light-dark(#d1d5db, #3f3f46));
-        --cltc-border-subtle: var(--color-token-border-light, light-dark(#e5e7eb, #323238));
-        --cltc-surface: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
-        --cltc-surface-secondary: var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a));
-        --cltc-popover: var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
-        --cltc-input: var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
-        --cltc-sidebar-surface: var(--cltc-surface-secondary);
-        --cltc-hover: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)));
-        --cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08)));
+        --cltc-muted: var(--color-token-text-secondary, color-mix(in srgb, var(--cltc-text) 65%, transparent));
+        --cltc-border: var(--color-token-border, light-dark(rgba(0, 0, 0, .08), rgba(255, 255, 255, .085)));
+        --cltc-border-subtle: var(--color-token-border, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .065)));
+        --cltc-surface: var(--color-token-bg-primary, light-dark(#f6f6f6, #141414));
+        --cltc-surface-secondary: var(--color-token-bg-primary, light-dark(#f6f6f6, #141414));
+        --cltc-popover: var(--color-token-dropdown-background, light-dark(#ffffff, #2d2d2d));
+        --cltc-input: var(--color-token-bg-primary, light-dark(#f6f6f6, #141414));
+        --cltc-chrome: var(--color-token-side-bar-background, light-dark(#f6f6f6, #141414));
+        --cltc-canvas: var(--color-token-main-surface-primary, light-dark(#ffffff, #181818));
+        --cltc-sidebar-surface: var(--cltc-chrome);
+        --cltc-hover: var(--color-token-interactive-bg-secondary-hover, light-dark(rgba(0, 0, 0, .053), rgba(255, 255, 255, .078)));
+        --cltc-active: var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .053), rgba(255, 255, 255, .078)));
         --cltc-shadow: light-dark(rgba(0, 0, 0, .18), rgba(0, 0, 0, .48));
         --cltc-primary: var(--color-token-text-primary, light-dark(#171717, #f4f4f5));
         --cltc-primary-text: var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b));
         --cltc-danger: light-dark(#b42318, #f97066);
         --cltc-success: var(--color-token-success, #10a37f);
-        --cltc-warning: var(--color-token-warning, #b45309);
+        --cltc-warning: var(--color-token-warning, light-dark(#b45309, #f0b35e));
         --cltc-chart-blue: var(--color-token-charts-blue, #3b82f6);
         --cltc-chart-purple: var(--color-token-charts-purple, #8b5cf6);
         --cltc-focus-ring: var(--color-token-focus-border, light-dark(rgba(0, 122, 204, .76), rgba(131, 195, 255, .76)));
@@ -9278,24 +9287,15 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings *::after {
         box-sizing: border-box;
       }
+      html[data-theme="dark"] .cltc-settings-overlay,
+      html[data-theme="dark"] .cltc-settings,
+      html.electron-dark .cltc-settings-overlay,
       html.electron-dark .cltc-settings {
-        --cltc-text: #f4f4f5;
-        --cltc-muted: #a1a1aa;
-        --cltc-border: #3f3f46;
-        --cltc-border-subtle: #323238;
-        --cltc-surface: rgb(22, 22, 22);
-        --cltc-surface-secondary: rgb(30, 30, 30);
-        --cltc-popover: rgb(22, 22, 22);
-        --cltc-input: rgb(22, 22, 22);
-        --cltc-sidebar-surface: rgb(30, 30, 30);
-        --cltc-hover: rgba(255, 255, 255, .08);
-        --cltc-active: rgba(255, 255, 255, .08);
-        --cltc-shadow: rgba(0, 0, 0, .48);
-        --cltc-primary: #f4f4f5;
-        --cltc-primary-text: #18181b;
-        --cltc-danger: #f97066;
-        --cltc-focus-ring: var(--color-token-focus-border, rgba(131, 195, 255, .76));
         color-scheme: dark;
+      }
+      html[data-theme="light"] .cltc-settings-overlay,
+      html[data-theme="light"] .cltc-settings {
+        color-scheme: light;
       }
       .cltc-settings-modal {
         position: relative;
@@ -9871,7 +9871,10 @@ const VERSION = "0.7.10-beta1";
         font: inherit;
         text-decoration: none;
       }
-      .cltc-settings button[data-variant="primary"] {
+      .cltc-settings button[data-variant="primary"],
+      .cltc-settings .cltc-settings-row button[data-variant="primary"],
+      .cltc-settings .cltc-settings-actions button[data-variant="primary"],
+      .cltc-settings .cltc-price-actions button[data-variant="primary"] {
         border-color: var(--cltc-primary);
         background: var(--cltc-primary);
         color: var(--cltc-primary-text);
@@ -10120,11 +10123,10 @@ const VERSION = "0.7.10-beta1";
         display: grid;
         min-width: 0;
         gap: 4px;
+        justify-items: start;
+        text-align: left;
         padding: 16px 14px;
         border-right: 1px solid var(--cltc-border-subtle);
-      }
-      .cltc-settings .cltc-analytics-metric:first-child {
-        padding-left: 0;
       }
       .cltc-settings .cltc-analytics-metric:last-child {
         border-right: 0;
@@ -10132,6 +10134,7 @@ const VERSION = "0.7.10-beta1";
       .cltc-settings .cltc-analytics-metric > span,
       .cltc-settings .cltc-analytics-metric small {
         overflow: hidden;
+        max-width: 100%;
         color: var(--cltc-muted);
         font-size: 11px;
         line-height: 16px;
@@ -10140,6 +10143,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-analytics-metric strong {
         overflow: hidden;
+        max-width: 100%;
         font-size: 18px;
         font-weight: 600;
         line-height: 24px;
@@ -10347,7 +10351,9 @@ const VERSION = "0.7.10-beta1";
           background: var(--cltc-hover);
         }
         .cltc-settings button[data-variant="primary"]:hover {
-          background: color-mix(in srgb, var(--cltc-primary) 88%, transparent);
+          border-color: var(--cltc-primary);
+          background: color-mix(in srgb, var(--cltc-primary) 88%, var(--cltc-canvas));
+          color: var(--cltc-primary-text);
         }
         .cltc-settings .cltc-date-range-trigger:hover {
           background: color-mix(in srgb, var(--cltc-text) 8%, var(--cltc-input));
@@ -10417,9 +10423,6 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings .cltc-analytics-metric:nth-child(-n + 2) {
           border-bottom: 1px solid var(--cltc-border-subtle);
         }
-        .cltc-settings .cltc-analytics-metric:nth-child(3) {
-          padding-left: 0;
-        }
         .cltc-settings .cltc-composition-legend {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -10463,22 +10466,6 @@ const VERSION = "0.7.10-beta1";
         }
       }
       .cltc-settings-overlay.cltc-settings-embedded {
-        --cltc-text: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#111827, #f4f4f5)));
-        --cltc-muted: color-mix(in srgb, var(--cltc-text) 62%, transparent);
-        --cltc-border: var(--codex-plus-border, var(--color-token-border-light, light-dark(#d1d5db, #3f3f46)));
-        --cltc-border-subtle: var(--codex-plus-border-subtle, var(--color-token-border-light, light-dark(#e5e7eb, #323238)));
-        --cltc-surface: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
-        --cltc-surface-secondary: var(--codex-plus-bg-secondary, var(--color-token-main-surface-secondary, light-dark(#f3f4f6, #27272a)));
-        --cltc-popover: var(--codex-plus-bg-elevated, var(--color-token-dropdown-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b))));
-        --cltc-input: var(--codex-plus-bg-primary, var(--color-token-input-background, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b))));
-        --cltc-hover: var(--codex-plus-bg-hover, var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08))));
-        --cltc-active: var(--codex-plus-bg-selected, var(--color-token-list-hover-background, light-dark(rgba(0, 0, 0, .06), rgba(255, 255, 255, .08))));
-        --cltc-primary: var(--codex-plus-text, var(--color-token-text-primary, light-dark(#171717, #f4f4f5)));
-        --cltc-primary-text: var(--codex-plus-bg-primary, var(--color-token-main-surface-primary, light-dark(#ffffff, #18181b)));
-        --cltc-danger: var(--codex-plus-danger, light-dark(#b42318, #f97066));
-        --cltc-success: var(--codex-plus-success, var(--color-token-success, #10a37f));
-        --cltc-warning: var(--codex-plus-warning, var(--color-token-warning, #b45309));
-        --cltc-focus-ring: var(--codex-plus-focus, var(--color-token-focus-border, light-dark(rgba(0, 122, 204, .76), rgba(131, 195, 255, .76))));
         position: static;
         inset: auto;
         z-index: auto;
@@ -10489,7 +10476,12 @@ const VERSION = "0.7.10-beta1";
         height: 100%;
         padding: 0;
         overflow: auto;
-        background: transparent;
+        background: var(--cltc-chrome);
+      }
+      .cltc-settings-overlay.cltc-settings-embedded .cltc-settings-content {
+        background: var(--cltc-canvas);
+        /* Windows-style subtle rounding on the outer three corners. */
+        border-radius: var(--cltc-radius-modal) 8px 8px 8px;
       }
       .cltc-settings-overlay.cltc-settings-embedded .cltc-settings-modal {
         width: 100%;
@@ -10577,8 +10569,6 @@ const VERSION = "0.7.10-beta1";
       /* ===== Settings refresh: shell, groups, data surfaces ===== */
       .cltc-settings-overlay,
       .cltc-settings {
-        --cltc-hover: color-mix(in srgb, var(--cltc-text) 4%, transparent);
-        --cltc-active: color-mix(in srgb, var(--cltc-text) 8%, transparent);
         --cltc-success-soft: color-mix(in srgb, var(--cltc-success) 12%, transparent);
         --cltc-warning-soft: color-mix(in srgb, var(--cltc-warning) 12%, transparent);
         --cltc-danger-soft: color-mix(in srgb, var(--cltc-danger) 10%, transparent);
@@ -10586,15 +10576,6 @@ const VERSION = "0.7.10-beta1";
         --cltc-content-data: 860px;
         --cltc-price-head-h: 34px;
         --cltc-radius-group: 10px;
-      }
-      .cltc-settings-overlay.cltc-settings-embedded {
-        --cltc-hover: color-mix(in srgb, var(--cltc-text) 4%, transparent);
-        --cltc-active: color-mix(in srgb, var(--cltc-text) 8%, transparent);
-      }
-      html.electron-dark .cltc-settings-overlay,
-      html.electron-dark .cltc-settings {
-        --cltc-hover: rgba(255, 255, 255, .045);
-        --cltc-active: rgba(255, 255, 255, .08);
       }
       .cltc-settings [hidden] {
         display: none !important;
@@ -10604,7 +10585,6 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-settings-sidebar {
         padding: 16px 12px;
-        border-right: 1px solid var(--cltc-border-subtle);
       }
       .cltc-settings .cltc-settings-nav {
         gap: 2px;
@@ -11032,6 +11012,7 @@ const VERSION = "0.7.10-beta1";
       }
       .cltc-settings .cltc-analytics-metrics {
         gap: 24px;
+        margin-left: 6.7%;
         border: 0;
       }
       .cltc-settings .cltc-analytics-metric {
@@ -11079,14 +11060,13 @@ const VERSION = "0.7.10-beta1";
       /* Density pass: more breathing room and full-bleed sidebar. */
       .codex-plus-modal-body:has(> .cltc-settings-embedded) {
         padding: 0 !important;
+        overflow: hidden !important;
+        scrollbar-gutter: auto !important;
       }
       .codex-plus-modal-content:has(.cltc-settings-embedded) .codex-plus-modal-header,
       .codex-plus-page-overlay:has(.cltc-settings-embedded) .codex-plus-modal-header {
-        background: #f3f4f6 !important;
-      }
-      html.electron-dark .codex-plus-modal-content:has(.cltc-settings-embedded) .codex-plus-modal-header,
-      html.electron-dark .codex-plus-page-overlay:has(.cltc-settings-embedded) .codex-plus-modal-header {
-        background: #1e1e1e !important;
+        background: var(--color-token-side-bar-background, #f6f6f6) !important;
+        color: var(--color-token-text-primary, #1a1c1f) !important;
       }
       .cltc-settings-embedded .cltc-settings-modal {
         grid-template-rows: minmax(0, 1fr);
@@ -11190,7 +11170,7 @@ const VERSION = "0.7.10-beta1";
         padding: 6px 12px;
       }
       .cltc-settings .cltc-analytics-metrics {
-        gap: 28px;
+        gap: 18px clamp(40px, 8vw, 64px);
       }
       .cltc-settings .cltc-analytics-metric {
         gap: 6px;
@@ -11306,6 +11286,7 @@ const VERSION = "0.7.10-beta1";
         .cltc-settings .cltc-analytics-metrics {
           grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 18px 20px;
+          margin-left: 0;
         }
       }
       @media (prefers-reduced-motion: reduce) {
@@ -11426,6 +11407,49 @@ const VERSION = "0.7.10-beta1";
     return true;
   }
 
+  // 保存前的额外校验：价格可以留空，但至少要有一项大于 0，否则 setModelPrice
+  // 会拒绝写入，旧实现随后 render() 会把用户刚输入的草稿直接冲掉。
+  function priceSaveDraftError(root) {
+    const formatError = priceDraftError(root);
+    if (formatError) return formatError;
+    const hasPositive = ["input", "cachedInput", "cacheWrite", "output"].some((field) => {
+      const raw = String(root?.querySelector?.(`[data-price-field='${field}']`)?.value ?? "").trim();
+      return raw !== "" && Number(raw) > 0;
+    });
+    if (hasPositive) return null;
+    return {
+      input: root?.querySelector?.("[data-price-field='input']"),
+      message: "请至少填写一个大于 0 的价格",
+    };
+  }
+
+  function showPriceEditorError(root, error) {
+    const errorNode = root?.querySelector?.("[data-price-error]");
+    if (!errorNode) return;
+    if (error) {
+      error.input?.setAttribute?.("aria-invalid", "true");
+      errorNode.hidden = false;
+      errorNode.textContent = error.message || "保存失败";
+    } else {
+      errorNode.hidden = true;
+      errorNode.textContent = "";
+    }
+  }
+
+  // 把编辑器的当前输入存为草稿；面板切换、重渲染时继续显示，避免“保存失败后
+  // 一切换模型就消失”。成功保存或选择其它模型时清空。
+  function capturePriceDraft(root) {
+    const read = (field) => String(root?.querySelector?.(`[data-price-field='${field}']`)?.value ?? "");
+    const draft = {
+      model: normalizeText(read("model"), 120),
+      input: read("input"),
+      cachedInput: read("cachedInput"),
+      cacheWrite: read("cacheWrite"),
+      output: read("output"),
+    };
+    state.priceDraft = draft.model || draft.input || draft.cachedInput || draft.cacheWrite || draft.output ? draft : null;
+  }
+
   function handleSettingsInput(event) {
     const search = event.target?.closest?.("[data-price-search]");
     if (search) {
@@ -11434,7 +11458,11 @@ const VERSION = "0.7.10-beta1";
       return;
     }
     const field = event.target?.closest?.("[data-price-field]");
-    if (field?.closest?.(".cltc-price-editor")) syncPriceValidation(settingsEditorRoot());
+    if (field?.closest?.(".cltc-price-editor")) {
+      const root = settingsEditorRoot();
+      capturePriceDraft(root);
+      syncPriceValidation(root);
+    }
   }
 
   function handleSettingsClick(event) {
@@ -11512,6 +11540,7 @@ const VERSION = "0.7.10-beta1";
       return;
     }
     if (picked) {
+      state.priceDraft = null;
       state.priceEditorModel = picked.getAttribute("data-price-pick") || "";
       renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
@@ -11567,6 +11596,7 @@ const VERSION = "0.7.10-beta1";
     const hidden = hiddenPriceModels();
     for (const model of Object.keys(DEFAULT_PRICES)) hidden.delete(model);
     saveHiddenPriceModels(hidden);
+    state.priceDraft = null;
     state.priceEditorModel = nextPriceEditorModel(modelName());
   }
 
@@ -11592,6 +11622,7 @@ const VERSION = "0.7.10-beta1";
     const hidden = hiddenPriceModels();
     hidden.add(name);
     saveHiddenPriceModels(hidden);
+    state.priceDraft = null;
     state.priceEditorModel = nextPriceEditorModel(modelName());
     renderSettingsOverlay(liveSnapshot(), { animate: true });
     return true;
@@ -11609,6 +11640,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function startNewPriceModel() {
+    state.priceDraft = null;
     state.priceEditorModel = newPriceModelName();
     renderSettingsOverlay(liveSnapshot(), { animate: true });
   }
@@ -11616,20 +11648,39 @@ const VERSION = "0.7.10-beta1";
   function savePriceFromEditor() {
     const root = settingsEditorRoot();
     const model = rootPriceModel();
-    if (!model) return false;
-    if (!syncPriceValidation(root)) return false;
+    if (!model) {
+      showPriceEditorError(root, { message: "请填写模型名" });
+      return false;
+    }
+    // 保存前先做完整校验：旧实现只在数字格式错误时阻止提交，所有价格为空时
+    // setModelPrice 静默返回 false，随后 render() 会把刚输入的草稿冲掉。
+    const draftError = priceSaveDraftError(root);
+    if (draftError) {
+      showPriceEditorError(root, draftError);
+      return false;
+    }
     const input = root.querySelector("[data-price-field='input']")?.value;
     const cachedInput = root.querySelector("[data-price-field='cachedInput']")?.value;
     const cacheWrite = root.querySelector("[data-price-field='cacheWrite']")?.value;
     const output = root.querySelector("[data-price-field='output']")?.value;
-    const saved = window.__codexLiveTokenCost.setModelPrice(model, { input, cachedInput, cacheWrite, output });
-    if (saved) {
-      state.priceEditorModel = model;
-      renderSettingsOverlay(liveSnapshot());
-    } else {
-      render();
+    state.priceEditorModel = model;
+    let saved = false;
+    try {
+      saved = window.__codexLiveTokenCost.setModelPrice(model, { input, cachedInput, cacheWrite, output });
+    } catch (error) {
+      state.priceSaveError = `保存失败：${updateErrorMessage(error)}`;
     }
-    return saved;
+    if (!saved) {
+      // 失败时保留当前编辑内容，只显示错误；绝不调用 render() 重绘草稿。
+      showPriceEditorError(root, { message: state.priceSaveError || "保存失败，请检查价格或本地存储空间" });
+      state.priceSaveError = "";
+      return false;
+    }
+    state.priceSaveError = "";
+    state.priceDraft = null;
+    showPriceEditorError(root, null);
+    renderSettingsOverlay(liveSnapshot());
+    return true;
   }
 
   function profileSaveToastHtml() {
@@ -11848,10 +11899,12 @@ const VERSION = "0.7.10-beta1";
   function pricePopoverHtml(snap) {
     if (!state.priceEditorOpen) return "";
     const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
-    const model = normalizeText(state.priceEditorModel) || snap.model;
+    const draft = state.priceDraft;
+    const model = normalizeText(draft?.model, 120) || normalizeText(state.priceEditorModel) || snap.model;
+    const draftPrice = draft && normalizeText(draft.model, 120) === model ? draft : null;
     const models = priceListModels(model);
     const resolvedPrice = priceFor(model);
-    const price = resolvedPrice || { input: "", cachedInput: "", output: "" };
+    const price = draftPrice || resolvedPrice || { input: "", cachedInput: "", output: "" };
     const value = (field) => (price[field] == null ? "" : String(price[field]));
     const source = !resolvedPrice ? "未定价" : priceUsable(normalizePrice(overrides[model])) ? "自定义" : DEFAULT_PRICES[model] ? "默认" : "自定义";
     const allowedPanels = ["profile", "general", "usage", "pricing"];
@@ -12950,6 +13003,7 @@ const VERSION = "0.7.10-beta1";
     }
     if (state.priceEditorOpen && !state.root?.contains(event.target) && !state.settingsOverlay?.contains(event.target)) {
       state.priceEditorOpen = false;
+      state.priceDraft = null;
       state.analyticsModel = "";
       state.analyticsModelsExpanded = false;
       render();
@@ -13342,15 +13396,27 @@ const VERSION = "0.7.10-beta1";
     prices: visiblePrices,
     modelInfo: activeModelInfo,
     setModelPrice(model, price) {
+      state.priceSaveError = "";
       const name = String(model || "").trim();
       const normalized = normalizePrice(price);
       if (!name || !normalized || !priceUsable(normalized)) return false;
       const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
       overrides[name] = normalized;
-      localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
-      const hidden = hiddenPriceModels();
-      hidden.delete(name);
-      saveHiddenPriceModels(hidden);
+      try {
+        localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+      } catch {
+        // localStorage 接近配额时 setItem 会抛 QuotaExceededError；必须把失败
+        // 原因带回编辑器，否则界面看起来“点了保存但什么都没发生”。
+        state.priceSaveError = "本地存储空间不足，价格未保存";
+        return false;
+      }
+      try {
+        const hidden = hiddenPriceModels();
+        hidden.delete(name);
+        saveHiddenPriceModels(hidden);
+      } catch {
+        // 隐藏列表清理失败不影响已经写入的价格。
+      }
       render();
       return true;
     },
@@ -13523,6 +13589,14 @@ const VERSION = "0.7.10-beta1";
       syncHubVisibility,
       profileSettingsHtml,
       pricePopoverHtml,
+      priceSaveDraftError,
+      capturePriceDraft,
+      savePriceFromEditor,
+      settingsEditorRoot,
+      priceDraftSnapshot: () => (state.priceDraft ? { ...state.priceDraft } : null),
+      setPriceDraft: (draft) => {
+        state.priceDraft = draft ? { ...draft } : null;
+      },
       newPriceModelName,
       startNewPriceModel,
       restoreDefaultPrices,
