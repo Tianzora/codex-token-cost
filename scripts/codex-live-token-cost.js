@@ -2,7 +2,7 @@
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
 // @version      0.7.10-beta1
-// @description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。
+// @description  在 Codex 输入框上方显示 Token 与金额；ChatGPT 登录时可用本地统计覆盖官方个人资料页；通过设置按钮管理价格和资料。
 // @match        app://-/*
 // @run-at       document-start
 // ==/UserScript==
@@ -411,6 +411,12 @@ const VERSION = "0.7.10-beta1";
     localMessageHandler: null,
     profileRequestIds: new Map(),
     codexModulePromises: new Map(),
+    // Codex asset discovery is expensive (the app-initial bundle is ~14 MB) and used to rerun on
+    // every profile unlock install. Cache the resolved URLs and fetched sources, keyed by the set
+    // of loaded assets so a newly loaded chunk invalidates the cache exactly once.
+    codexAssetSignature: null,
+    codexAssetUrlCache: new Map(),
+    codexAssetTextCache: new Map(),
     detectedModel: "",
     detectedModelLabel: "",
     detectedEffort: "",
@@ -471,6 +477,7 @@ const VERSION = "0.7.10-beta1";
     profileQueryClient: null,
     profileQueryClientDiscoveryTimer: 0,
     profileQueryClientDiscoveryObserver: null,
+    profileQueryClientDiscoveryProbeAt: 0,
     profileRealChatgptCached: false,
     profileRealChatgptCacheClient: null,
     profileQueryCacheObserverClient: null,
@@ -478,6 +485,7 @@ const VERSION = "0.7.10-beta1";
     profileQueryCacheSyncQueued: false,
     profileSyntheticAuth: false,
     profileUiAuthCacheKey: "",
+    profileUiAuthCacheSource: null,
     profileUiAuthCache: null,
     profileUiReadinessObserver: null,
     profileIdentityObserver: null,
@@ -489,6 +497,22 @@ const VERSION = "0.7.10-beta1";
     profileAccountsRefreshPromise: null,
     profileUsageRefreshTimer: 0,
     profileUsageRefreshRequests: 0,
+    // Profile unlock installs are idempotent per auth mode. Without this the react-query cache
+    // observer would reinstall on every accounts/check event, and each install invalidated
+    // accounts/check again, producing a self-sustaining refetch loop.
+    profileUnlockInstalledMode: "",
+    profileUnlockInstalledClient: null,
+    profileUnlockInstallCount: 0,
+    // Test-only: the API-key profile spoof is disabled in production (see profileSyntheticEnabled).
+    profileSyntheticTestEnabled: false,
+    // The settings section list is a module-level array; remember it after the first hit so the
+    // global Array.prototype.filter wrapper is O(1) for every unrelated filter call.
+    settingsSectionsSource: null,
+    profileAuthPatchRetryTimer: 0,
+    profileAuthPatchRetries: 0,
+    profileUiApiAuthCacheSource: null,
+    profileUiApiAuthCachePrefs: null,
+    profileUiApiAuthCache: null,
     hubVisibilityTimer: 0,
     hubVisibilityObserver: null,
     officialModelObserver: null,
@@ -1743,9 +1767,18 @@ const VERSION = "0.7.10-beta1";
   }
 
   function profileSyntheticEnabled(queryClient) {
+    // Codex gates every profile surface on a real ChatGPT login: the route wrapper checks
+    // authMethod === "chatgpt", a matching personal account and a Pro plan, and the profile
+    // endpoints live behind the ChatGPT-only /wham backend. An API-key session cannot satisfy
+    // that, so synthesizing a profile required faking auth reads and endpoints app-wide. That was
+    // both fragile and expensive (a stack capture on every auth read), so the API-key profile
+    // spoof is intentionally disabled. Only the real-ChatGPT data-override path runs in production.
+    //
+    // The implementation is still covered by the unit tests through this test-only switch; Codex
+    // itself never sets __CODEX_LIVE_TOKEN_COST_TEST__, so production always takes the fast path.
+    if (!window.__CODEX_LIVE_TOKEN_COST_TEST__ || !state.profileSyntheticTestEnabled) return false;
     const client = queryClient || state.profileQueryClient;
-    if (!client) return false;
-    return profileUnlockEnabled() && !profileRealChatgptCached(client);
+    return Boolean(client) && profileUnlockEnabled() && !profileRealChatgptCached(client);
   }
 
   // Patches installed on long-lived objects (Codex app modules, Statsig clients, React auth
@@ -2156,12 +2189,31 @@ const VERSION = "0.7.10-beta1";
   function localProfileAccount(source = {}, options = {}) {
     const prefs = localProfilePrefs();
     const preserveAuth = options.preserveAuth === true;
+    const apiKeyAccount = source.type === "apiKey" || source.type === "amazonBedrock";
+    const imageUrl = prefs.imageUrl || null;
     return {
       ...source,
       ...(preserveAuth ? {} : { id: source.id || LOCAL_PROFILE_ACCOUNT_ID }),
-      ...(!preserveAuth ? { type: "chatgpt", planType: prefs.planType, plan_type: prefs.planType } : {}),
+      ...(!preserveAuth
+        ? {
+            type: "chatgpt",
+            planType: prefs.planType,
+            plan_type: prefs.planType,
+            name: prefs.displayName || prefs.username || null,
+            display_name: prefs.displayName || prefs.username || null,
+            email: prefs.email || null,
+          }
+        : {}),
+      // accounts/check is the source for the profile dropdown's account row. Fill the avatar for
+      // API-key accounts we are synthesizing and for the local ChatGPT account we fully replace;
+      // a preserved real ChatGPT account keeps its own picture.
+      ...((!preserveAuth || apiKeyAccount) && !source.profile_picture_url && !source.picture && imageUrl
+        ? { profile_picture_url: imageUrl, picture: imageUrl }
+        : {}),
     };
-  }  function spoofProfileAccountPayload(value) {
+  }
+
+  function spoofProfileAccountPayload(value) {
     if (!value || typeof value !== "object" || !value.account || typeof value.account !== "object") return value;
     const type = value.account.type;
     if (type !== "apiKey" && type !== "amazonBedrock" && type !== "chatgpt") return value;
@@ -2219,21 +2271,39 @@ const VERSION = "0.7.10-beta1";
     if (!isApiAuth && !dataOverride) return value;
     if (!isApiAuth) {
       const cacheKey = `${value.authMethod || ""}|${value.accountId || ""}|${value.userId || ""}|${localProfilePrefs().planType}`;
-      if (state.profileUiAuthCacheKey === cacheKey && state.profileUiAuthCache) return state.profileUiAuthCache;
+      if (state.profileUiAuthCacheSource === value && state.profileUiAuthCacheKey === cacheKey && state.profileUiAuthCache) {
+        return state.profileUiAuthCache;
+      }
       const planType = localProfilePrefs().planType;
       const account = value.account && typeof value.account === "object"
         ? { ...value.account, planType, plan_type: planType }
         : value.account;
+      state.profileUiAuthCacheSource = value;
       state.profileUiAuthCacheKey = cacheKey;
       state.profileUiAuthCache = { ...value, planAtLogin: planType, ...(account ? { account } : {}) };
       return state.profileUiAuthCache;
     }
+    // The auth context getter now feeds every useAuth() reader (not just the sidebar footer) so the
+    // whole profile surface unlocks in API-key mode. Return a stable spoofed object per source
+    // value + plan so broad reads do not churn context identities and trigger extra renders.
+    const prefs = localProfilePrefs();
+    if (state.profileUiApiAuthCacheSource === value && state.profileUiApiAuthCachePrefs === prefs && state.profileUiApiAuthCache) {
+      return state.profileUiApiAuthCache;
+    }
     const source = spoofProfileAuthContextValue(value);
+    const displayName = prefs.displayName || prefs.username || "Local Usage";
+    const imageUrl = prefs.imageUrl || null;
     const account = {
       ...localProfileAccount(source.account && typeof source.account === "object" ? source.account : {}),
       id: LOCAL_PROFILE_ACCOUNT_ID,
+      name: displayName,
+      display_name: displayName,
+      email: prefs.email,
+      profile_picture_url: imageUrl,
+      picture: imageUrl,
+      profileImageUrl: imageUrl,
     };
-    return {
+    const spoofed = {
       ...source,
       authMethod: "chatgpt",
       openAIAuth: source.openAIAuth,
@@ -2244,19 +2314,47 @@ const VERSION = "0.7.10-beta1";
       account,
       accountId: LOCAL_PROFILE_ACCOUNT_ID,
       userId: LOCAL_PROFILE_USER_ID,
-      profileIdentity: localProfileIdentityFields(source),
+      // The official sidebar footer (bG avatar) and the profile dropdown avatar both read these two
+      // login fields, not the generic identity fields. Feeding them here lets Codex render the local
+      // avatar with its own DOM structure and size instead of us injecting a look-alike node.
+      nameAtLogin: displayName,
+      profilePictureUrlAtLogin: imageUrl,
+      profileIdentity: {
+        ...localProfileIdentityFields(source),
+        ...localSyntheticIdentityFields(source),
+        displayName,
+        name: displayName,
+        isProfileAvailable: true,
+      },
     };
+    state.profileUiApiAuthCacheSource = value;
+    state.profileUiApiAuthCachePrefs = prefs;
+    state.profileUiApiAuthCache = spoofed;
+    return spoofed;
   }
+  // Codex minifies component and hook names on every release, so the unlock cannot hard-code them.
+  // Instead it derives the names from stable string constants in the bundle: the sidebar footer,
+  // the profile-visibility hook, the useAuth hook (the single entry point every profile-visibility
+  // decision reads auth through) and the /settings/profile route guard. A matching name in the
+  // auth-context read stack is what makes the spoofed value apply.
+  function profileUiFunctionNameBefore(text, marker) {
+    const index = text.indexOf(marker);
+    if (index < 0) return "";
+    const prefix = text.slice(Math.max(0, index - 20000), index);
+    const declarations = Array.from(prefix.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g));
+    return declarations.length ? declarations.at(-1)[1] : "";
+  }
+
   function profileUiComponentNamesFromSource(source) {
     const text = String(source || "");
-    const names = [];
-    const footerMarker = text.indexOf("codex.profileFooter.settingsFallback");
-    if (footerMarker >= 0) {
-      const prefix = text.slice(Math.max(0, footerMarker - 20000), footerMarker);
-      const declarations = Array.from(prefix.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g));
-      if (declarations.length) names.push(declarations.at(-1)[1]);
-    }
-    return Array.from(new Set(names));
+    if (!text) return [];
+    const names = [
+      profileUiFunctionNameBefore(text, "codex.profileFooter.settingsFallback"),
+      profileUiFunctionNameBefore(text, "isProfileVisibilityLoading"),
+      profileUiFunctionNameBefore(text, "useAuth must be used within AuthProvider"),
+      profileUiFunctionNameBefore(text, "/settings/profile"),
+    ];
+    return Array.from(new Set(names.filter(Boolean)));
   }
 
   function isProfileUiAuthRead(stack, componentNames) {
@@ -2277,6 +2375,8 @@ const VERSION = "0.7.10-beta1";
     if (isProfileQueryClient(value)) {
       if (state.profileQueryClient !== value) refreshProfileRealChatgptCache(value);
       state.profileQueryClient = value;
+      state.profileQueryClientDiscoveryObserver?.disconnect?.();
+      state.profileQueryClientDiscoveryObserver = null;
       installProfileQueryCacheObserver(value);
     }
     return value;
@@ -2403,7 +2503,12 @@ const VERSION = "0.7.10-beta1";
         if (isProfileAuthQueryKey(event.query.queryKey)) {
           const real = refreshProfileRealChatgptCache(queryClient);
           if (real) {
-            if (profileDataOverrideEnabledFor(queryClient)) syncProfileUsageQueryCache(queryClient);
+            if (profileDataOverrideEnabledFor(queryClient)) {
+              // A real ChatGPT session may only be detected after the query client is discovered.
+              // Install the override hooks now; the install is idempotent per client.
+              safeInstallOfficialProfileUnlock();
+              syncProfileUsageQueryCache(queryClient);
+            }
           } else if (profileSyntheticEnabled(queryClient)) {
             safeInstallOfficialProfileUnlock();
             scheduleProfileUsageRefresh(0);
@@ -2415,9 +2520,10 @@ const VERSION = "0.7.10-beta1";
         ) {
           scheduleProfileQueryCacheSync(queryClient);
         } else if (
-          (event?.type === "added" || event?.type === "observerAdded" || event?.type === "updated") &&
           isProfilePageQueryKey(event.query.queryKey) &&
-          (event?.type !== "updated" || profilePageDataNeedsOverride(event.query?.state?.data))
+          (event?.type === "added" ||
+            event?.type === "observerAdded" ||
+            (event?.type === "updated" && profileDataOverrideEnabledFor(queryClient)))
         ) {
           scheduleProfileQueryCacheSync(queryClient);
         }
@@ -2502,8 +2608,10 @@ const VERSION = "0.7.10-beta1";
           get() {
             const value = descriptor?.get ? descriptor.get.call(this) : currentValue;
             const active = stickyBridge();
+            // Synthetic mode is test-only in this build, so the stack probe below never runs in
+            // production. It remains here to keep the unit tests for component-scoped reads.
             if (
-              (active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) &&
+              active?.profileSyntheticEnabled() === true &&
               isProfileUiAuthRead(new Error().stack, authContext.__codexLiveTokenCostProfileUiComponents)
             ) {
               return active.profileUiAuthContextValue(value);
@@ -2536,8 +2644,29 @@ const VERSION = "0.7.10-beta1";
     );
   }
 
+  // Cheap, allocation-free pre-check so the global Array.prototype.filter patch does not run the
+  // two-pass slug scan on every filter call in the app. Any array that could be the settings
+  // sections list necessarily contains a `profile` slug entry.
+  function settingsSectionsCandidate(value) {
+    if (value === state.settingsSectionsSource) return true;
+    // The sections list is a module constant, so once it is known no other array can match.
+    if (state.settingsSectionsSource) return false;
+    if (!Array.isArray(value) || value.length === 0) return false;
+    // The Codex settings section list is ~50 entries; large arrays (message history, query lists)
+    // can be skipped without scanning them on every filter call.
+    if (value.length > 256) return false;
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (item && typeof item === "object" && item.slug === "profile") {
+        state.settingsSectionsSource = value;
+        return true;
+      }
+    }
+    return false;
+  }
+
   function profileUnlockedSettingsSections(source, visible) {
-    if (!profileSyntheticEnabled()) return visible;
+    if (!profileDataOverrideEnabledFor() && !profileSyntheticEnabled()) return visible;
     if (!isSettingsSectionsArray(source) || !Array.isArray(visible) || visible.some((item) => item?.slug === "profile")) return visible;
     const profile = source.find((item) => item?.slug === "profile");
     if (!profile) return visible;
@@ -5419,15 +5548,35 @@ const VERSION = "0.7.10-beta1";
   }
 
   function isProfileUsageUrl(url) {
-    return /\/wham\/profiles\/me(?:[?#].*)?$/i.test(String(url || ""));
+    // The transport layer reports "/wham/profiles/me", while the request client calls the relative
+    // "/profiles/me". Accept both so the synthetic usage/identity payload is used on either path.
+    return profileMeEndpoint(url) === "/profiles/me";
   }
 
   function isProfilePhotoUrl(url) {
-    return /\/wham\/profiles\/me\/photo(?:[?#].*)?$/i.test(String(url || ""));
+    return profileMeEndpoint(url) === "/profiles/me/photo";
+  }
+
+  // The profile page client talks to the same host through a relative base ("/profiles/me/page"),
+  // while the fetch layer sees the absolute "/wham/..." form. Normalize to the endpoint path so a
+  // single predicate covers both transports without matching the plain usage endpoint.
+  function profileMeEndpoint(url) {
+    const path = String(url || "").split(/[?#]/)[0];
+    const index = path.indexOf("/profiles/me");
+    return index < 0 ? "" : path.slice(index);
+  }
+
+  function isProfilePageUrl(url) {
+    return profileMeEndpoint(url) === "/profiles/me/page";
+  }
+
+  function isProfilePinOptionsUrl(url) {
+    return profileMeEndpoint(url) === "/profiles/me/page/pin_options";
   }
 
   function isProfileAccountsCheckUrl(url) {
-    return /\/wham\/accounts\/check(?:[?#].*)?$/i.test(String(url || ""));
+    const path = String(url || "").split(/[?#]/)[0];
+    return /(?:^|\/)accounts\/check$/i.test(path);
   }
 
   function requestUrl(input) {
@@ -7904,7 +8053,30 @@ const VERSION = "0.7.10-beta1";
     return rect.width !== 0 && rect.height !== 0 ? direct : null;
   }
 
+  function findOfficialProfileAvatarNode(button) {
+    if (!button) return null;
+    const officialImage = button.querySelector?.("img:not([data-cltc-profile-identity-avatar])");
+    if (officialImage) return officialImage;
+    // bG renders a letter avatar as a span with avatar-* color tokens; the loading fallback uses
+    // bg-text-tertiary. Both are official nodes, so they keep Codex's own sizing and wrapper.
+    return (
+      button.querySelector?.(
+        "span[class*='text-avatar-foreground'], span[class*='bg-avatar-'], span[class*='bg-text-tertiary'][class*='rounded-full']",
+      ) || null
+    );
+  }
+
   function syncSidebarProfileIdentity(doc = document) {
+    // API-key sessions have no profile surface to override; leave the official footer untouched.
+    if (!profileDataOverrideEnabledFor() && !profileSyntheticEnabled()) {
+      // Switching from a ChatGPT login to an API key (or disabling the override) leaves the
+      // previous pass's footer copy and injected avatar behind, because the early return used to
+      // skip cleanup. Restore them once so the official identity comes back.
+      if (state.profileIdentityButtons.size || state.profileIdentityMenuItems.size || state.profileIdentityMenus.size) {
+        restoreSidebarProfileIdentity();
+      }
+      return false;
+    }
     const button = findSidebarProfileButton(doc);
     const menuSynced = syncSidebarProfileMenuIdentity(doc, button);
     const dataOverride = profileDataOverrideEnabledFor();
@@ -7915,6 +8087,10 @@ const VERSION = "0.7.10-beta1";
 
     const prefs = localProfilePrefs();
     const displayName = prefs.displayName || prefs.username || "Local Usage";
+    // Synthetic (API-key) mode: Codex itself now renders the avatar from the spoofed login identity.
+    // Leave its DOM untouched so size, wrapper and object-fit stay byte-identical to the official UI.
+    // In data-override mode the local avatar is still meant to replace a real ChatGPT photo.
+    const officialAvatar = dataOverride ? null : findOfficialProfileAvatarNode(button);
     let snapshot = button.__codexLiveTokenCostProfileIdentity;
     if (!snapshot) {
       snapshot = {
@@ -7925,10 +8101,19 @@ const VERSION = "0.7.10-beta1";
         compactAvatar,
         compactAvatarText: compactAvatar?.textContent || "",
         compactAvatarHtml: compactAvatar?.innerHTML || null,
+        compactAvatarSrc: compactAvatar?.getAttribute?.("src") ?? null,
+        compactAvatarAlt: compactAvatar?.getAttribute?.("alt") ?? null,
         avatar: null,
       };
       button.__codexLiveTokenCostProfileIdentity = snapshot;
       state.profileIdentityButtons.add(button);
+    }
+
+    if (officialAvatar) {
+      button.querySelector?.("[data-cltc-profile-identity-avatar]")?.remove?.();
+      snapshot.avatar = null;
+      if (label && label.textContent !== displayName) label.textContent = displayName;
+      return true;
     }
 
     let avatar = button.querySelector?.("[data-cltc-profile-identity-avatar]");
@@ -7937,7 +8122,7 @@ const VERSION = "0.7.10-beta1";
         if (compactAvatar.tagName !== "IMG") {
           avatar = doc.createElement("img");
           avatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
-          avatar.className = "icon-sm shrink-0 rounded-full";
+          avatar.className = "shrink-0 object-cover rounded-full icon-sm";
           compactAvatar.replaceWith?.(avatar);
         } else {
           avatar = compactAvatar;
@@ -7953,7 +8138,7 @@ const VERSION = "0.7.10-beta1";
       avatar = doc.createElement(prefs.imageUrl ? "img" : "span");
       avatar.setAttribute?.("data-cltc-profile-identity-avatar", "");
       avatar.className = prefs.imageUrl
-        ? "icon-sm shrink-0 rounded-full"
+        ? "shrink-0 object-cover rounded-full icon-sm"
         : "icon-sm flex shrink-0 items-center justify-center rounded-full bg-token-charts-purple/10 text-[10px] leading-none font-medium text-token-charts-purple";
       button.insertBefore?.(avatar, gear);
     }
@@ -7967,7 +8152,6 @@ const VERSION = "0.7.10-beta1";
     }
     if (gear?.style && gear.style.display !== "none") gear.style.display = "none";
     if (label && label.textContent !== displayName) label.textContent = displayName;
-    if (dataOverride) return true;
     return true;
   }
 
@@ -8011,12 +8195,17 @@ const VERSION = "0.7.10-beta1";
 
   function syncSidebarProfileMenuIdentity(doc = document, button = findSidebarProfileButton(doc)) {
     const menuId = button?.getAttribute?.("aria-controls");
-    const menus = Array.from(doc.querySelectorAll?.("[role=\"menu\"]") || []);
-    const menu = menuId
-      ? doc.getElementById?.(menuId)
-      : menus.find((candidate) => candidate.getAttribute?.("aria-labelledby") === button?.id)
+    let menu = menuId ? doc.getElementById?.(menuId) : null;
+    if (!menu) {
+      // The menu is closed most of the time; skip the document-wide menu scan unless the trigger
+      // says it is open (or we already track an open menu).
+      if (menuId) return false;
+      if (button?.getAttribute?.("aria-expanded") !== "true" && state.profileIdentityMenus.size === 0) return false;
+      const menus = Array.from(doc.querySelectorAll?.("[role=\"menu\"]") || []);
+      menu = menus.find((candidate) => candidate.getAttribute?.("aria-labelledby") === button?.id)
         || menus.find((candidate) => candidate.querySelector?.("span.min-w-0.text-xs.leading-dense.text-tertiary.whitespace-normal"))
         || menus.find((candidate) => /退出登录|sign out/i.test(String(candidate.innerText || candidate.textContent || "")));
+    }
     if (!menu || menu.getAttribute?.("role") !== "menu" || (menu.getAttribute?.("aria-labelledby") && menu.getAttribute?.("aria-labelledby") !== button.id)) return false;
 
     const planSynced = syncSidebarProfileMenuPlan(menu);
@@ -8140,10 +8329,23 @@ const VERSION = "0.7.10-beta1";
       if (snapshot.label) snapshot.label.textContent = snapshot.labelText;
       if (snapshot.gear?.style) snapshot.gear.style.display = snapshot.gearDisplay;
       if (snapshot.compactAvatar) {
+        snapshot.compactAvatar.removeAttribute?.("data-cltc-profile-identity-avatar");
         if (snapshot.compactAvatarHtml != null) snapshot.compactAvatar.innerHTML = snapshot.compactAvatarHtml;
         else snapshot.compactAvatar.textContent = snapshot.compactAvatarText;
+        if (snapshot.compactAvatarSrc != null) snapshot.compactAvatar.setAttribute?.("src", snapshot.compactAvatarSrc);
+        else snapshot.compactAvatar.removeAttribute?.("src");
+        if (snapshot.compactAvatarAlt != null) snapshot.compactAvatar.setAttribute?.("alt", snapshot.compactAvatarAlt);
+        else snapshot.compactAvatar.removeAttribute?.("alt");
       }
-      if (snapshot.avatar !== snapshot.compactAvatar) snapshot.avatar?.remove?.();
+      if (snapshot.avatar && snapshot.avatar !== snapshot.compactAvatar) {
+        // When the local avatar replaced the official node, put the official node back in its
+        // place instead of only deleting the injected one (which would leave a blank avatar).
+        if (snapshot.compactAvatar && typeof snapshot.avatar.replaceWith === "function") {
+          snapshot.avatar.replaceWith(snapshot.compactAvatar);
+        } else {
+          snapshot.avatar.remove?.();
+        }
+      }
       try {
         delete button.__codexLiveTokenCostProfileIdentity;
       } catch {
@@ -8166,8 +8368,12 @@ const VERSION = "0.7.10-beta1";
     if (state.profileIdentityObserver || window.__CODEX_LIVE_TOKEN_COST_TEST__ || typeof MutationObserver !== "function") return;
     const target = document.body || document.documentElement;
     if (!target) return;
-    state.profileIdentityObserver = new MutationObserver(() => scheduleSidebarProfileIdentitySync(0));
-    state.profileIdentityObserver.observe(target, { childList: true, subtree: true, characterData: true });
+    // Codex streams tokens into the chat DOM continuously. A 0 ms body-wide observer (previously
+    // with characterData) made every streamed token run a full sidebar/profile lookup, which is
+    // what made the whole app feel laggy. The footer identity only changes when the sidebar itself
+    // re-renders, so watch childList and coalesce to a slow trailing refresh.
+    state.profileIdentityObserver = new MutationObserver(() => scheduleSidebarProfileIdentitySync(250));
+    state.profileIdentityObserver.observe(target, { childList: true, subtree: true });
   }
 
   function stopSidebarProfileIdentitySync() {
@@ -8250,6 +8456,19 @@ const VERSION = "0.7.10-beta1";
         plan_label: prefs.planLabel,
         profile_picture_url: prefs.imageUrl,
       },
+      // The sidebar footer and the profile dropdown read profile_details off the same
+      // /profiles/me response. Supplying it here keeps their official avatar and name rendering
+      // path (bG / Wr) authoritative instead of relying on DOM replacement.
+      profile_details: {
+        display_name: prefs.displayName,
+        username: prefs.username,
+        email: prefs.email,
+        plan_type: prefs.planType,
+        plan_label: prefs.planLabel,
+        profile_picture_url: prefs.imageUrl,
+        description: "",
+        photo_frame_style: null,
+      },
       metadata: { stats_error: "" },
       stats: {
         daily_usage_buckets: localProfileDailyUsageBuckets(days),
@@ -8272,6 +8491,91 @@ const VERSION = "0.7.10-beta1";
         total_plugins_used: activity.totalPluginsUsed,
         total_threads: totalThreads,
       },
+    };
+  }
+
+  function localProfilePageResponse() {
+    const prefs = localProfilePrefs();
+    const local = localProfileResponse();
+    const profile = local.profile || {};
+    const stats = local.stats || {};
+    const displayName = normalizeText(profile.display_name, 240) || prefs.displayName || prefs.username || "Local Usage";
+    const username = normalizeText(profile.username, 240) || prefs.username || "local";
+    const dailyBuckets = Array.isArray(stats.daily_usage_buckets) ? stats.daily_usage_buckets : [];
+    const topPlugins = Array.isArray(stats.top_plugins) ? stats.top_plugins : [];
+    const agentic = {
+      lifetime_tokens: stats.lifetime_tokens ?? 0,
+      peak_daily_tokens: stats.peak_daily_tokens ?? 0,
+      longest_running_turn_sec: stats.longest_running_turn_sec ?? 0,
+      fast_mode_usage_percentage: stats.fast_mode_usage_percentage ?? 0,
+      most_used_reasoning_effort: stats.most_used_reasoning_effort ?? null,
+      most_used_reasoning_effort_percentage: stats.most_used_reasoning_effort_percentage ?? 0,
+      total_threads: stats.total_threads ?? 0,
+    };
+    // Shape consumed by the official /settings/profile page (and the v2 /profile page).
+    // fUo() in app-initial reads page.stats.agentic / page.insights.agentic / page.activity_graph,
+    // while the renderer dereferences page.visibility.value and page.pins?.items directly.
+    return {
+      is_self: true,
+      can_edit: true,
+      has_public_personal_profile: false,
+      page_version: 1,
+      profile_details: {
+        display_name: displayName,
+        username,
+        email: profile.email || prefs.email,
+        plan_type: profile.plan_type || prefs.planType,
+        plan_label: profile.plan_label || prefs.planLabel,
+        profile_picture_url: normalizeProfileImageUrl(profile.profile_picture_url) || null,
+        description: "",
+        photo_frame_style: null,
+      },
+      page: {
+        workspace_id: null,
+        workspace_name: null,
+        visibility: { value: "private" },
+        display_settings: null,
+        workspace_display_settings: null,
+        pins: { items: [], next_cursor: null },
+        stats: {
+          current_streak_days: stats.current_streak_days ?? 0,
+          longest_streak_days: stats.longest_streak_days ?? 0,
+          agentic,
+        },
+        insights: {
+          agentic,
+          total_skills_used: stats.total_skills_used ?? 0,
+          unique_skills_used: stats.unique_skills_used ?? 0,
+          total_plugins_used: stats.total_plugins_used ?? 0,
+          unique_plugins_used: stats.unique_plugins_used ?? 0,
+        },
+        top_plugins: topPlugins.map((plugin) => ({
+          plugin_id: plugin.plugin_id ?? "",
+          plugin_name: plugin.plugin_name ?? plugin.plugin_id ?? "",
+          logo_url: plugin.logo_url ?? null,
+          usage_count: toCount(plugin.usage_count),
+        })),
+        activity_graph: {
+          daily_usage_buckets: dailyBuckets.map((day) => ({
+            start_date: day.start_date,
+            tokens: toCount(day.tokens),
+            chat_turns: toCount(day.chat_turns),
+          })),
+        },
+      },
+    };
+  }
+
+  function localProfilePinOptionsResponse() {
+    return { items: [], next_cursor: null };
+  }
+
+  function localProfilePagePatchResponse(options = {}) {
+    const body = options?.requestBody && typeof options.requestBody === "object" ? options.requestBody : options;
+    const current = localProfilePageResponse();
+    return {
+      display_settings: body?.display_settings ?? current.page.display_settings,
+      page_version: (Number(current.page_version) || 0) + 1,
     };
   }
 
@@ -8379,6 +8683,16 @@ const VERSION = "0.7.10-beta1";
     } else {
       const data = profileUsageQueryData();
       queryKeys.forEach((queryKey) => client.setQueryData(queryKey, data));
+      // The official profile page reads ["profile","page",userId,accountId] from
+      // /profiles/me/page. Seed it so the page paints on the first render instead of waiting for a
+      // network round-trip that would fail under API-key auth.
+      const pageData = localProfilePageResponse();
+      pageQueries.forEach((query) => client.setQueryData(query.queryKey, pageData));
+      const pageKey = ["profile", "page", LOCAL_PROFILE_USER_ID, LOCAL_PROFILE_ACCOUNT_ID];
+      const hasPageKey = pageQueries.some(
+        (query) => Array.isArray(query?.queryKey) && query.queryKey.join("\u0000") === pageKey.join("\u0000"),
+      );
+      if (!hasPageKey) client.setQueryData(pageKey, pageData);
     }
     if (synthetic) syncProfileAccountInfoQueryCache(client);
     return true;
@@ -8436,7 +8750,11 @@ const VERSION = "0.7.10-beta1";
     const originalTest = RegExp.prototype.__codexLiveTokenCostOriginalTest || RegExp.prototype.test;
     if (RegExp.prototype.test.__codexLiveTokenCostProfileUnlock === VERSION) return;
     const patchedTest = function codexLiveTokenCostProfileUsernameTest(value) {
-      if (profileSyntheticEnabled() && this?.source === "^[a-z0-9._-]+$" && this?.flags === "") return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
+      // Cheap-first: bail on the regex source/flags before touching settings, since this runs for
+      // every RegExp.prototype.test call in the app.
+      if (this?.source === "^[a-z0-9._-]+$" && this?.flags === "" && profileSyntheticEnabled()) {
+        return /^[A-Za-z0-9._-]+$/.test(String(value || ""));
+      }
       return originalTest.call(this, value);
     };
     patchedTest.__codexLiveTokenCostProfileUnlock = VERSION;
@@ -8455,6 +8773,10 @@ const VERSION = "0.7.10-beta1";
   }
 
   async function profileFetchBodyAsync(method, body, url) {
+    if (isProfilePageUrl(url)) {
+      return method === "PATCH" ? localProfilePagePatchResponse({ requestBody: body }) : localProfilePageResponse();
+    }
+    if (isProfilePinOptionsUrl(url)) return localProfilePinOptionsResponse();
     return profileFetchBody(method, body, url);
   }
 
@@ -8471,8 +8793,40 @@ const VERSION = "0.7.10-beta1";
     return match ? new URL(match[1], baseUrl).href : "";
   }
 
+  async function fetchCodexAssetText(url) {
+    if (!url) return "";
+    if (state.codexAssetTextCache.has(url)) return state.codexAssetTextCache.get(url);
+    let text = "";
+    try {
+      const response = await fetch(url);
+      text = response.ok ? await response.text() : "";
+    } catch {
+      text = "";
+    }
+    // Never cache a failed/empty read: a transient fetch error must stay retryable for the same
+    // loaded asset set, otherwise one failure would pin an empty source until a chunk loads.
+    if (text) state.codexAssetTextCache.set(url, text);
+    return text;
+  }
+
+  function resetCodexAssetCaches(signature) {
+    if (state.codexAssetSignature === signature) return;
+    state.codexAssetSignature = signature;
+    state.codexAssetUrlCache.clear();
+    state.codexAssetTextCache.clear();
+  }
+
   async function codexAppAssetUrl(namePart) {
     const urls = codexAppAssetUrls();
+    resetCodexAssetCaches(urls.join("\n"));
+    if (state.codexAssetUrlCache.has(namePart)) return state.codexAssetUrlCache.get(namePart);
+    const resolved = await resolveCodexAppAssetUrl(namePart, urls);
+    // Only memoize successful resolutions so transient discovery failures stay retryable.
+    if (resolved) state.codexAssetUrlCache.set(namePart, resolved);
+    return resolved;
+  }
+
+  async function resolveCodexAppAssetUrl(namePart, urls) {
     const direct = urls.find((url) => url.split("/").pop()?.startsWith(namePart));
     if (direct) return direct;
     const bundledModuleFallback = ["request-", "vscode-api-"].includes(namePart);
@@ -8482,7 +8836,7 @@ const VERSION = "0.7.10-beta1";
     let bundledModuleUrl = directBundledModule || "";
     for (const src of urls) {
       try {
-        const text = await fetch(src).then((response) => (response.ok ? response.text() : ""));
+        const text = await fetchCodexAssetText(src);
         const found = assetReferenceFromText(text, src, namePart);
         if (found) return found;
         if (bundledModuleFallback && !bundledModuleUrl) bundledModuleUrl = assetReferenceFromText(text, src, "app-initial-");
@@ -8494,12 +8848,8 @@ const VERSION = "0.7.10-beta1";
     if (namePart === "request-") {
       const profileQueriesUrl = await codexAppAssetUrl("profile-queries-");
       if (profileQueriesUrl) {
-        try {
-          const text = await fetch(profileQueriesUrl).then((response) => (response.ok ? response.text() : ""));
-          return assetReferenceFromText(text, profileQueriesUrl, "request-");
-        } catch {
-          return "";
-        }
+        const text = await fetchCodexAssetText(profileQueriesUrl);
+        return assetReferenceFromText(text, profileQueriesUrl, "request-");
       }
     }
     return "";
@@ -8584,23 +8934,42 @@ const VERSION = "0.7.10-beta1";
     if (typeof client.safeGet !== "function" && typeof client.safePatch !== "function") return false;
     const originalSafeGet = client.__codexLiveTokenCostOriginalSafeGet || client.safeGet?.bind(client);
     const originalSafePatch = client.__codexLiveTokenCostOriginalSafePatch || client.safePatch?.bind(client);
+    const overrideActive = () => stickyBridge()?.profileDataOverrideEnabledFor?.() === true;
+    // Synthetic mode is test-only in this build; the check short-circuits in production.
+    const syntheticActive = () => stickyBridge()?.profileSyntheticEnabled?.() === true;
     if (typeof originalSafeGet === "function") {
       client.safeGet = async function codexLiveTokenCostProfileSafeGet(url, ...args) {
-        const active = stickyBridge();
-        if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileUsageUrl(url)) return active.profileFetchBodyAsync("GET", null, url);
-        const response = await originalSafeGet(url, ...args);
-        return (active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileAccountsCheckUrl(url)
-          ? active.spoofProfileAccountsCheckPayload(response)
-          : response;
+        if (syntheticActive() && (isProfilePageUrl(url) || isProfilePinOptionsUrl(url))) {
+          return stickyBridge().profileFetchBodyAsync("GET", null, url);
+        }
+        if ((syntheticActive() || overrideActive()) && isProfileUsageUrl(url)) {
+          return stickyBridge().profileFetchBodyAsync("GET", null, url);
+        }
+        let response;
+        try {
+          response = await originalSafeGet(url, ...args);
+        } catch (error) {
+          // Test-only synthetic path: an API-key session cannot call the ChatGPT-only accounts
+          // endpoint, so keep the dropdown renderable. Production override mode leaves real
+          // ChatGPT errors untouched.
+          if (syntheticActive() && isProfileAccountsCheckUrl(url)) {
+            return stickyBridge().localProfileAccountsCheckResponse();
+          }
+          throw error;
+        }
+        if (syntheticActive() && isProfileAccountsCheckUrl(url)) {
+          return stickyBridge().spoofProfileAccountsCheckPayload(response);
+        }
+        return response;
       };
       client.__codexLiveTokenCostOriginalSafeGet = originalSafeGet;
     }
     if (typeof originalSafePatch === "function") {
       client.safePatch = async function codexLiveTokenCostProfileSafePatch(url, options, ...args) {
-        const active = stickyBridge();
-        if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfileUsageUrl(url)) {
-          active.applyLocalProfilePatch(options);
-          return active.localProfileResponse();
+        if (syntheticActive() && isProfilePageUrl(url)) return stickyBridge().localProfilePagePatchResponse(options);
+        if ((syntheticActive() || overrideActive()) && isProfileUsageUrl(url)) {
+          stickyBridge().applyLocalProfilePatch(options);
+          return stickyBridge().localProfileResponse();
         }
         return originalSafePatch(url, options, ...args);
       };
@@ -8628,14 +8997,38 @@ const VERSION = "0.7.10-beta1";
   }
 
   async function installProfileRequestClientPatch() {
-    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!profileDataOverrideEnabledFor() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    const candidatesFor = (module) => {
+      const found = new Set();
+      for (const value of Object.values(module || {})) {
+        if (value && typeof value === "object" && (typeof value.safeGet === "function" || typeof value.safePatch === "function")) {
+          found.add(value);
+        }
+      }
+      return found;
+    };
     try {
       let patched = 0;
       for (const delay of [0, 200, 700, 1500]) {
         if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
-        if (!profileSyntheticEnabled()) return;
-        const module = await loadCodexAppModule("request-");
-        for (const value of module?.Fct ? [module.Fct] : Object.values(module || {})) {
+        if (!profileDataOverrideEnabledFor()) return;
+        // The request clients are executed inside app-initial. Loading it directly uses Vite's
+        // already-evaluated module (no extra 14 MB download/parse); "request-" can resolve to an
+        // unrelated form chunk.
+        let candidates = new Set();
+        try {
+          candidates = candidatesFor(await loadCodexAppModule("app-initial-"));
+        } catch {
+          // Asset discovery is best-effort across Codex desktop versions.
+        }
+        if (candidates.size === 0) {
+          try {
+            candidates = candidatesFor(await loadCodexAppModule("request-"));
+          } catch {
+            // Asset discovery is best-effort across Codex desktop versions.
+          }
+        }
+        for (const value of candidates) {
           if (patchProfileRequestClient(value)) patched += 1;
         }
         if (patched > 0) break;
@@ -8725,23 +9118,42 @@ const VERSION = "0.7.10-beta1";
   }
 
   async function installProfileAuthContextPatch() {
-    if ((!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    // The auth-context getter is part of the API-key spoof. In production the real-ChatGPT branch
+    // never needs it, so this must stay on the test-only synthetic path.
+    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     try {
       const appUrl = await codexAppAssetUrl("app-initial-");
-      const appSource = appUrl ? await fetch(appUrl).then((response) => (response.ok ? response.text() : "")) : "";
+      const appSource = await fetchCodexAssetText(appUrl);
       if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) return;
       const componentNames = profileUiComponentNamesFromSource(appSource);
       installProfileUiReadinessCoordinator(componentNames);
+      state.profileAuthPatchRetries = 0;
     } catch (error) {
       stopProfileUiReadinessCoordinator();
       state.profileSyntheticAuth = false;
       window.__codexLiveTokenCostProfileAuthPatch = "error";
       window.__codexLiveTokenCostProfileAuthPatchError = error?.message || String(error);
+      // The install is idempotent, so a transient asset failure no longer gets retried by the
+      // query-cache observer. Retry a bounded number of times instead of silently giving up.
+      if (!state.profileAuthPatchRetryTimer && state.profileAuthPatchRetries < 2) {
+        state.profileAuthPatchRetries += 1;
+        state.profileAuthPatchRetryTimer = window.setTimeout(() => {
+          state.profileAuthPatchRetryTimer = 0;
+          if (profileSyntheticEnabled()) void installProfileAuthContextPatch();
+        }, 2000);
+      }
     }
   }
 
   function isProfileFetchMessage(message) {
-    return profileSyntheticEnabled() && message?.type === "fetch" && (isProfileUsageUrl(message.url) || isProfilePhotoUrl(message.url));
+    return (
+      profileSyntheticEnabled() &&
+      message?.type === "fetch" &&
+      (isProfileUsageUrl(message.url) ||
+        isProfilePhotoUrl(message.url) ||
+        isProfilePageUrl(message.url) ||
+        isProfilePinOptionsUrl(message.url))
+    );
   }
 
   function rememberProfileRequestId(requestId) {
@@ -8899,33 +9311,50 @@ const VERSION = "0.7.10-beta1";
   }
 
   function installOfficialProfileUnlock() {
-    if (!profileSyntheticEnabled() && !profileDataOverrideEnabledFor()) return;
+    // Production only runs the real-ChatGPT data-override branch. The synthetic branch exists
+    // solely behind the test-only switch in profileSyntheticEnabled.
+    if (!profileDataOverrideEnabledFor() && !profileSyntheticEnabled()) return;
+    const mode = profileDataOverrideEnabledFor() ? "override" : "synthetic";
+    if (state.profileUnlockInstalledMode === mode && state.profileUnlockInstalledClient === state.profileQueryClient) return;
     const originalFilter = Array.prototype.__codexLiveTokenCostOriginalFilter || Array.prototype.filter;
     if (Array.prototype.filter.__codexLiveTokenCostProfileUnlock !== VERSION) {
       const patchedFilter = function codexLiveTokenCostProfileFilter(callback, thisArg) {
         const visible = originalFilter.call(this, callback, thisArg);
-        return isSettingsSectionsArray(this) ? profileUnlockedSettingsSections(this, visible) : visible;
+        return settingsSectionsCandidate(this) ? profileUnlockedSettingsSections(this, visible) : visible;
       };
       patchedFilter.__codexLiveTokenCostProfileUnlock = VERSION;
       Array.prototype.__codexLiveTokenCostOriginalFilter = originalFilter;
       Array.prototype.filter = patchedFilter;
     }
 
-    installProfileUsernameUppercaseUnlock();
-    installProfileMessageIntercept();
-    installElectronBridgeHook();
     void installProfileRequestClientPatch();
-    void installProfilePhotoUploadPatch();
-    void installProfileAuthContextPatch();
     installSidebarProfileIdentitySync();
-    patchProfileElectronBridge();
     patchProfileStatsigGate();
+    if (mode === "synthetic") {
+      // Test-only legacy path. Production never takes this branch: the API-key profile surface
+      // cannot be unlocked and these global hooks (IPC proxy, message interceptors, RegExp and
+      // auth-context patches) are exactly the hot-path overhead we removed.
+      installProfileUsernameUppercaseUnlock();
+      installProfileMessageIntercept();
+      installElectronBridgeHook();
+      void installProfilePhotoUploadPatch();
+      void installProfileAuthContextPatch();
+      patchProfileElectronBridge();
+    }
+    state.profileUnlockInstalledMode = mode;
+    state.profileUnlockInstalledClient = state.profileQueryClient;
+    state.profileUnlockInstallCount += 1;
   }
 
   function uninstallOfficialProfileUnlock() {
     stopProfileUiReadinessCoordinator();
     stopProfileQueryCacheObserver();
     stopSidebarProfileIdentitySync();
+    state.profileUnlockInstalledMode = "";
+    state.profileUnlockInstalledClient = null;
+    if (state.profileAuthPatchRetryTimer) window.clearTimeout(state.profileAuthPatchRetryTimer);
+    state.profileAuthPatchRetryTimer = 0;
+    state.profileAuthPatchRetries = 0;
     if (state.profileUsageRefreshTimer) window.clearTimeout(state.profileUsageRefreshTimer);
     state.profileUsageRefreshTimer = 0;
     state.profileAccountsRefreshPromise = null;
@@ -8962,6 +9391,7 @@ const VERSION = "0.7.10-beta1";
         safeInstallOfficialProfileUnlock();
         scheduleProfileUsageRefresh(0);
       } else if (profileDataOverrideEnabledFor()) {
+        safeInstallOfficialProfileUnlock();
         syncProfileUsageQueryCache();
       }
     } else {
@@ -11948,6 +12378,7 @@ const VERSION = "0.7.10-beta1";
   }
   function generalSettingsHtml() {
     const profileEnabled = profileUnlockEnabled();
+    const profileRealChatgpt = profileRealChatgptCached();
     return `
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
@@ -11983,7 +12414,11 @@ const VERSION = "0.7.10-beta1";
             <div class="cltc-settings-row cltc-settings-row-link">
               <span>
                 <strong>本地 Profile</strong>
-                <small>${profileEnabled ? "已启用；本地显示名与套餐在个人资料中管理。" : "未启用；开启后本地资料会覆盖 Profile 展示。"}</small>
+                <small>${!profileRealChatgpt
+                  ? "API Key 登录下 Codex 无个人资料页；本地资料仅在 ChatGPT 登录后覆盖显示。"
+                  : profileEnabled
+                    ? "已启用；本地显示名与套餐在个人资料中管理。"
+                    : "未启用；开启后本地资料会覆盖 Profile 展示。"}</small>
               </span>
               <button type="button" data-settings-panel="profile">管理</button>
             </div>
@@ -12043,6 +12478,7 @@ const VERSION = "0.7.10-beta1";
   function profileSettingsHtml() {
     const prefs = localProfilePrefs();
     const enabled = profileUnlockEnabled();
+    const realChatgpt = profileRealChatgptCached();
     const selectedOption = profilePlanOption(prefs.planType);
     const selectedValue = selectedOption?.value || "custom";
     const customValue = selectedOption ? "" : prefs.planLabel || prefs.planType;
@@ -12058,7 +12494,9 @@ const VERSION = "0.7.10-beta1";
       <section class="cltc-settings-section"${enabled ? "" : ' data-profile-locked="true"'}>
         <div class="cltc-settings-section-heading">
           <h2>个人资料</h2>
-          <p>仅影响本地显示，不会改变账号、订阅或登录状态。</p>
+          <p>${realChatgpt
+            ? "仅影响本地显示，不会改变账号、订阅或登录状态。"
+            : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示。"}</p>
         </div>
         <div class="cltc-profile-card" data-disabled="${String(!enabled)}">
           ${avatarHtml}
@@ -13221,8 +13659,8 @@ const VERSION = "0.7.10-beta1";
     async function wrappedFetch(input, init) {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
-      if (profileSyntheticEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url))) {
-        return new Response(JSON.stringify(await profileFetchBodyAsync(method, init?.body)), {
+      if (profileSyntheticEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url) || isProfilePageUrl(url) || isProfilePinOptionsUrl(url))) {
+        return new Response(JSON.stringify(await profileFetchBodyAsync(method, init?.body, url)), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -13418,7 +13856,16 @@ const VERSION = "0.7.10-beta1";
     const target = document.body || document.documentElement;
     if (!target) return;
     state.profileQueryClientDiscoveryObserver = new MutationObserver(() => {
-      if (state.profileQueryClient) return;
+      if (state.profileQueryClient) {
+        state.profileQueryClientDiscoveryObserver?.disconnect?.();
+        state.profileQueryClientDiscoveryObserver = null;
+        return;
+      }
+      // React streams text into the chat DOM continuously. Walking the fiber tree on every
+      // mutation is expensive, so probe at most four times per second until the client is found.
+      const now = Date.now();
+      if (now - state.profileQueryClientDiscoveryProbeAt < 250) return;
+      state.profileQueryClientDiscoveryProbeAt = now;
       const client = profileQueryClientFromDocument();
       if (!client) return;
       rememberProfileQueryClient(client);
@@ -13478,7 +13925,16 @@ const VERSION = "0.7.10-beta1";
     stopProfileUiReadinessCoordinator();
     stopSidebarProfileIdentitySync();
     state.profileUiAuthCacheKey = "";
+    state.profileUiAuthCacheSource = null;
     state.profileUiAuthCache = null;
+    state.profileUiApiAuthCacheSource = null;
+    state.profileUiApiAuthCachePrefs = null;
+    state.profileUiApiAuthCache = null;
+    state.profileUnlockInstalledMode = "";
+    state.profileUnlockInstalledClient = null;
+    if (state.profileAuthPatchRetryTimer) window.clearTimeout(state.profileAuthPatchRetryTimer);
+    state.profileAuthPatchRetryTimer = 0;
+    state.profileAuthPatchRetries = 0;
     if (state.renderTimer) window.clearTimeout(state.renderTimer);
     if (state.usageSyncAutoTimer) window.clearTimeout(state.usageSyncAutoTimer);
     state.usageSyncAutoTimer = 0;
@@ -13543,6 +13999,9 @@ const VERSION = "0.7.10-beta1";
     }
     state.profileRequestIds.clear();
     state.codexModulePromises.clear();
+    state.codexAssetUrlCache.clear();
+    state.codexAssetTextCache.clear();
+    state.codexAssetSignature = null;
     state.officialThreadRuntimeStates.clear();
     state.runtimeSessionBindings.clear();
     if (ownsGlobals) {
@@ -13866,6 +14325,15 @@ const VERSION = "0.7.10-beta1";
       spoofProfileAuthContextValue,
       profileUiAuthContextValue,
       profileUiComponentNamesFromSource,
+      profileUiFunctionNameBefore,
+      settingsSectionsCandidate,
+      installOfficialProfileUnlock,
+      uninstallOfficialProfileUnlock,
+      setProfileSyntheticTestEnabled: (value) => {
+        state.profileSyntheticTestEnabled = Boolean(value);
+      },
+      profileUnlockInstalledMode: () => state.profileUnlockInstalledMode,
+      profileUnlockInstallCount: () => state.profileUnlockInstallCount,
       isProfileUiAuthRead,
       patchProfileReactAuthContext,
       installProfileUiReadinessCoordinator,
@@ -13896,6 +14364,14 @@ const VERSION = "0.7.10-beta1";
       optimizeProfileImageDataUrl,
       applyLocalProfilePhotoUpload,
       localProfileResponse,
+      localProfilePageResponse,
+      localProfilePinOptionsResponse,
+      localProfilePagePatchResponse,
+      localProfileAccount,
+      isProfilePageUrl,
+      isProfilePinOptionsUrl,
+      isProfilePhotoUrl,
+      isProfileAccountsCheckUrl,
       isProfileFetchMessage,
       installLocalMessageCapture,
       localMessageHandler: () => state.localMessageHandler,
@@ -13907,9 +14383,13 @@ const VERSION = "0.7.10-beta1";
     profileDataOverrideEnabledFor,
     profileFetchBodyAsync,
     localProfileResponse,
+    localProfilePageResponse,
+    localProfilePinOptionsResponse,
+    localProfilePagePatchResponse,
     applyLocalProfilePatch,
     applyLocalProfilePhotoUpload,
     spoofProfileAccountsCheckPayload,
+    localProfileAccountsCheckResponse,
     profileUiAuthContextValue,
   };
   window.__codexLiveTokenCostActiveBridge = state.activeBridge;

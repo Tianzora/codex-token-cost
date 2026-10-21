@@ -286,7 +286,7 @@ assert.equal(code.includes("__FLATPICKR_JS_GZIP_BASE64__"), false);
 assert.equal(code.includes("__FLATPICKR_CSS_GZIP_BASE64__"), false);
 assert.equal(code.includes('data-settings-panel="usage"'), true);
 assert.equal(code.includes("使用统计"), true);
-assert.equal(code.includes("@description  在 Codex 输入框上方显示 Token 与金额，解锁官方个人资料页并替换为本地统计；通过设置按钮管理价格和伪装资料。"), true);
+assert.equal(code.includes("@description  在 Codex 输入框上方显示 Token 与金额；ChatGPT 登录时可用本地统计覆盖官方个人资料页；通过设置按钮管理价格和资料。"), true);
 assert.equal(code.includes("FAST_MODE_COST_MULTIPLIER = 1.5"), false);
 assert.equal(code.includes("FAST_MODE_COST_MULTIPLIERS"), true);
 assert.equal(code.includes("-webkit-app-region: no-drag"), true);
@@ -2254,7 +2254,10 @@ assert.equal(api.saveProfilePrefsFromEditor({
 }), true);
 const workspaceAccountsCheck = api.localProfileAccountsCheckResponse();
 assert.equal(workspaceAccountsCheck.accounts[0].structure, undefined);
-assert.equal(workspaceAccountsCheck.accounts[0].name, undefined);
+// The dropdown's account row renders `account.name`; the synthesized account must carry the same
+// identity as the footer instead of leaving it undefined.
+assert.equal(workspaceAccountsCheck.accounts[0].name, "Local Usage");
+assert.equal(workspaceAccountsCheck.accounts[0].display_name, "Local Usage");
 const workspaceProfile = api.localProfileResponse().profile;
 assert.equal(workspaceProfile.display_name, "Local Usage");
 const workspaceAuth = api.spoofProfileAuthContextValue({ authMethod: "apikey" });
@@ -2626,10 +2629,36 @@ const startupApiKeyQueryClient = {
     return Promise.resolve();
   },
 };
+// Production behavior: an API-key session must not install any profile patch. Codex only renders
+// its profile surface for a real ChatGPT login, and the old synthetic path patched hot globals
+// (Array.prototype.filter, RegExp.prototype.test, the auth context and the IPC bridge), which is
+// what caused the whole app to stutter. Keep the production gate covered before opting tests in.
+const filterBeforeProductionGate = Array.prototype.filter;
+const bridgeSendBeforeProductionGate = context.electronBridge.sendMessageFromView;
+api.setProfileUnlockEnabled(true);
+api.installOfficialProfileUnlock();
+assert.equal(api.profileSyntheticEnabled(), false);
+assert.equal(api.profileUnlockInstalledMode(), "");
+assert.equal(Array.prototype.filter, filterBeforeProductionGate);
+assert.equal(context.electronBridge.sendMessageFromView, bridgeSendBeforeProductionGate);
+api.setProfileUnlockEnabled(false);
+
+// The API-key profile spoof is disabled in production (Codex gates the profile surface on a real
+// ChatGPT login); the legacy coverage below opts into the test-only implementation explicitly.
+api.setProfileSyntheticTestEnabled(true);
 assert.equal(api.profileSyntheticEnabled(), false);
 api.rememberProfileQueryClient(startupApiKeyQueryClient);
 api.setProfileUnlockEnabled(true);
 assert.equal(api.profileSyntheticEnabled(), true);
+// Enabling the unlock installs the profile patches once; repeat installs in the same auth mode
+// must be no-ops, otherwise the query-cache observer would reinstall (and re-invalidate
+// accounts/check) on every auth event, producing a self-sustaining refetch loop.
+assert.equal(api.profileUnlockInstalledMode(), "synthetic");
+const unlockInstallsAfterEnable = api.profileUnlockInstallCount();
+assert.ok(unlockInstallsAfterEnable > 0);
+api.installOfficialProfileUnlock();
+api.installOfficialProfileUnlock();
+assert.equal(api.profileUnlockInstallCount(), unlockInstallsAfterEnable);
 context.electronBridge.sendMessageFromView({ type: "fetch", method: "GET", url: "/wham/profiles/me", requestId: "profile-1" });
 assert.equal(bridgeCalls.length, 0);
 context.electronBridge.sendMessageFromView({ type: "fetch", method: "GET", url: "/v1/responses", requestId: "other-1" });
@@ -2714,6 +2743,25 @@ assert.deepEqual(
     "function K1l(){const x='codex.profileFooter.settingsFallback'}function I1l({sidebarFooter:e,triggerButton:t}){}",
   ),
   ["K1l"],
+);
+assert.deepEqual(
+  api.profileUiComponentNamesFromSource(
+    "function AHook(){throw new Error('useAuth must be used within AuthProvider')}"
+    + "function FooterFn(){const x='codex.profileFooter.settingsFallback'}"
+    + "function VisHook(){return{isProfileVisibilityLoading:!1,isProfileVisible:!0}}"
+    + "function GuardFn(){return{pathname:'/settings/profile'}}",
+  ),
+  ["FooterFn", "VisHook", "AHook", "GuardFn"],
+);
+assert.equal(api.profileUiFunctionNameBefore("function Only(){}", "missing-marker"), "");
+assert.equal(api.settingsSectionsCandidate([{ slug: "general-settings" }, { slug: "profile" }]), true);
+assert.equal(api.settingsSectionsCandidate([{ slug: "general-settings" }]), false);
+assert.equal(api.settingsSectionsCandidate(["a", "b"]), false);
+assert.equal(api.settingsSectionsCandidate([]), false);
+// Large arrays must be rejected without scanning, so the global filter patch stays O(1) on them.
+assert.equal(
+  api.settingsSectionsCandidate(Array.from({ length: 300 }, (_, index) => ({ slug: index === 299 ? "profile" : "other" }))),
+  false,
 );
 assert.equal(api.isProfileUiAuthRead("at K1l (app-initial.js:1:1)", ["K1l"]), true);
 assert.equal(api.isProfileUiAuthRead("at I1l (app-initial.js:1:1)", ["K1l"]), false);
@@ -3257,6 +3305,21 @@ assert.equal(profileUiAuth.userId, "local-profile-user");
 assert.equal(profileUiAuth.hasChatGptToken, true);
 assert.equal(profileUiAuth.account.id, "local-profile-account");
 assert.equal(profileUiAuth.account.type, "chatgpt");
+const stableApiAuthSource = {
+  authMethod: "apikey",
+  openAIAuth: "api_key",
+  requiresAuth: true,
+  accountId: "api-account",
+  userId: "api-user",
+  account: { id: "api-account", type: "apiKey", planType: "api" },
+};
+const stableApiAuthFirst = api.profileUiAuthContextValue(stableApiAuthSource);
+const stableApiAuthSecond = api.profileUiAuthContextValue(stableApiAuthSource);
+assert.equal(
+  stableApiAuthSecond,
+  stableApiAuthFirst,
+  "API-key auth spoof must keep a stable reference per source and prefs so broad useAuth reads do not churn context identity",
+);
 const realChatgptAuth = { authMethod: "chatgpt", accountId: "real-account" };
 assert.equal(api.profileUiAuthContextValue(realChatgptAuth).accountId, "real-account");
 
@@ -4366,6 +4429,7 @@ const compactProfileDoc = {
     const node = fakeNode(tagName, "", "");
     node.replaceWith = (replacement) => {
       node.replacement = replacement;
+      if (compactProfileButton.replacement === node) compactProfileButton.replacement = replacement;
       node.textContent = "";
     };
     node.setAttribute("data-cltc-profile-identity-avatar", "");
@@ -4382,7 +4446,64 @@ assert.equal(officialLabel.textContent, api.localProfileResponse().profile.displ
 assert.equal(officialGear.style.display, "none");
 assert.equal(officialChildren[0].tagName, "IMG");
 assert.equal(officialChildren[0].src, api.localProfileResponse().profile.profile_picture_url);
-assert.equal(officialChildren[0].className, "icon-sm shrink-0 rounded-full");
+assert.equal(officialChildren[0].className, "shrink-0 object-cover rounded-full icon-sm");
+// In synthetic (API-key) mode the official footer avatar is data-driven and must not be replaced:
+// keeping bG's own wrapper/size is what makes the custom avatar match the official layout.
+const officialAvatarImage = fakeNode("img", "", "shrink-0 object-cover rounded-full icon-sm", {
+  left: 16,
+  top: 1006,
+  width: 20,
+  height: 20,
+});
+officialAvatarImage.src = "https://example.com/official-avatar.png";
+const dataDrivenLabel = fakeSpan("设置", "min-w-0 flex-1 truncate");
+const dataDrivenGear = fakeNode("svg", "", "icon-xs shrink-0");
+const dataDrivenChildren = [officialAvatarImage, dataDrivenLabel, dataDrivenGear];
+const dataDrivenButton = {
+  attributes: new Map([["aria-label", "打开个人资料菜单"]]),
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  },
+  getBoundingClientRect() {
+    return { left: 8, top: 1006, width: 184, height: 29 };
+  },
+  querySelector(selector) {
+    if (selector === "img:not([data-cltc-profile-identity-avatar])") return officialAvatarImage;
+    if (selector === "[data-cltc-profile-identity-avatar]") {
+      return dataDrivenChildren.find((child) => child.attributes?.has("data-cltc-profile-identity-avatar")) || null;
+    }
+    if (selector === "span.min-w-0.flex-1.truncate") return dataDrivenLabel;
+    if (selector === "svg") return dataDrivenGear;
+    return null;
+  },
+  insertBefore(child, reference) {
+    const index = dataDrivenChildren.indexOf(reference);
+    dataDrivenChildren.splice(index < 0 ? dataDrivenChildren.length : index, 0, child);
+    child.remove = () => {
+      const childIndex = dataDrivenChildren.indexOf(child);
+      if (childIndex >= 0) dataDrivenChildren.splice(childIndex, 1);
+    };
+    return child;
+  },
+};
+const dataDrivenDoc = {
+  querySelector(selector) {
+    return selector.includes("打开个人资料菜单") ? dataDrivenButton : null;
+  },
+  querySelectorAll() {
+    return [];
+  },
+  getElementById() {
+    return null;
+  },
+  createElement(tagName) {
+    return fakeNode(tagName, "", "");
+  },
+};
+assert.equal(api.syncSidebarProfileIdentity(dataDrivenDoc), true);
+assert.equal(dataDrivenButton.querySelector("[data-cltc-profile-identity-avatar]"), null);
+assert.equal(officialAvatarImage.src, "https://example.com/official-avatar.png");
+assert.equal(dataDrivenLabel.textContent, api.localProfileResponse().profile.display_name);
 api.rememberProfileQueryClient(realChatgptQueryClient);
 assert.equal(api.profileDataOverrideEnabledFor(), true);
 assert.equal(api.syncSidebarProfileIdentity(officialProfileDoc), true);
@@ -4397,6 +4518,22 @@ assert.equal(compactProfileButton.replacement.tagName, "IMG");
 assert.equal(compactProfileButton.replacement.src, api.localProfileResponse().profile.profile_picture_url);
 assert.equal(compactProfileButton.replacement.alt, api.localProfileResponse().profile.display_name.slice(0, 1));
 api.rememberProfileQueryClient(startupApiKeyQueryClient);
+assert.equal(api.profileDataOverrideEnabledFor(), false);
+// Switching back to an API-key session must undo the footer override instead of leaving the
+// previous ChatGPT pass's copied name/avatar in place. Opt out of the synthetic test path for
+// this check so it exercises the production gate.
+api.setProfileSyntheticTestEnabled(false);
+assert.equal(api.profileSyntheticEnabled(), false);
+assert.equal(api.syncSidebarProfileIdentity(officialProfileDoc), false);
+assert.equal(officialChildren[0], officialGear);
+assert.equal(officialLabel.textContent, "设置");
+assert.equal(officialGear.style.display, "");
+assert.equal(officialChildren.some((child) => child.attributes?.has("data-cltc-profile-identity-avatar")), false);
+assert.equal(api.syncSidebarProfileIdentity(compactProfileDoc), false);
+assert.equal(compactProfileButton.replacement, compactAvatar);
+assert.equal(compactAvatar.innerHTML, "6");
+assert.equal(compactAvatar.attributes.has("data-cltc-profile-identity-avatar"), false);
+api.setProfileSyntheticTestEnabled(true);
 assert.equal(api.syncSidebarProfileMenuIdentity(officialProfileDoc, officialProfileButton), true);
 assert.equal(officialProfileMenu, officialProfileDoc.getElementById("profile-menu"));
 assert.equal(officialAccountMenuItem, officialProfileMenu.querySelector("[role='menuitem']"));
@@ -5090,6 +5227,16 @@ const syntheticProfileAuth = api.profileUiAuthContextValue({
   account: { id: "api-account", type: "apiKey", planType: "api" },
 });
 assert.equal(syntheticProfileAuth.authMethod, "chatgpt");
+const localProfileForAuth = api.localProfileResponse();
+assert.equal(syntheticProfileAuth.nameAtLogin, localProfileForAuth.profile.display_name);
+assert.equal(syntheticProfileAuth.profilePictureUrlAtLogin, localProfileForAuth.profile.profile_picture_url);
+assert.equal(syntheticProfileAuth.profileIdentity.profileImageUrl, localProfileForAuth.profile.profile_picture_url);
+const spoofedApiAccountCheckWithPhoto = api.spoofProfileAccountsCheckPayload({
+  account_ordering: ["api-account"],
+  accounts: [{ id: "api-account", type: "apiKey" }],
+});
+assert.equal(spoofedApiAccountCheckWithPhoto.accounts[0].profile_picture_url, localProfileForAuth.profile.profile_picture_url);
+assert.equal(spoofedApiAccountCheckWithPhoto.accounts[0].picture, localProfileForAuth.profile.profile_picture_url);
 const profileQueryData = api.profileUsageQueryData();
 const localProfile = api.localProfileResponse();
 assert.equal(profileQueryData.displayName, localProfile.profile.display_name);
@@ -5123,6 +5270,43 @@ assert.equal(syncedAccountInfoQuery.data.email, localProfile.profile.email);
 assert.equal(syncedAccountInfoQuery.data.plan, localProfile.profile.plan_type);
 assert.equal(syncedAccountInfoQuery.data.hasChatGptToken, false);
 assert.equal(syncedProfileQueries.some(({ queryKey }) => queryKey.join("/") === "accounts/check"), false);
+const syncedPageQuery = syncedProfileQueries.find(
+  ({ queryKey }) => queryKey.join("/") === "profile/page/local-profile-user/local-profile-account",
+);
+assert.equal(syncedPageQuery.data.is_self, true);
+assert.equal(syncedPageQuery.data.page.visibility.value, "private");
+assert.equal(syncedPageQuery.data.profile_details.username, localProfile.profile.username);
+const localProfilePage = api.localProfilePageResponse();
+assert.equal(localProfilePage.is_self, true);
+assert.equal(localProfilePage.can_edit, true);
+assert.equal(Array.isArray(localProfilePage.page.pins.items), true);
+assert.equal(localProfilePage.profile_details.display_name, localProfile.profile.display_name);
+assert.equal(localProfilePage.profile_details.profile_picture_url, localProfile.profile.profile_picture_url);
+assert.equal(api.isProfilePageUrl("/wham/profiles/me/page"), true);
+assert.equal(api.isProfilePageUrl("/profiles/me/page?preview=1"), true);
+assert.equal(api.isProfilePageUrl("/wham/profiles/me"), false);
+assert.equal(api.isProfilePageUrl("/wham/profiles/me/photo"), false);
+assert.equal(api.isProfilePinOptionsUrl("/wham/profiles/me/page/pin_options"), true);
+assert.equal(api.isProfilePinOptionsUrl("/profiles/me/page/pin_options?kind=site"), true);
+assert.equal(api.isProfilePinOptionsUrl("/wham/profiles/me/page"), false);
+// The request client uses relative endpoints; the transport layer uses "/wham/...". Both must match,
+// but sibling endpoints (page, pin options) must not be mistaken for the usage endpoint.
+assert.equal(api.isProfileUsageUrl("/wham/profiles/me"), true);
+assert.equal(api.isProfileUsageUrl("/profiles/me?fresh=1"), true);
+assert.equal(api.isProfileUsageUrl("/profiles/me/page"), false);
+assert.equal(api.isProfilePhotoUrl("/profiles/me/photo"), true);
+assert.equal(api.isProfilePhotoUrl("/wham/profiles/me/photo"), true);
+assert.equal(api.isProfilePhotoUrl("/profiles/me"), false);
+assert.equal(api.isProfileAccountsCheckUrl("/accounts/check"), true);
+assert.equal(api.isProfileAccountsCheckUrl("/wham/accounts/check?x=1"), true);
+assert.equal(api.isProfileAccountsCheckUrl("/accounts/checkout"), false);
+const localPinOptions = api.localProfilePinOptionsResponse();
+assert.equal(Array.isArray(localPinOptions.items), true);
+assert.equal(localPinOptions.items.length, 0);
+assert.equal(localPinOptions.next_cursor, null);
+const localPagePatch = api.localProfilePagePatchResponse({ requestBody: { display_settings: { theme: "dark" } } });
+assert.equal(localPagePatch.display_settings.theme, "dark");
+assert.equal(localPagePatch.page_version, localProfilePage.page_version + 1);
 const profileLifecycleTest = Promise.resolve()
   .then(async () => {
     // —— 上游价格同步：native 通道（command/exec curl → fs/readFile base64 → fs/remove）——
@@ -5437,6 +5621,19 @@ const profileLifecycleTest = Promise.resolve()
       context.document.scripts = [{ src: "app://-/assets/request-legacy.js" }];
       context.fetch = async () => { throw new Error("fetch should not run for direct asset"); };
       assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/request-legacy.js");
+      const cachedAssetFetches = [];
+      context.document.scripts = [{ src: "app://-/assets/app-initial-cache.js" }];
+      context.document.querySelectorAll = () => [];
+      context.performance = { getEntriesByType: () => [] };
+      context.fetch = async (url) => {
+        cachedAssetFetches.push(String(url));
+        return { ok: true, async text() { return 'const deps = ["./request-cache.js"];'; } };
+      };
+      assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/request-cache.js");
+      const cachedAssetFetchesAfterFirst = cachedAssetFetches.length;
+      assert.ok(cachedAssetFetchesAfterFirst > 0);
+      assert.equal(await api.codexAppAssetUrl("request-"), "app://-/assets/request-cache.js");
+      assert.equal(cachedAssetFetches.length, cachedAssetFetchesAfterFirst, "asset URL results must be reused while the loaded asset set is unchanged");
     } finally {
       if (originalScripts === undefined) delete context.document.scripts;
       else context.document.scripts = originalScripts;
@@ -5463,6 +5660,21 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(passthroughAccountsCheck.accounts[0].type, "apiKey");
     assert.equal(passthroughAccountsCheck.accounts[0].planType, "api");
     assert.equal(profileAccountsCheckUpstreamCalls, 2);
+    // API-key sessions get 401 from the ChatGPT-only accounts endpoint. Synthetic mode must still
+    // render the dropdown's account row (name + avatar) instead of surfacing the failure.
+    const failingAccountsClient = {
+      async safeGet() {
+        throw new Error("Unauthorized");
+      },
+    };
+    assert.equal(api.patchProfileRequestClient(failingAccountsClient), true);
+    const fallbackAccountsCheck = await failingAccountsClient.safeGet("/accounts/check");
+    assert.equal(fallbackAccountsCheck.accounts.length, 1);
+    assert.equal(fallbackAccountsCheck.accounts[0].id, "local-profile-account");
+    assert.equal(fallbackAccountsCheck.accounts[0].type, "chatgpt");
+    assert.equal(fallbackAccountsCheck.accounts[0].name, expectedIdentity.display_name);
+    assert.equal(fallbackAccountsCheck.accounts[0].profile_picture_url, expectedIdentity.profile_picture_url);
+    assert.equal(fallbackAccountsCheck.account_ordering[0], "local-profile-account");
     api.installProfileUiReadinessCoordinator([], delayedProfileDocument);
     return profileClient.safeGet("/wham/profiles/me");
   })
