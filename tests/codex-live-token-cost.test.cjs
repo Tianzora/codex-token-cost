@@ -788,6 +788,11 @@ assert.equal(code.includes("OFFICIAL_MODEL_TRIGGER_SELECTOR"), true);
 assert.equal(code.includes("function installOfficialModelObserver()"), true);
 assert.equal(code.includes("function bindOfficialModelTrigger()"), true);
 assert.equal(code.includes("function officialModelInfoFromText"), true);
+assert.equal(code.includes("function officialModelTriggerCandidates(scope = document)"), true);
+assert.equal(code.includes("function pickOfficialModelTrigger()"), true);
+assert.match(code, /function pickOfficialModelTrigger\(\) \{[\s\S]*?data-codex-composer-root[\s\S]*?largestVisibleTrigger/);
+assert.match(code, /function bindOfficialModelTrigger\(\) \{\s+const trigger = pickOfficialModelTrigger\(\);/);
+assert.match(code, /function composerActionButton\(\) \{\s+return composerActionButtons\(\)\.find\(\(button\) => isVisibleElement\(button\)\) \|\| null;/);
 assert.equal(code.includes("function officialTriggerFastMode"), true);
 assert.equal(code.includes("state.detectedFastMode === true"), true);
 assert.equal(code.includes("getBoundingClientRect"), true);
@@ -1119,7 +1124,8 @@ const context = {
       if (arguments[0] === "button.size-token-button-composer" && domComposerButton) return domComposerButton;
       return null;
     },
-    querySelectorAll() {
+    querySelectorAll(selector) {
+      if (selector === "button.size-token-button-composer" && domComposerButton) return [domComposerButton];
       if (domComposerState === "active-send" || domComposerState === "complete-send") {
         return [fakeComposerButton(domComposerState)];
       }

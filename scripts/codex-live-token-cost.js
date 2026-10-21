@@ -578,7 +578,6 @@ const VERSION = "0.7.10-beta1";
     hubVisibilityProjectContextRow: false,
     officialModelRebindTimer: 0,
     settingsRenderAt: 0,
-    renderPendingWhileHidden: false,
     priceOverridesRaw: null,
     priceOverridesValue: null,
   };
@@ -2874,6 +2873,39 @@ const VERSION = "0.7.10-beta1";
     return /正在加载|加载中|载入中|loading|select\s+(?:a\s+)?(?:model|reasoning)|选择(?:模型|推理强度)/i.test(text);
   }
 
+  function officialModelTriggerCandidates(scope = document) {
+    return Array.from(scope?.querySelectorAll?.(OFFICIAL_MODEL_TRIGGER_SELECTOR) || [])
+      .filter((node) => !state.root?.contains?.(node) && !state.settingsOverlay?.contains?.(node));
+  }
+
+  function largestVisibleTrigger(candidates) {
+    const visible = candidates.filter((node) => isVisibleElement(node));
+    if (!visible.length) return null;
+    visible.sort((a, b) => {
+      const ar = a.getBoundingClientRect?.() || { width: 0, height: 0 };
+      const br = b.getBoundingClientRect?.() || { width: 0, height: 0 };
+      return br.width * br.height - ar.width * ar.height;
+    });
+    return visible[0];
+  }
+
+  // 宿主会同时渲染一个 0×0 的测量节点和真正可见的触发器；querySelector 取第一个
+  // 会绑定到隐藏节点，导致 HUB 一直显示上一次的模型/强度。优先选当前 composer 内
+  // 面积最大的可见节点，再退回全局可见节点。
+  function pickOfficialModelTrigger() {
+    const activeRoot = document.activeElement?.closest?.("[data-codex-composer-root]");
+    if (activeRoot) {
+      const active = largestVisibleTrigger(officialModelTriggerCandidates(activeRoot));
+      if (active) return active;
+    }
+    const composerRoot = composerActionButton()?.closest?.("[data-codex-composer-root]");
+    if (composerRoot) {
+      const nearComposer = largestVisibleTrigger(officialModelTriggerCandidates(composerRoot));
+      if (nearComposer) return nearComposer;
+    }
+    return largestVisibleTrigger(officialModelTriggerCandidates()) || officialModelTriggerCandidates()[0] || null;
+  }
+
   function officialModelTriggerInfo(trigger) {
     if (!trigger || state.root?.contains?.(trigger) || state.settingsOverlay?.contains?.(trigger)) {
       return { model: "", displayModel: "", effort: "", displayEffort: "", fastMode: false };
@@ -2926,7 +2958,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function readOfficialModelTrigger(trigger = null) {
-    const node = trigger || document.querySelector?.(OFFICIAL_MODEL_TRIGGER_SELECTOR);
+    const node = trigger || pickOfficialModelTrigger();
     const info = officialModelTriggerInfo(node);
     let changed = false;
     if (info.model && !isModelPickerPlaceholder(info.model) && info.model !== state.detectedModel) {
@@ -6938,11 +6970,12 @@ const VERSION = "0.7.10-beta1";
     }
   }
 
+  function composerActionButtons() {
+    return Array.from(document.querySelectorAll?.("button.size-token-button-composer") || []);
+  }
+
   function composerActionButton() {
-    const scope = document?.querySelector?.("main") || document;
-    const button = scope?.querySelector?.("button.size-token-button-composer");
-    if (!button || !isVisibleElement(button)) return null;
-    return button;
+    return composerActionButtons().find((button) => isVisibleElement(button)) || null;
   }
 
   function reactFiberOf(node) {
@@ -6973,8 +7006,15 @@ const VERSION = "0.7.10-beta1";
       state.composerRunStateValue = value;
       return value;
     };
-    const button = composerActionButton();
-    if (!button) return remember(null);
+    let button = composerActionButton();
+    if (!button) {
+      // 页面隐藏或按钮暂时 0×0 时仍用 aria-label 判断发送/停止，保证残留浮光能自愈。
+      const labels = composerActionButtons()
+        .map((node) => normalizeText(node.getAttribute?.("aria-label") || node.getAttribute?.("title") || "", 80));
+      if (labels.some((label) => /^(停止|停止生成|停止任务|中止|取消|stop|stop generating|cancel|interrupt)$/i.test(label))) return remember(true);
+      if (labels.some((label) => /^(发送|发送消息|send|send message|submit)$/i.test(label))) return remember(false);
+      return remember(null);
+    }
     let fiber = reactFiberOf(button);
     for (let depth = 0; fiber && depth < 40; depth += 1) {
       const props = fiber.memoizedProps;
@@ -7474,6 +7514,12 @@ const VERSION = "0.7.10-beta1";
       startupBlankConversationSessionKey: startupBlankConversationSessionKey(),
       lastClickedSidebarThreadKey: state.lastClickedSidebarThreadKey,
       officialThreadRuntime: Array.from(state.officialThreadRuntimeStates.entries()).map(([sessionKey, item]) => ({ sessionKey, ...item })),
+      running: state.running,
+      shimmerRunning: state.shimmerRunning,
+      shimmerRunStartedAt: state.shimmerRunStartedAt,
+      turnShimmerSessions: Array.from(state.turnShimmerSessions.entries()).map(([sessionKey, item]) => ({ sessionKey, ...item })),
+      composerRunState: officialComposerRunState(),
+      composerButtonLabel: composerActionButton()?.getAttribute?.("aria-label") || composerActionButton()?.getAttribute?.("title") || "",
       ledgerSessions: Array.from(counts.values()).sort((a, b) => b.total - a.total || a.sessionKey.localeCompare(b.sessionKey)).slice(0, 20),
     };
   }
@@ -8714,7 +8760,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function bindOfficialModelTrigger() {
-    const trigger = document.querySelector?.(OFFICIAL_MODEL_TRIGGER_SELECTOR);
+    const trigger = pickOfficialModelTrigger();
     if (trigger && trigger === state.officialModelTrigger) return readOfficialModelTrigger(trigger);
     state.officialModelObserver?.disconnect?.();
     state.officialModelObserver = null;
@@ -13801,7 +13847,6 @@ const VERSION = "0.7.10-beta1";
   }
 
   function pulseCadencedShimmer() {
-    if (document.hidden) return;
     if (reconcileRunningWithComposerDom(currentSessionKey())) {
       scheduleRender(0);
       return;
@@ -13992,10 +14037,6 @@ const VERSION = "0.7.10-beta1";
 
   function render(force = false) {
     if (state.destroyed) return;
-    if (document.hidden) {
-      state.renderPendingWhileHidden = true;
-      return;
-    }
     if (!force && state.priceEditorOpen && state.settingsOverlay?.contains(document.activeElement) && document.activeElement?.closest?.(".cltc-settings-modal")) {
       return;
     }
@@ -14016,11 +14057,6 @@ const VERSION = "0.7.10-beta1";
 
   function scheduleRender(delay = 0) {
     if (state.destroyed) return;
-    // 页面隐藏时不排队渲染；可见时一次性补一次，避免后台每 250ms 重建设置页/HUB。
-    if (document.hidden) {
-      state.renderPendingWhileHidden = true;
-      return;
-    }
     if (state.renderTimer) return;
     const wait = Math.max(delay, RENDER_THROTTLE_MS - (Date.now() - state.lastRenderAt), 0);
     state.renderTimer = window.setTimeout(() => {
@@ -14304,10 +14340,8 @@ const VERSION = "0.7.10-beta1";
 
   function handleVisibilityChange() {
     if (document.hidden) return;
-    if (state.renderPendingWhileHidden) {
-      state.renderPendingWhileHidden = false;
-      render(true);
-    }
+    // 页面重新可见时强制补一次，避免后台期间宿主替换 DOM 后 HUB 仍停在旧内容。
+    render(true);
     if (state.shimmerRunning) pulseCadencedShimmer();
   }
 
