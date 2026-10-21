@@ -463,7 +463,7 @@ for (const declaration of [
   "--cltc-duration-modal: 200ms;",
   "--cltc-duration-data: 160ms;",
 ]) assert.equal(settingsOverlayTokenBlock[1].includes(declaration), true);
-assert.match(code, /syncHubVisibility\(root\);\s+if \(!state\.settingsOverlay\?\.isConnected \|\| !state\.priceEditorOpen\) renderSettingsOverlay\(snap\);/);
+assert.match(code, /syncHubVisibility\(root\);\s+if \(!state\.settingsOverlay\?\.isConnected \|\| !state\.priceEditorOpen\) renderSettingsOverlay\(snap, \{ fromRender: true \}\);/);
 assert.match(code, /const SETTINGS_BUTTON_ICON =/);
 assert.equal(code.includes("syncCcSwitchFromSettings"), false);
 assert.equal(code.includes("syncCcSwitchUsageFromHelper"), false);
@@ -488,9 +488,9 @@ assert.match(code, /function closeEmbeddedSettingsPage\(\) \{[\s\S]*?state\.embe
 assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+if \(event\.target\?\.closest\?\.\("\.codex-plus-modal-content, \.codex-plus-page-overlay"\)\) return;\s+if \(state\.updateClusterEl\?\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
 assert.equal(code.includes('data-action="close-price"'), false);
 assert.match(code, /function clearEmbeddedRailActiveAfterNavigation\(event\) \{[\s\S]*?closest\?\.\(\"nav\[data-app-navigation-rail\] button\[aria-label\]\"\)[\s\S]*?clearEmbeddedRailActive\(\);/);
-assert.match(code, /rememberPendingInput\(event\);\s+clearEmbeddedRailActiveAfterNavigation\(event\);/);
+assert.match(code, /if \(state\.embeddedPageContainer \|\| state\.priceEditorOpen\) clearEmbeddedRailActiveAfterNavigation\(event\);/);
 assert.match(code, /function clearEmbeddedRailActive\(\) \{[\s\S]*?nav\[data-app-navigation-rail\] button\[aria-label\][\s\S]*?aria-current'\, 'data-active'\, 'data-selected'[\s\S]*?removeAttribute/);
-assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}\) \{\s+(?:if \(options\.panel[\s\S]*?;\s+)?state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+renderUpdateCluster\(\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
+assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}, snap = null\) \{\s+(?:if \(options\.panel[\s\S]*?;\s+)?state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+renderUpdateCluster\(\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
 assert.match(code, /animateAnalyticsSegments\(container, options\);/);
 assert.match(code, /button\.addEventListener\("pointerdown", handleSettingsNavPointerDown\)/);
 assert.match(code, /function handleSettingsNavPointerDown\(event\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?event\.stopPropagation\?\.\(\);[\s\S]*?selectSettingsPanel/);
@@ -512,7 +512,7 @@ assert.match(code, /const SETTINGS_FOCUS_ATTRIBUTES = \[[\s\S]*?"data-settings-p
 assert.match(code, /function settingsFocusKey\(node, root\) \{[\s\S]*?root\?\.contains\?\.\(node\)[\s\S]*?return \{ attribute, value \};/);
 assert.match(code, /function isSettingsFocusable\(node\) \{[\s\S]*?node\.disabled[\s\S]*?tabIndex[\s\S]*?return \/\^\(A\|BUTTON\|INPUT\|SELECT\|TEXTAREA\)\$\//);
 assert.match(code, /function restoreSettingsFocus\(root, key\) \{[\s\S]*?querySelectorAll\?\.\(SETTINGS_FOCUS_SELECTOR\)[\s\S]*?target\?\.focus\?\.\(\);/);
-assert.match(code, /function renderSettingsOverlay\(snap, options = \{\}\) \{\s+if \(state\.embeddedPageContainer\) \{\s+renderEmbeddedSettingsPage\(state\.embeddedPageContainer, options\);\s+return;\s+\}[\s\S]*?if \(state\.priceEditorOpen\) \{[\s\S]*?state\.settingsOverlay\?\.remove\?\.\(\);[\s\S]*?state\.settingsOverlay = null;[\s\S]*?return;\s+\}[\s\S]*?const animate = options\.animate === true;/);
+assert.match(code, /function renderSettingsOverlay\(snap, options = \{\}\) \{\s+if \(state\.embeddedPageContainer\) \{\s+renderEmbeddedSettingsPage\(state\.embeddedPageContainer, options, snap\);\s+return;\s+\}[\s\S]*?if \(state\.priceEditorOpen\) \{[\s\S]*?state\.settingsOverlay\?\.remove\?\.\(\);[\s\S]*?state\.settingsOverlay = null;[\s\S]*?return;\s+\}[\s\S]*?const animate = options\.animate === true;/);
 assert.match(code, /function animateAnalyticsSegments\(root, options = \{\}\) \{[\s\S]*?data-cltc-segment-from-index/);
 assert.match(code, /function animateAnalyticsSegments\(root, options = \{\}\) \{[\s\S]*?if \(prefersReducedMotion\(\)\) return;[\s\S]*?data-cltc-segment-from-index/);
 assert.match(code, /const CODEX_PLUS_SUPPORTED_API = 1;[\s\S]*?function codexPlusApiReady\(\) \{[\s\S]*?if \(typeof version !== "number"\) return true;[\s\S]*?return version === CODEX_PLUS_SUPPORTED_API;/);
@@ -529,7 +529,7 @@ assert.match(code, /\.cltc-settings \.cltc-settings-content \{[^}]*?transition: 
 assert.match(code, /const disposers = \[\];[\s\S]*?function trackTimer\(id\) \{[\s\S]*?disposers\.push\(\(\) => \{[\s\S]*?window\.clearTimeout\(id\);[\s\S]*?window\.cancelAnimationFrame\(id\);[\s\S]*?\}\);[\s\S]*?return id;[\s\S]*?\}/);
 assert.match(code, /function trackObserver\(observer\) \{[\s\S]*?disposers\.push\(\(\) => observer\?\.disconnect\?\.\(\)\);[\s\S]*?return observer;[\s\S]*?\}/);
 assert.match(code, /function trackListener\(target, type, handler, options\) \{[\s\S]*?target\.addEventListener\(type, handler, options\);[\s\S]*?disposers\.push\(\(\) => target\.removeEventListener\(type, handler, options\)\);[\s\S]*?return handler;[\s\S]*?\}/);
-assert.match(code, /trackListener\(document, "keydown", rememberPendingInput, true\);/);
+assert.equal(code.includes("rememberPendingInput"), false);
 assert.match(code, /while \(disposers\.length\) \{[\s\S]*?const dispose = disposers\.pop\(\);[\s\S]*?try \{[^\n]*dispose\(\);\s+\} catch \{\s+\}/);
 assert.match(code, /if \(window\.__CODEX_LIVE_TOKEN_COST_TEST__ && disposers\.length !== 0\) \{\s+throw new Error\("Codex Token Cost: disposers not drained"\);\s+\}/);
 assert.match(code, /const focusKey = settingsFocusKey\(document\.activeElement, state\.settingsOverlay\);/);
@@ -661,7 +661,7 @@ assert.equal(code.includes("function beginLocalRequestTurn(options = {})"), true
 assert.equal(code.includes("function hasAssistantResultOutputStarted"), true);
 assert.equal(code.includes("function isTokenCountPayload"), true);
 assert.equal(code.includes("function isTaskCompletePayload"), true);
-assert.equal(code.includes("const running = isTurnShimmerRunning(sessionKey) || isOfficialThreadRunning(sessionKey);"), true);
+assert.equal(code.includes("const running = domRunState === true || isTurnShimmerRunning(sessionKey) || isOfficialThreadRunning(sessionKey);"), true);
 assert.equal(code.includes("const resultOutputStarted = hasAssistantResultOutputStarted(payload, source);"), true);
 assert.equal(code.includes("if (resultOutputStarted) stopTurnShimmer"), false);
 assert.equal(code.includes('persistLocalCurrentTurn("complete", taskCompleteSessionKey, {'), true);
@@ -921,6 +921,7 @@ const bridgeCalls = [];
 const delayedTimers = [];
 const registerPageCalls = [];
 let domComposerState = "none";
+let domComposerButton = null;
 const SEND_ARROW_PATH =
   "M9.33467 16.6663V4.93978L4.6374 9.63704L4.1667 9.16634L3.69599 8.69661L9.52998 2.86263L9.63447 2.77767C9.8925 2.60753 10.2433 2.63564 10.4704 2.86263L16.3034 8.69661";
 function fakeComposerButton(state) {
@@ -953,6 +954,14 @@ function fakeComposerButton(state) {
       return Boolean(node?.__composerChild);
     },
   };
+}
+function fakeComposerRunButton(running) {
+  const button = fakeComposerButton(running ? "active-send" : "complete-send");
+  button.__reactFiber$test = {
+    memoizedProps: { isResponseInProgress: running, isStopping: false },
+    return: null,
+  };
+  return button;
 }
 const FIXED_NOW = Date.parse("2026-07-04T12:00:00.000Z");
 let currentNow = FIXED_NOW;
@@ -1107,6 +1116,7 @@ const context = {
       return {};
     },
     querySelector() {
+      if (arguments[0] === "button.size-token-button-composer" && domComposerButton) return domComposerButton;
       return null;
     },
     querySelectorAll() {
@@ -1215,7 +1225,6 @@ assert.equal(typeof api.restoreRunningCurrentTurnFromLast, "function");
 assert.equal(typeof api.setLocalCurrentTurn, "function");
 assert.equal(typeof api.isCodexComposerCompleteDom, "function");
 assert.equal(typeof api.isCodexTaskRunningDom, "function");
-assert.equal(typeof api.rememberPendingInput, "function");
 assert.equal(typeof api.isMainComposerSurfaceTarget, "function");
 assert.equal(typeof api.trapSettingsFocus, "function");
 const originalActiveElement = context.document.activeElement;
@@ -1329,8 +1338,8 @@ const mirroredValueSlots = [
 api.updateValueSlot(
   {
     querySelectorAll(selector) {
-      assert.equal(selector, "[data-cltc-value-key]");
-      return mirroredValueSlots;
+      if (selector === "[data-cltc-value-key]") return mirroredValueSlots;
+      return [];
     },
   },
   "current-input",
@@ -2216,6 +2225,78 @@ const hiddenFastTrigger = api.officialModelTriggerInfo({
 });
 assert.equal(hiddenFastTrigger.model, "deepseek-v4-pro");
 assert.equal(hiddenFastTrigger.fastMode, false);
+// 模型菜单加载中：占位文案不能同时被当成模型名和推理强度。
+const loadingModelTrigger = api.officialModelTriggerInfo({
+  innerText: "正在加载模型",
+  getAttribute() {
+    return "";
+  },
+});
+assert.equal(loadingModelTrigger.model, "");
+assert.equal(loadingModelTrigger.displayModel, "");
+assert.equal(loadingModelTrigger.effort, "");
+assert.equal(loadingModelTrigger.displayEffort, "");
+const pickEffortPlaceholderTrigger = api.officialModelTriggerInfo({
+  innerText: "选择推理强度",
+  getAttribute() {
+    return "";
+  },
+});
+assert.equal(pickEffortPlaceholderTrigger.displayModel, "");
+assert.equal(pickEffortPlaceholderTrigger.displayEffort, "");
+const loadingKnownModelTrigger = api.officialModelTriggerInfo({
+  innerText: "5.4\n选择推理强度",
+  getAttribute() {
+    return "";
+  },
+});
+assert.equal(loadingKnownModelTrigger.model, "gpt-5.4");
+assert.equal(loadingKnownModelTrigger.displayModel, "5.4");
+assert.equal(loadingKnownModelTrigger.displayEffort, "");
+const openEffortMenuTrigger = api.officialModelTriggerInfo({
+  innerText: "5.4\n中\n无\n极低\n轻度\n中\n高\n极高\nMax\nUltra\n持续",
+  getAttribute(name) {
+    return name === "data-selected-reasoning-effort" ? "medium" : "";
+  },
+});
+assert.equal(openEffortMenuTrigger.displayModel, "5.4");
+assert.equal(openEffortMenuTrigger.displayEffort, "中");
+// 官方中文强度标签（极高/极低/轻度/持续）必须能归一化，否则切换后 HUB 会停在旧值。
+assert.equal(api.normalizeOfficialEffort("极高"), "xhigh");
+assert.equal(api.normalizeOfficialEffort("极低"), "minimal");
+assert.equal(api.normalizeOfficialEffort("轻度"), "low");
+assert.equal(api.normalizeOfficialEffort("持续"), "persistent");
+assert.equal(api.normalizeOfficialEffort("persistent"), "persistent");
+assert.equal(api.normalizeOfficialEffort("continuous"), "persistent");
+const extremeEffortTrigger = api.officialModelTriggerInfo({
+  innerText: "5.4\n极高\n无\n极低\n轻度\n中\n高\n极高\nMax\nUltra\n持续",
+  getAttribute() {
+    return "";
+  },
+});
+assert.equal(extremeEffortTrigger.effort, "xhigh");
+assert.equal(extremeEffortTrigger.displayEffort, "极高");
+const persistentEffortTriggerNode = {
+  innerText: "5.4\n持续\n无\n极低\n轻度\n中\n高\n极高\nMax\nUltra\n持续",
+  getAttribute(name) {
+    return name === "data-selected-reasoning-effort" ? "persistent" : "";
+  },
+};
+const persistentEffortTrigger = api.officialModelTriggerInfo(persistentEffortTriggerNode);
+assert.equal(persistentEffortTrigger.effort, "persistent");
+assert.equal(persistentEffortTrigger.displayEffort, "持续");
+assert.equal(api.readOfficialModelTrigger(persistentEffortTriggerNode), true);
+assert.equal(api.activeModelInfo().effort, "persistent");
+assert.equal(api.activeModelInfo().displayEffort, "持续");
+const restoredEffortTriggerNode = {
+  innerText: "5.4\n中\n无\n极低\n轻度\n中\n高\n极高\nMax\nUltra\n持续",
+  getAttribute(name) {
+    return name === "data-selected-reasoning-effort" ? "medium" : "";
+  },
+};
+assert.equal(api.readOfficialModelTrigger(restoredEffortTriggerNode), true);
+assert.equal(api.activeModelInfo().effort, "medium");
+assert.equal(api.activeModelInfo().displayEffort, "中");
 assert.equal(api.recentLedgerModel(), "");
 const spoofedProfileAccount = api.spoofProfileAccountPayload({
   account: { id: "acc-personal", type: "chatgpt", structure: "workspace", name: "Workspace" },
@@ -3903,36 +3984,28 @@ api.inspectLocalPayload({ type: "event_msg", payload: { type: "task_complete" } 
 assert.equal(api.localUsageExport().currentTurn.usage.total, 44);
 assert.equal(api.liveSnapshot().running, false);
 api.finishLocalTurn(0, { reason: "generic-complete-reset", force: true });
-function composerSendClickTarget(label = "Send") {
-  return {
-    __composerChild: true,
-    textContent: "",
-    getAttribute(name) {
-      return name === "aria-label" ? label : "";
-    },
-    closest() {
-      return this;
-    },
-  };
-}
-function outsideSubmitClickTarget(label = "提交或推送") {
-  return {
-    textContent: label,
-    getAttribute() {
-      return "";
-    },
-    closest() {
-      return this;
-    },
-  };
-}
-api.rememberPendingInput({ type: "click", target: composerSendClickTarget() });
 const restoredRunningExport = api.localUsageExport();
 assert.equal(restoredRunningExport.turns.length, beforeDomRunningIdleTurns + 1);
 assert.equal(restoredRunningExport.currentTurn, null);
 assert.equal(api.liveSnapshot().running, false);
 domComposerState = "none";
 api.stopTurnShimmer({ finishActive: false });
+
+// 完成事件丢失时（脚本注入前已建立的 app-server 连接），宿主输入区回到发送态后浮光必须自愈。
+const staleShimmerKey = "stale-shimmer-thread";
+api.startTurnShimmer({ sessionKey: staleShimmerKey });
+assert.equal(api.isTurnShimmerRunning(staleShimmerKey), true);
+domComposerButton = fakeComposerRunButton(true);
+assert.equal(api.officialComposerRunState(), true);
+domComposerButton = fakeComposerRunButton(false);
+assert.equal(api.officialComposerRunState(), false);
+const shimmerTestNow = currentNow;
+currentNow += 5000;
+assert.equal(api.reconcileRunningWithComposerDom(staleShimmerKey), true);
+assert.equal(api.isTurnShimmerRunning(staleShimmerKey), false);
+currentNow = shimmerTestNow;
+api.stopTurnShimmer({ finishActive: false, sessionKey: staleShimmerKey });
+domComposerButton = null;
 
 api.finishLocalTurn(0, { reason: "test-reset", force: true });
 const beforeDraftTurns = api.localUsageExport().turns.length;
@@ -3945,12 +4018,7 @@ assert.equal(api.isComposerDraftPayload(draftMessage), true);
 assert.equal(api.inspectLocalPayload(draftMessage, "message"), false);
 assert.equal(api.localUsageExport().turns.length, beforeDraftTurns);
 assert.equal(api.localUsageExport().currentTurn, null);
-api.rememberPendingInput({ type: "input", target: { textContent: "typing" } });
-assert.equal(api.localUsageExport().currentTurn, null);
-api.rememberPendingInput({ type: "keydown", key: "Enter", isComposing: true, target: {} });
-assert.equal(api.localUsageExport().currentTurn, null);
 domComposerState = "active-send";
-api.rememberPendingInput({ type: "click", target: outsideSubmitClickTarget() });
 assert.equal(api.localUsageExport().currentTurn, null);
 domComposerState = "none";
 api.inspectLocalPayload({ type: "generate_title", model: "gpt-5.3-codex", input: "title me" }, "fetch-body");
@@ -3971,7 +4039,6 @@ api.rememberLocalUsage({ input_tokens: 90, output_tokens: 9, cached_tokens: 30, 
 assert.equal(api.localUsageExport().currentTurn.callCount, 1);
 const runningTurnId = api.localUsageExport().currentTurn.turnId;
 domComposerState = "active-send";
-api.rememberPendingInput({ type: "click", target: composerSendClickTarget() });
 const continuedRunningExport = api.localUsageExport();
 assert.equal(continuedRunningExport.turns.length, beforeInterruptedTurns);
 assert.equal(continuedRunningExport.currentTurn.turnId, runningTurnId);
@@ -5189,6 +5256,7 @@ assert.equal(api.localUsageExport().currentTurn, null);
 assert.equal(api.restoreRunningCurrentTurnFromLast(realThreadKey), true);
 assert.equal(api.localUsageExport().currentTurn.turnId, "recent-live-reload-turn");
 assert.equal(api.localUsageExport().currentTurn.usage.total, 55);
+assert.equal(api.isTurnShimmerRunning(realThreadKey), false);
 api.stopTurnShimmer({ finishActive: false, sessionKey: realThreadKey });
 api.setLocalCurrentTurn(null, realThreadKey);
 assert.equal(api.restoreRunningCurrentTurnFromLast(realThreadKey, Date.now() + 16 * 60 * 1000), false);

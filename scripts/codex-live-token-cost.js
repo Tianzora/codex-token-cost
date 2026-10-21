@@ -194,6 +194,18 @@ const VERSION = "0.7.10-beta1";
   const PROFILE_DATA_REFRESH_MIN_INTERVAL_MS = 60000;
   const SHIMMER_ACTIVE_MS = 1000;
   const SHIMMER_INTERVAL_MS = 4000;
+  // 宿主只在“回合状态发生变化”时推送事件；如果完成事件丢失（例如脚本注入前
+  // 已建立的 app-server 长连接），本地 running 会一直为 true。用宿主输入区的
+  // 发送/停止按钮做兜底校准，并留出一点时间给 React 切换图标。
+  const RUNNING_DOM_GRACE_MS = 1500;
+  // 会话键解析会连续查询多组宿主选择器；短时缓存把一次渲染内的重复解析压到一次。
+  // 点击/新建会话会主动失效，因此切换仍然即时。
+  const SESSION_KEY_CACHE_MS = 120;
+  const COMPOSER_BOX_CACHE_MS = 1000;
+  const ROOT_PLACEMENT_CACHE_MS = 1000;
+  const COMPOSER_RUN_STATE_CACHE_MS = 300;
+  const HUB_VISIBILITY_CACHE_MS = 1000;
+  const SETTINGS_PANEL_RENDER_INTERVAL_MS = 1000;
   const FAST_MODE_COST_MULTIPLIERS = [
     { pattern: /^gpt-5\.6(?:$|[-_.])/, multiplier: 2 },
     { pattern: /^gpt-5\.5(?:$|[-_.])/, multiplier: 2.5 },
@@ -534,12 +546,41 @@ const VERSION = "0.7.10-beta1";
     shimmerActiveStartedAt: 0,
     shimmerActiveUntil: 0,
     shimmerRunning: false,
+    shimmerRunStartedAt: 0,
     turnShimmerRunning: false,
     turnShimmerStartedAt: 0,
     turnShimmerOutputStartedAt: 0,
     turnShimmerSessions: new Map(),
     officialThreadRuntimeStates: new Map(),
     runtimeSessionBindings: new Map(),
+    // 热路径缓存（均以账本引用/版本或 DOM 根节点为失效依据）。
+    sessionKeyCacheAt: 0,
+    sessionKeyCacheKey: "",
+    knownSessionKeysLedger: null,
+    knownSessionKeysRevision: -1,
+    knownSessionKeys: new Set(),
+    recentLedgerModelLedger: null,
+    recentLedgerModelRevision: -1,
+    recentLedgerModelSessionKey: "",
+    recentLedgerModel: "",
+    recentLedgerModelAt: 0,
+    sessionUsageCache: new WeakMap(),
+    sessionCostCache: new WeakMap(),
+    sessionUsageKeyCache: new WeakMap(),
+    composerBox: null,
+    composerBoxAt: 0,
+    rootPlacedAt: 0,
+    hubSlots: null,
+    composerRunStateAt: 0,
+    composerRunStateValue: null,
+    reactFiberKeyCache: new WeakMap(),
+    hubVisibilityCheckedAt: 0,
+    hubVisibilityProjectContextRow: false,
+    officialModelRebindTimer: 0,
+    settingsRenderAt: 0,
+    renderPendingWhileHidden: false,
+    priceOverridesRaw: null,
+    priceOverridesValue: null,
   };
 
   function toCount(value) {
@@ -604,6 +645,33 @@ const VERSION = "0.7.10-beta1";
     } catch {
       return fallback;
     }
+  }
+
+  // 价格覆盖表在每次渲染、每个 turn 成本计算里都会被读取；按 localStorage 原文缓存，
+  // 避免同一帧内反复 JSON.parse 整张表。所有写入点都必须调用 invalidatePriceOverridesCache()。
+  function priceOverrides() {
+    try {
+      const raw = localStorage.getItem(PRICE_OVERRIDES_KEY) || "";
+      if (state.priceOverridesRaw === raw && state.priceOverridesValue) return state.priceOverridesValue;
+      const value = loadJsonFromString(raw, {});
+      state.priceOverridesRaw = raw;
+      state.priceOverridesValue = value;
+      return value;
+    } catch {
+      return {};
+    }
+  }
+
+  function invalidatePriceDerivedCaches() {
+    state.sessionCostCache = new WeakMap();
+    state.localDailyUsageCache = null;
+    state.recentLedgerModelAt = 0;
+  }
+
+  function invalidatePriceOverridesCache() {
+    state.priceOverridesRaw = null;
+    state.priceOverridesValue = null;
+    invalidatePriceDerivedCaches();
   }
 
   function profileEmptyBucket() {
@@ -1318,6 +1386,7 @@ const VERSION = "0.7.10-beta1";
       // localStorage 存在（即使为空对象）时以它为准，避免把用户已删除的价格又恢复回来。
       if (localStorage.getItem(PRICE_OVERRIDES_KEY) != null) return false;
       localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+      invalidatePriceOverridesCache();
       return true;
     } catch {
       return false;
@@ -1372,7 +1441,7 @@ const VERSION = "0.7.10-beta1";
         fetchedAt,
         prices,
         meta,
-        overrides: loadJson(PRICE_OVERRIDES_KEY, {}),
+        overrides: priceOverrides(),
         overridesUpdatedAt: Date.now(),
       });
       return true;
@@ -1403,7 +1472,7 @@ const VERSION = "0.7.10-beta1";
         fetchedAt: Date.now(),
         prices: snapshot.prices,
         meta: snapshot.meta,
-        overrides: loadJson(PRICE_OVERRIDES_KEY, {}),
+        overrides: priceOverrides(),
         overridesUpdatedAt: Date.now(),
       });
     } catch {
@@ -1555,10 +1624,11 @@ const VERSION = "0.7.10-beta1";
           if (Object.keys(cached.prices).length) {
             DEFAULT_PRICES = cached.prices;
             DEFAULT_PRICE_META = cached.meta;
+            invalidatePriceDerivedCaches();
             if (cached.fetchedAt) state.priceSyncedAt = cached.fetchedAt;
           }
           const restoredOverrides = priceCacheRestoreOverrides(cached);
-          const storedOverrides = loadJson(PRICE_OVERRIDES_KEY, {});
+          const storedOverrides = priceOverrides();
           // v2 → v3 升级：把 localStorage 里已有的自定义价补写进文件。
           if (Object.keys(storedOverrides).length && !Object.keys(cached.overrides).length) {
             try {
@@ -1602,6 +1672,7 @@ const VERSION = "0.7.10-beta1";
         if (!snapshot) throw new Error("上游价格表无效");
         DEFAULT_PRICES = snapshot.prices;
         DEFAULT_PRICE_META = snapshot.meta;
+        invalidatePriceDerivedCaches();
         state.priceSyncedAt = Date.now();
         state.priceSyncError = "";
         saveRemotePriceTable(snapshot);
@@ -1838,26 +1909,41 @@ const VERSION = "0.7.10-beta1";
     return view?.display !== "none" && view?.visibility !== "hidden" && view?.opacity !== "0";
   }
 
-  function syncHubVisibility(root = state.root, doc = document) {
-    const projectContextRow = hasCodexProjectContextRow(doc);
+  function syncHubVisibility(root = state.root, doc = document, force = false) {
+    const now = Date.now();
+    let projectContextRow = state.hubVisibilityProjectContextRow;
+    if (
+      force ||
+      window.__CODEX_LIVE_TOKEN_COST_TEST__ ||
+      !state.hubVisibilityCheckedAt ||
+      now - state.hubVisibilityCheckedAt >= HUB_VISIBILITY_CACHE_MS
+    ) {
+      projectContextRow = hasCodexProjectContextRow(doc);
+      state.hubVisibilityCheckedAt = now;
+      state.hubVisibilityProjectContextRow = projectContextRow;
+    }
     const visible = hubVisible() && !projectContextRow;
     const target = root?.style ? root : state.root;
     if (!target?.style) return visible;
-    if (target.dataset.cltcHubVisible !== String(visible)) target.dataset.cltcHubVisible = String(visible);
-    if (target.dataset.cltcProjectContextRow !== String(projectContextRow)) target.dataset.cltcProjectContextRow = String(projectContextRow);
-    setButtonAttribute(target, "aria-hidden", String(!visible));
-    if (visible) {
-      if (target.style.removeProperty) target.style.removeProperty("display");
-      else target.style.display = "";
-    } else if (target.style.setProperty) {
-      target.style.setProperty("display", "none", "important");
-    } else {
-      target.style.display = "none";
+    if (target.dataset.cltcHubVisible !== String(visible)) {
+      target.dataset.cltcHubVisible = String(visible);
+      setButtonAttribute(target, "aria-hidden", String(!visible));
+      if (visible) {
+        if (target.style.removeProperty) target.style.removeProperty("display");
+        else target.style.display = "";
+      } else if (target.style.setProperty) {
+        target.style.setProperty("display", "none", "important");
+      } else {
+        target.style.display = "none";
+      }
+    }
+    if (target.dataset.cltcProjectContextRow !== String(projectContextRow)) {
+      target.dataset.cltcProjectContextRow = String(projectContextRow);
     }
     return visible;
   }
 
-  function scheduleHubVisibilitySync(delay = 50) {
+  function scheduleHubVisibilitySync(delay = 200) {
     if (state.hubVisibilityTimer) return;
     state.hubVisibilityTimer = window.setTimeout(() => {
       state.hubVisibilityTimer = 0;
@@ -2685,40 +2771,36 @@ const VERSION = "0.7.10-beta1";
     return { model: raw, effort: "" };
   }
 
+  const OFFICIAL_EFFORT_ALIASES = {
+    无: "none",
+    极低: "minimal",
+    最小: "minimal",
+    轻度: "low",
+    低: "low",
+    快速: "low",
+    中: "medium",
+    高: "high",
+    极高: "xhigh",
+    持续: "persistent",
+    none: "none",
+    minimal: "minimal",
+    low: "low",
+    medium: "medium",
+    high: "high",
+    extra_high: "xhigh",
+    xhigh: "xhigh",
+    max: "max",
+    maximum: "max",
+    ultra: "ultra",
+    persistent: "persistent",
+    continuous: "persistent",
+  };
+
   function normalizeOfficialEffort(value) {
     const text = normalizeText(String(value ?? ""), 80);
     if (!text) return "";
     const lower = text.toLowerCase().replace(/[\s-]+/g, "_");
-    const mapped = {
-      高: "high",
-      中: "medium",
-      低: "low",
-      最小: "minimal",
-      无: "none",
-      快速: "low",
-      none: "none",
-      minimal: "minimal",
-      low: "low",
-      medium: "medium",
-      high: "high",
-      extra_high: "xhigh",
-      xhigh: "xhigh",
-      max: "max",
-      maximum: "max",
-      ultra: "ultra",
-    }[text] || {
-      none: "none",
-      minimal: "minimal",
-      low: "low",
-      medium: "medium",
-      high: "high",
-      extra_high: "xhigh",
-      xhigh: "xhigh",
-      max: "max",
-      maximum: "max",
-      ultra: "ultra",
-    }[lower];
-    return mapped || "";
+    return OFFICIAL_EFFORT_ALIASES[text] || OFFICIAL_EFFORT_ALIASES[lower] || "";
   }
 
   function officialVersionedModelFromText(textValue) {
@@ -2745,7 +2827,18 @@ const VERSION = "0.7.10-beta1";
       const custom = candidate.match(/\b[a-z][a-z0-9._-]*(?:[._-][a-z0-9]+)+\b/i)?.[0] || candidate.match(/\b[a-z][a-z0-9._-]*\d[a-z0-9._-]*\b/i)?.[0] || "";
       if (custom && !normalizeOfficialEffort(custom)) model = custom.toLowerCase();
     }
-    const effort = normalizeOfficialEffort(effortValue) || parsed.effort || normalizeOfficialEffort(text.match(/(高|中|低|最小|无|\bminimal\b|\blow\b|\bmedium\b|\bhigh\b|\bxhigh\b|\bultra\b|\bmax\b)/i)?.[1]);
+    const effort =
+      normalizeOfficialEffort(effortValue) ||
+      parsed.effort ||
+      String(text)
+        .split(/\r?\n/)
+        .map((line) => normalizeOfficialEffort(line))
+        .find(Boolean) ||
+      normalizeOfficialEffort(
+        text.match(
+          /(极高|极低|轻度|持续|最小|无|高|中|低|\bpersistent\b|\bcontinuous\b|\bminimal\b|\blow\b|\bmedium\b|\bhigh\b|\bxhigh\b|\bextra[_-]?high\b|\bultra\b|\bmax(?:imum)?\b|\bnone\b)/i,
+        )?.[1],
+      );
     return { model, effort };
   }
 
@@ -2772,40 +2865,75 @@ const VERSION = "0.7.10-beta1";
     });
   }
 
+  // 模型菜单加载时，触发器里会渲染“正在加载模型”/“选择推理强度”这类占位文案
+  // （后者来自 ModelPickerTriggerMeasurement 的隐藏测量节点）。这些文案不能当作
+  // 模型名或推理强度显示，否则模型名和强度会同时变成同一句占位文案。
+  function isModelPickerPlaceholder(value) {
+    const text = normalizeText(String(value ?? ""), 160);
+    if (!text) return false;
+    return /正在加载|加载中|载入中|loading|select\s+(?:a\s+)?(?:model|reasoning)|选择(?:模型|推理强度)/i.test(text);
+  }
+
   function officialModelTriggerInfo(trigger) {
     if (!trigger || state.root?.contains?.(trigger) || state.settingsOverlay?.contains?.(trigger)) {
       return { model: "", displayModel: "", effort: "", displayEffort: "", fastMode: false };
     }
     const text = trigger.innerText || trigger.textContent || "";
-    const info = officialModelInfoFromText(text, trigger.getAttribute?.("data-selected-reasoning-effort") || "");
-    const displayModel =
-      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelText']")?.textContent || "", 120) ||
-      normalizeText(trigger.querySelector?.("[class*='ComposerDropdownLabel']")?.textContent || "", 120) ||
-      normalizeText(String(text).split(/\r?\n/)[0], 120);
-    const displayEffort =
-      normalizeText(
-        Array.from(trigger.querySelectorAll?.("[data-reasoning-effort]") || [])
-          .find((node) => node.getAttribute?.("data-reasoning-effort") === info.effort)?.textContent ||
-          "",
-        40,
-      ) ||
-      String(text)
-        .split(/\r?\n/)
-        .map((line) => normalizeText(line, 40))
-        .find((line) => line && normalizeOfficialEffort(line) === info.effort) ||
-      "";
-    return { ...info, displayModel, displayEffort, fastMode: officialTriggerFastMode(trigger) };
+    const rawEffort = normalizeText(trigger.getAttribute?.("data-selected-reasoning-effort") || "", 40);
+    const effortLabelNode = trigger.querySelector?.("[class*='ModelPickerTriggerEffortLabel']");
+    const effortLayers = Array.from(trigger.querySelectorAll?.("[data-reasoning-effort]") || []);
+    const selectedEffortNode = effortLayers.find((node) => rawEffort && node.getAttribute?.("data-reasoning-effort") === rawEffort);
+    const srOnlyEffort = normalizeText(effortLabelNode?.querySelector?.(".sr-only")?.textContent || "", 40);
+    const info = officialModelInfoFromText(text, rawEffort);
+    const modelCandidates = [
+      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelText']")?.textContent || "", 120),
+      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelLabel']")?.textContent || "", 120),
+      normalizeText(trigger.querySelector?.("[class*='ComposerDropdownLabel']")?.textContent || "", 120),
+      normalizeText(String(text).split(/\r?\n/)[0], 120),
+    ];
+    // 只接受“像模型名”的候选：排除占位文案，也排除纯推理强度标签（“高”“中”）。
+    const displayModel = modelCandidates.find((value) => value && !isModelPickerPlaceholder(value) && !normalizeOfficialEffort(value)) || "";
+    // data-selected-reasoning-effort 是官方给出的语义值；中文标签只用于显示。
+    // 新增强度（例如 persistent→“持续”）即使暂时没有归一化映射，也要把原始值保留下来，
+    // 否则 readOfficialModelTrigger 会因为 effort 为空而跳过更新，切换后 HUB 一直停在旧强度。
+    const effort =
+      normalizeOfficialEffort(rawEffort) ||
+      normalizeOfficialEffort(srOnlyEffort) ||
+      info.effort ||
+      normalizeText(rawEffort, 40).toLowerCase();
+    let displayEffort = normalizeText(selectedEffortNode?.textContent || "", 40);
+    if (!displayEffort && srOnlyEffort && !isModelPickerPlaceholder(srOnlyEffort)) displayEffort = srOnlyEffort;
+    if (!displayEffort) {
+      displayEffort =
+        normalizeText(
+          effortLayers.find((node) => node.getAttribute?.("data-reasoning-effort") === effort)?.textContent || "",
+          40,
+        ) ||
+        String(text)
+          .split(/\r?\n/)
+          .map((line) => normalizeText(line, 40))
+          .find(
+            (line) =>
+              line &&
+              line !== displayModel &&
+              !isModelPickerPlaceholder(line) &&
+              (normalizeOfficialEffort(line) === effort || line.toLowerCase() === effort),
+          ) ||
+        "";
+    }
+    if (isModelPickerPlaceholder(displayEffort)) displayEffort = "";
+    return { ...info, effort, displayModel, displayEffort, fastMode: officialTriggerFastMode(trigger) };
   }
 
   function readOfficialModelTrigger(trigger = null) {
     const node = trigger || document.querySelector?.(OFFICIAL_MODEL_TRIGGER_SELECTOR);
     const info = officialModelTriggerInfo(node);
     let changed = false;
-    if (info.model && info.model !== state.detectedModel) {
+    if (info.model && !isModelPickerPlaceholder(info.model) && info.model !== state.detectedModel) {
       state.detectedModel = info.model;
       changed = true;
     }
-    if (info.displayModel && info.displayModel !== state.detectedModelLabel) {
+    if (info.displayModel && !isModelPickerPlaceholder(info.displayModel) && info.displayModel !== state.detectedModelLabel) {
       state.detectedModelLabel = info.displayModel;
       changed = true;
     }
@@ -2813,7 +2941,7 @@ const VERSION = "0.7.10-beta1";
       state.detectedEffort = info.effort;
       changed = true;
     }
-    if (info.displayEffort && info.displayEffort !== state.detectedEffortLabel) {
+    if (info.displayEffort && !isModelPickerPlaceholder(info.displayEffort) && info.displayEffort !== state.detectedEffortLabel) {
       state.detectedEffortLabel = info.displayEffort;
       changed = true;
     }
@@ -2831,11 +2959,14 @@ const VERSION = "0.7.10-beta1";
 
   function activeModelInfo() {
     const ledgerModel = recentLedgerModel();
+    const model = modelName(ledgerModel);
+    const displayModel = state.detectedModelLabel && !isModelPickerPlaceholder(state.detectedModelLabel) ? state.detectedModelLabel : state.detectedModel || model;
+    const displayEffort = state.detectedEffortLabel && !isModelPickerPlaceholder(state.detectedEffortLabel) ? state.detectedEffortLabel : state.detectedEffort || "";
     return {
-      model: modelName(ledgerModel),
-      displayModel: state.detectedModelLabel || modelName(ledgerModel),
+      model,
+      displayModel,
       effort: state.detectedEffort || "",
-      displayEffort: state.detectedEffortLabel || state.detectedEffort || "",
+      displayEffort,
       manual: false,
     };
   }
@@ -2852,7 +2983,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function priceFor(model) {
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     const key = priceModelKey(model, overrides);
     if (!key || priceModelHidden(key)) return null;
     const override = normalizePrice(overrides[key]);
@@ -2861,7 +2992,7 @@ const VERSION = "0.7.10-beta1";
     return priceUsable(fallback) ? fallback : null;
   }
 
-  function priceModelKey(model, overrides = loadJson(PRICE_OVERRIDES_KEY, {})) {
+  function priceModelKey(model, overrides = priceOverrides()) {
     const name = normalizeText(model, 120);
     if (!name || name === UNKNOWN_MODEL) return "";
     if (Object.hasOwn(overrides, name) || Object.hasOwn(DEFAULT_PRICES, name)) return name;
@@ -2895,7 +3026,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function visiblePrices() {
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     const visibleOverrides = Object.fromEntries(Object.entries(overrides).filter(([model]) => !priceModelHidden(model)));
     return { ...visibleDefaultPrices(), ...visibleOverrides };
   }
@@ -2952,7 +3083,7 @@ const VERSION = "0.7.10-beta1";
 
   function priceListModels(extraModel = "") {
     ensureLocalLedgerLoaded();
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     const archiveTurns = localUsageArchiveTurns();
     const used = priceUsedModelSet(archiveTurns);
     const usedNames = priceListableUsedNames([
@@ -3091,7 +3222,7 @@ const VERSION = "0.7.10-beta1";
   }
 
   function costForModelUsage(usage, model, options = {}) {
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     const key = priceModelKey(model, overrides);
     if (key && priceModelHidden(key)) return { value: 0, priced: true, hidden: true };
     return calcCost(usage, priceFor(model), { ...options, model });
@@ -3167,13 +3298,31 @@ const VERSION = "0.7.10-beta1";
   function recentLedgerModel() {
     ensureLocalLedgerLoaded();
     const sessionKey = currentSessionKey();
+    const now = Date.now();
+    if (
+      state.recentLedgerModelLedger === state.localLedger &&
+      state.recentLedgerModelRevision === state.localLedgerRevision &&
+      state.recentLedgerModelSessionKey === sessionKey &&
+      now - state.recentLedgerModelAt < 5000
+    ) {
+      return state.recentLedgerModel;
+    }
+    let model = "";
     for (let i = state.localLedger.length - 1; i >= 0; i -= 1) {
       const turn = state.localLedger[i];
       if (turnSessionKey(turn) !== sessionKey) continue;
-      const model = normalizeText(turn?.model, 120);
-      if (model && model !== UNKNOWN_MODEL && pricedModelUsable(model)) return model;
+      const candidate = normalizeText(turn?.model, 120);
+      if (candidate && candidate !== UNKNOWN_MODEL && pricedModelUsable(candidate)) {
+        model = candidate;
+        break;
+      }
     }
-    return "";
+    state.recentLedgerModelLedger = state.localLedger;
+    state.recentLedgerModelRevision = state.localLedgerRevision;
+    state.recentLedgerModelSessionKey = sessionKey;
+    state.recentLedgerModel = model;
+    state.recentLedgerModelAt = now;
+    return model;
   }
 
   function cleanupAutoZeroPriceModels() {
@@ -3183,7 +3332,7 @@ const VERSION = "0.7.10-beta1";
       return false;
     }
     const autoZeroModels = ["gpt-5.4-nano"];
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = { ...priceOverrides() };
     const hidden = hiddenPriceModels();
     let changed = false;
     for (const model of autoZeroModels) {
@@ -3214,6 +3363,7 @@ const VERSION = "0.7.10-beta1";
     try {
       if (changed) {
         localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+        invalidatePriceOverridesCache();
         saveHiddenPriceModels(hidden);
         void priceCacheFlush();
       }
@@ -3280,13 +3430,28 @@ const VERSION = "0.7.10-beta1";
     return normalizeText(target?.getAttribute?.("data-app-action-sidebar-thread-id"), 240);
   }
 
+  function knownLedgerSessionKeys() {
+    if (state.knownSessionKeysLedger === state.localLedger && state.knownSessionKeysRevision === state.localLedgerRevision) {
+      return state.knownSessionKeys;
+    }
+    const keys = new Set();
+    for (const turn of state.localLedger) {
+      const key = turnSessionKey(turn);
+      if (key) keys.add(key);
+    }
+    state.knownSessionKeysLedger = state.localLedger;
+    state.knownSessionKeysRevision = state.localLedgerRevision;
+    state.knownSessionKeys = keys;
+    return keys;
+  }
+
   function resolveSessionKey(value) {
     const key = normalizeText(value, 240);
     if (!key) return "";
     const alias = state.sessionAliases.get(key.replace(/^local:/, ""));
     if (alias) return alias;
     ensureLocalLedgerLoaded();
-    const known = new Set(state.localLedger.map(turnSessionKey).filter(Boolean));
+    const known = knownLedgerSessionKeys();
     if (known.has(key)) return key;
     if (key.startsWith("local:")) {
       const stripped = key.slice("local:".length);
@@ -3464,7 +3629,12 @@ const VERSION = "0.7.10-beta1";
     return state.startupSessionKey;
   }
 
-  function currentSessionKey() {
+  function invalidateSessionKeyCache() {
+    state.sessionKeyCacheAt = 0;
+    state.sessionKeyCacheKey = "";
+  }
+
+  function computeCurrentSessionKey() {
     return (
       recentNewConversationSessionKey() ||
       startupBlankConversationSessionKey() ||
@@ -3474,6 +3644,17 @@ const VERSION = "0.7.10-beta1";
       activeSidebarThreadKey() ||
       locationSessionKey()
     );
+  }
+
+  function currentSessionKey() {
+    // 测试环境允许随意替换假 DOM，跳过缓存以保证断言即时生效。
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return computeCurrentSessionKey();
+    const now = Date.now();
+    if (state.sessionKeyCacheAt && now - state.sessionKeyCacheAt < SESSION_KEY_CACHE_MS) return state.sessionKeyCacheKey;
+    const key = computeCurrentSessionKey();
+    state.sessionKeyCacheAt = now;
+    state.sessionKeyCacheKey = key;
+    return key;
   }
 
   function localStateSessionKey(sessionKey = currentSessionKey()) {
@@ -5527,8 +5708,8 @@ const VERSION = "0.7.10-beta1";
     saveDailyLedger(ledger);
   }
 
-  function todayCost() {
-    const localBucket = localDailyUsage().get(todayKey());
+  function todayCost(dailyUsage = null) {
+    const localBucket = (dailyUsage || localDailyUsage()).get(todayKey());
     if (toCount(localBucket?.tokens) > 0) return { value: Number(localBucket.cost) || 0, priced: localBucket?.priced !== false };
     const ledger = loadDailyLedger();
     return ledger.items.reduce(
@@ -5811,6 +5992,7 @@ const VERSION = "0.7.10-beta1";
     state.detectedSessionKeyAt = Date.now();
     state.newConversationSessionKey = "";
     state.newConversationSessionKeyAt = 0;
+    invalidateSessionKeyCache();
     refreshCodexppHistory({ sessionId: key });
     syncActiveLocalCurrentTurn();
     syncActiveTurnShimmerState();
@@ -6006,6 +6188,16 @@ const VERSION = "0.7.10-beta1";
   function pruneOfficialThreadRuntimeStates(now = Date.now()) {
     for (const [key, item] of state.officialThreadRuntimeStates.entries()) {
       if (!item?.observedAt || now - item.observedAt > OFFICIAL_RUNTIME_STATE_TTL_MS) state.officialThreadRuntimeStates.delete(key);
+    }
+    // running 浮光只是装饰性状态，不能比官方运行时状态活得更久；否则完成事件丢失后
+    // 会永远每 4 秒闪一次。
+    for (const [key, item] of state.turnShimmerSessions.entries()) {
+      if (!item?.running) continue;
+      const officialRunning = Array.from(state.officialThreadRuntimeStates.entries()).some(([candidateKey, entry]) => entry?.running && sameSessionKey(candidateKey, key));
+      if (officialRunning) continue;
+      if (!item.startedAt || now - toCount(item.startedAt) > OFFICIAL_RUNTIME_STATE_TTL_MS) {
+        state.turnShimmerSessions.set(key, { ...item, running: false, outputStartedAt: now });
+      }
     }
   }
 
@@ -6434,8 +6626,8 @@ const VERSION = "0.7.10-beta1";
     return { model: "", effort: "" };
   }
 
-  function todayUsage() {
-    const localBucket = localDailyUsage().get(todayKey());
+  function todayUsage(dailyUsage = null) {
+    const localBucket = (dailyUsage || localDailyUsage()).get(todayKey());
     if (toCount(localBucket?.tokens) > 0) {
       const merged = mergeCodexppHistoryTurns(
         [{
@@ -6746,6 +6938,106 @@ const VERSION = "0.7.10-beta1";
     }
   }
 
+  function composerActionButton() {
+    const scope = document?.querySelector?.("main") || document;
+    const button = scope?.querySelector?.("button.size-token-button-composer");
+    if (!button || !isVisibleElement(button)) return null;
+    return button;
+  }
+
+  function reactFiberOf(node) {
+    if (!node) return null;
+    try {
+      let key = state.reactFiberKeyCache.get(node);
+      if (!key) {
+        key = Object.keys(node).find((name) => name.startsWith("__reactFiber$"));
+        if (key) state.reactFiberKeyCache.set(node, key);
+      }
+      return key ? node[key] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // 宿主输入区发送按钮的 React props 里有权威的回合状态（isResponseInProgress/isStopping）。
+  // 脚本只能看到自己注入之后的事件，注入前已建立的 app-server 长连接会漏掉完成事件；
+  // 这里直接读输入区状态，避免“回合早结束但浮光一直闪”。
+  function officialComposerRunState(force = false) {
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) force = true;
+    const now = Date.now();
+    if (!force && state.composerRunStateAt && now - state.composerRunStateAt < COMPOSER_RUN_STATE_CACHE_MS) {
+      return state.composerRunStateValue;
+    }
+    const remember = (value) => {
+      state.composerRunStateAt = now;
+      state.composerRunStateValue = value;
+      return value;
+    };
+    const button = composerActionButton();
+    if (!button) return remember(null);
+    let fiber = reactFiberOf(button);
+    for (let depth = 0; fiber && depth < 40; depth += 1) {
+      const props = fiber.memoizedProps;
+      if (props && typeof props === "object" && typeof props.isResponseInProgress === "boolean") {
+        return remember(props.isResponseInProgress || props.isStopping === true);
+      }
+      fiber = fiber.return;
+    }
+    const label = normalizeText(button.getAttribute?.("aria-label") || button.getAttribute?.("title") || "", 80);
+    if (/^(停止|停止生成|停止任务|中止|取消|stop|stop generating|cancel|interrupt)$/i.test(label)) return remember(true);
+    if (/^(发送|发送消息|send|send message|submit)$/i.test(label)) return remember(false);
+    if (button.getAttribute?.("aria-busy") === "true") return remember(true);
+    const path = button.querySelector?.("svg path")?.getAttribute?.("d") || "";
+    if (/^M9\.33467 16\.6663/.test(path)) return remember(false);
+    return remember(null);
+  }
+
+  function runningSignalAgeMs(sessionKey = currentSessionKey()) {
+    const key = localStateSessionKey(sessionKey);
+    let age = Infinity;
+    const shimmer = state.turnShimmerSessions.get(key);
+    if (shimmer?.running) age = Math.min(age, Math.max(0, Date.now() - toCount(shimmer.startedAt)));
+    for (const [candidateKey, item] of state.officialThreadRuntimeStates.entries()) {
+      if (!item?.running || !sameSessionKey(candidateKey, key)) continue;
+      age = Math.min(age, Math.max(0, Date.now() - toCount(item.observedAt)));
+    }
+    if (state.shimmerRunning && state.shimmerRunStartedAt) {
+      age = Math.min(age, Math.max(0, Date.now() - state.shimmerRunStartedAt));
+    }
+    return age;
+  }
+
+  function clearStaleRunningSignals(sessionKey = currentSessionKey()) {
+    const key = localStateSessionKey(sessionKey);
+    let cleared = false;
+    const shimmer = state.turnShimmerSessions.get(key);
+    if (shimmer?.running) {
+      state.turnShimmerSessions.set(key, { ...shimmer, running: false, outputStartedAt: Date.now() });
+      cleared = true;
+    }
+    for (const [candidateKey, item] of state.officialThreadRuntimeStates.entries()) {
+      if (!item?.running || !sameSessionKey(candidateKey, key)) continue;
+      state.officialThreadRuntimeStates.set(candidateKey, { ...item, running: false, status: "idle", reason: "composer-idle", observedAt: Date.now() });
+      cleared = true;
+    }
+    if (cleared) {
+      syncActiveTurnShimmerState();
+      stopCadencedShimmer({ finishActive: false });
+    }
+    return cleared;
+  }
+
+  function reconcileRunningWithComposerDom(sessionKey = currentSessionKey(), domState = officialComposerRunState()) {
+    if (domState !== false) return false;
+    if (runningSignalAgeMs(sessionKey) < RUNNING_DOM_GRACE_MS) return false;
+    const cleared = clearStaleRunningSignals(sessionKey);
+    if (!cleared && state.shimmerRunning) {
+      stopCadencedShimmer();
+      return true;
+    }
+    return cleared;
+  }
+
   function isCodexComposerCompleteDom() {
     return false;
   }
@@ -6789,7 +7081,9 @@ const VERSION = "0.7.10-beta1";
         invocations: Array.isArray(last.invocations) ? last.invocations : [],
       },
     }, key);
-    startTurnShimmer({ sessionKey: key });
+    // 只是恢复显示数据，不能凭“最近一次 live 记录”就断言回合还在运行。
+    // 只有宿主输入区确实处于运行态时才重新点燃浮光，否则切换会话就会误闪。
+    if (officialComposerRunState() === true) startTurnShimmer({ sessionKey: key });
     return true;
   }
 
@@ -7132,7 +7426,9 @@ const VERSION = "0.7.10-beta1";
     const currentFinishedAt = toTimestampMs(officialTiming.completedAtMs || officialTiming.finishedAtMs) || Date.now();
     const currentDurationMs = normalizedDurationMs(officialTiming, currentStartedAt, currentFinishedAt) || Math.max(0, currentFinishedAt - currentStartedAt);
     return {
-      turns: state.localLedger.slice(),
+      // 不要在热路径复制整份账本：currentSessionTurns 以数组引用做 WeakMap 缓存，
+      // 每次 slice() 都会让缓存失效并重新过滤所有回合。
+      turns: state.localLedger,
       last: state.localLast,
       currentTurn: current
         ? {
@@ -7186,13 +7482,26 @@ const VERSION = "0.7.10-beta1";
     return localUsageExport();
   }
 
+  function turnUsageKeySet(turns) {
+    const cached = state.sessionUsageKeyCache.get(turns);
+    if (cached) return cached;
+    const keys = new Set(turns.map((turn) => metricUsageKey(turn)));
+    state.sessionUsageKeyCache.set(turns, keys);
+    return keys;
+  }
+
   function sessionUsage(turns) {
-    return turns.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn?.usage)), {
+    if (!Array.isArray(turns)) return { input: 0, output: 0, cached: 0, total: 0 };
+    const cached = state.sessionUsageCache.get(turns);
+    if (cached) return cached;
+    const value = turns.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn?.usage)), {
       input: 0,
       output: 0,
       cached: 0,
       total: 0,
     });
+    state.sessionUsageCache.set(turns, value);
+    return value;
   }
 
   function storedTurnCost(turn) {
@@ -7674,7 +7983,14 @@ const VERSION = "0.7.10-beta1";
   function turnListCost(turns, fallbackUsage, fallbackModel = modelName()) {
     const items = Array.isArray(turns) ? turns : [];
     if (!items.length) return costForModelUsage(fallbackUsage, fallbackModel);
-    return items.reduce(
+    let byModel = state.sessionCostCache.get(items);
+    if (!byModel) {
+      byModel = new Map();
+      state.sessionCostCache.set(items, byModel);
+    }
+    const cached = byModel.get(fallbackModel);
+    if (cached) return cached;
+    const value = items.reduce(
       (sum, turn) => {
         const cost = turnCost(turn, fallbackModel);
         sum.value += cost.value;
@@ -7683,6 +7999,8 @@ const VERSION = "0.7.10-beta1";
       },
       { value: 0, priced: true },
     );
+    byModel.set(fallbackModel, value);
+    return value;
   }
 
   function mainEditable() {
@@ -7728,11 +8046,6 @@ const VERSION = "0.7.10-beta1";
     return false;
   }
 
-  function rememberPendingInput(event) {
-    void event;
-    return false;
-  }
-
   function rememberSidebarThreadClick(event) {
     if (event?.type !== "click") return;
     const threadKey = sidebarThreadKeyFromNode(event.target);
@@ -7743,6 +8056,7 @@ const VERSION = "0.7.10-beta1";
     state.lastClickedSidebarThreadAt = Date.now();
     state.userSelectedSidebarThreadKey = state.lastClickedSidebarThreadKey;
     state.userSelectedSidebarThreadAt = state.lastClickedSidebarThreadAt;
+    invalidateSessionKeyCache();
     syncActiveLocalCurrentTurn();
     syncActiveTurnShimmerState();
     scheduleRender(0);
@@ -7761,6 +8075,7 @@ const VERSION = "0.7.10-beta1";
     state.detectedSessionKeyAt = 0;
     state.newConversationSessionKey = `new:${Date.now().toString(36)}`;
     state.newConversationSessionKeyAt = Date.now();
+    invalidateSessionKeyCache();
     scheduleRender(0);
     return true;
   }
@@ -7768,8 +8083,8 @@ const VERSION = "0.7.10-beta1";
   function handleDocumentClick(event) {
     if (rememberNewConversationClick(event)) return;
     rememberSidebarThreadClick(event);
-    rememberPendingInput(event);
-    clearEmbeddedRailActiveAfterNavigation(event);
+    // 只有设置页打开时才需要清理导航栏激活态；普通对话点击不再做全量 nav 查询。
+    if (state.embeddedPageContainer || state.priceEditorOpen) clearEmbeddedRailActiveAfterNavigation(event);
   }
 
   function clearEmbeddedRailActiveAfterNavigation(event) {
@@ -7780,6 +8095,8 @@ const VERSION = "0.7.10-beta1";
 
   function liveSnapshot() {
     const sessionKey = currentSessionKey();
+    const domRunState = officialComposerRunState();
+    reconcileRunningWithComposerDom(sessionKey, domRunState);
     syncActiveLocalCurrentTurn();
     syncActiveTurnShimmerState();
     migrateLegacyLocationSessionTurns(sessionKey);
@@ -7798,7 +8115,7 @@ const VERSION = "0.7.10-beta1";
     const hasNewExact = exactLast.exact && exactTurnId && exactTurnId !== state.lastExactTurnId;
     if (hasNewExact) state.lastExactTurnId = exactTurnId;
 
-    const running = isTurnShimmerRunning(sessionKey) || isOfficialThreadRunning(sessionKey);
+    const running = domRunState === true || isTurnShimmerRunning(sessionKey) || isOfficialThreadRunning(sessionKey);
     state.running = running;
 
     const zeroCurrent = { input: 0, output: 0, cached: 0, total: 0, exact: true };
@@ -7806,13 +8123,19 @@ const VERSION = "0.7.10-beta1";
     const confidence = "exact";
 
     const session = sessionUsage(turns);
-    const lastIsInTurns = current.exact && turns.some((turn) => metricUsageKey(turn) === usageKey(current));
+    const lastIsInTurns = current.exact && turnUsageKeySet(turns).has(usageKey(current));
     const accountedSession = current.exact && !lastIsInTurns ? addUsage(session, current) : session;
     const displaySession = accountedSession;
-    const sessionCostTurns = current.exact && currentTurn && !lastIsInTurns ? [...turns, currentTurn] : turns;
-    const sessionCost = turnListCost(sessionCostTurns, displaySession, model);
-    const dayCost = todayCost();
-    const dayUsage = todayUsage();
+    const sessionCostBase = turnListCost(turns, displaySession, model);
+    const sessionCost = current.exact && currentTurn && !lastIsInTurns
+      ? (() => {
+          const currentCost = turnCost(currentTurn, model);
+          return { value: sessionCostBase.value + currentCost.value, priced: sessionCostBase.priced && currentCost.priced };
+        })()
+      : sessionCostBase;
+    const dailyUsage = localDailyUsage();
+    const dayCost = todayCost(dailyUsage);
+    const dayUsage = todayUsage(dailyUsage);
     const fastMode = state.detectedFastMode === true;
     const outputRateEnabled = outputRateVisible();
     const rate = outputRateEnabled ? outputTokenRate(currentTurn, running) : { active: false, visible: false, value: 0 };
@@ -7852,7 +8175,7 @@ const VERSION = "0.7.10-beta1";
     const cached = state.localDailyUsageCache;
     if (cached?.revision === state.localLedgerRevision && !activeCurrentTurn && cached.value) return cached.value;
     const byDayModel = cached?.revision === state.localLedgerRevision
-      ? new Map(Array.from(cached.groups.entries(), ([date, group]) => [date, { date, bucket: { ...group.bucket } }]))
+      ? new Map(cached.groups)
       : new Map();
     const ledgerTurnIds = cached?.revision === state.localLedgerRevision ? cached.turnIds : new Set();
     if (!cached || cached.revision !== state.localLedgerRevision) {
@@ -7871,7 +8194,8 @@ const VERSION = "0.7.10-beta1";
     const currentMetric = localTurnMetric(activeCurrentTurn);
     if (currentMetric && !ledgerTurnIds.has(currentMetric.turnId)) {
       const date = localDateKey(turnTimestampMs(currentMetric) || Date.now());
-      const group = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
+      const baseGroup = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
+      const group = { date, bucket: { ...baseGroup.bucket } };
       addTurnToDailyBucket(group.bucket, currentMetric, normalizeUsage(currentMetric.usage));
       byDayModel.set(date, group);
     }
@@ -7885,6 +8209,9 @@ const VERSION = "0.7.10-beta1";
   function invalidateLocalUsageCache() {
     state.localLedgerRevision += 1;
     state.localDailyUsageCache = null;
+    state.sessionUsageCache = new WeakMap();
+    state.sessionCostCache = new WeakMap();
+    state.sessionUsageKeyCache = new WeakMap();
   }
 
   function localProfileThreadCount() {
@@ -8431,7 +8758,14 @@ const VERSION = "0.7.10-beta1";
     const target = document.body || document.documentElement;
     if (!target) return;
     state.officialModelRootObserver = new MutationObserver((mutations) => {
-      if (mutations.some(mutationTouchesOfficialModelTrigger)) bindOfficialModelTrigger();
+      if (!mutations.some(mutationTouchesOfficialModelTrigger)) return;
+      // 流式输出会持续改 DOM；把“触发器是否被替换”的重新绑定合并成尾随一次，
+      // 避免每个 token 都走 bind/read/querySelector 链。
+      if (state.officialModelRebindTimer) return;
+      state.officialModelRebindTimer = window.setTimeout(() => {
+        state.officialModelRebindTimer = 0;
+        bindOfficialModelTrigger();
+      }, 120);
     });
     state.officialModelRootObserver.observe(target, { childList: true, subtree: true });
   }
@@ -9400,9 +9734,23 @@ const VERSION = "0.7.10-beta1";
     return enabled;
   }
 
-  function findComposerBox() {
+  function findComposerBox(force = false) {
+    const now = Date.now();
+    if (
+      !force &&
+      !window.__CODEX_LIVE_TOKEN_COST_TEST__ &&
+      state.composerBox &&
+      state.composerBox.isConnected !== false &&
+      now - state.composerBoxAt < COMPOSER_BOX_CACHE_MS
+    ) {
+      return state.composerBox;
+    }
     const editable = mainEditable();
-    if (!editable) return null;
+    if (!editable) {
+      state.composerBox = null;
+      state.composerBoxAt = now;
+      return null;
+    }
     let node = editable;
     let candidate = editable.parentElement || editable;
     for (let depth = 0; node?.parentElement && depth < 8; depth += 1, node = node.parentElement) {
@@ -9410,6 +9758,8 @@ const VERSION = "0.7.10-beta1";
       const style = getComputedStyle(node);
       if (rect.width >= 320 && rect.height >= 36 && rect.height <= 260 && style.display !== "contents") candidate = node;
     }
+    state.composerBox = candidate;
+    state.composerBoxAt = now;
     return candidate;
   }
 
@@ -9421,16 +9771,21 @@ const VERSION = "0.7.10-beta1";
     render(true);
   }
 
-  function renderEmbeddedSettingsPage(container, options = {}) {
+  function renderEmbeddedSettingsPage(container, options = {}, snap = null) {
     if (options.panel && ["profile", "general", "usage", "pricing"].includes(options.panel)) state.settingsPanel = options.panel;
     state.priceEditorOpen = true;
     state.embeddedPageContainer = container;
     container.classList.add("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings");
     renderUpdateCluster();
     if (state.analyticsCalendar?.isOpen) return;
-    const firstRender = !container.innerHTML;
-    const html = pricePopoverHtml(liveSnapshot());
-    if (state.embeddedHtmlSignature === html && container.innerHTML) {
+    const now = Date.now();
+    // 流式输出期间设置页不需要 4 次/秒整体重建；用户主动操作仍立即渲染。
+    if (options.fromRender && state.settingsRenderAt && now - state.settingsRenderAt < SETTINGS_PANEL_RENDER_INTERVAL_MS) return;
+    state.settingsRenderAt = now;
+    const hasEmbeddedContent = () => (container.firstElementChild !== undefined ? Boolean(container.firstElementChild) : Boolean(container.innerHTML));
+    const firstRender = !hasEmbeddedContent();
+    const html = pricePopoverHtml(snap || liveSnapshot());
+    if (state.embeddedHtmlSignature === html && hasEmbeddedContent()) {
       return;
     }
     state.embeddedHtmlSignature = html;
@@ -9686,7 +10041,9 @@ const VERSION = "0.7.10-beta1";
         color: var(--cltc-muted);
       }
       #${ROOT_ID} .cltc-model-effort:not(:empty)::before {
-        content: " · ";
+        content: "·";
+        /* flex 项内的行首空格会被折叠，用 margin 保证 “模型 · 强度” 两侧都有间距 */
+        margin: 0 0.28em;
         color: var(--cltc-muted);
       }
       #${ROOT_ID} .cltc-model-effort[data-effort="ultra"] {
@@ -11948,12 +12305,23 @@ const VERSION = "0.7.10-beta1";
   }
 
   function ensureRoot() {
+    const now = Date.now();
+    // 根节点一旦稳定插在输入框上方，就没必要每 250ms 重走 mainEditable + 8 层祖先布局读取。
+    if (
+      state.root?.isConnected &&
+      !window.__CODEX_LIVE_TOKEN_COST_TEST__ &&
+      state.rootPlacedAt &&
+      now - state.rootPlacedAt < ROOT_PLACEMENT_CACHE_MS
+    ) {
+      return state.root;
+    }
     ensureStyle();
     cleanupDuplicateRoots();
     const composer = findComposerBox();
     if (!composer?.parentElement) {
       state.root?.remove();
       cleanupDuplicateRoots();
+      state.rootPlacedAt = 0;
       return null;
     }
     let rootChanged = false;
@@ -11971,8 +12339,9 @@ const VERSION = "0.7.10-beta1";
       composer.parentElement.insertBefore(state.root, composer);
       rootChanged = true;
     }
-    if (rootChanged) syncHubVisibility(state.root);
+    if (rootChanged) syncHubVisibility(state.root, document, true);
     cleanupDuplicateRoots(state.root);
+    state.rootPlacedAt = now;
     return state.root;
   }
 
@@ -11987,7 +12356,7 @@ const VERSION = "0.7.10-beta1";
     if (!root?.querySelectorAll) return;
     const query = normalizeText(state.priceSearch, 120).toLowerCase();
     const filter = state.priceFilter || "all";
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     let visible = 0;
     for (const node of Array.from(root.querySelectorAll("[data-price-pick]") || [])) {
       const name = node.getAttribute?.("data-price-pick") || "";
@@ -12222,9 +12591,10 @@ const VERSION = "0.7.10-beta1";
   }
 
   function clearDefaultPriceOverrides() {
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = { ...priceOverrides() };
     for (const model of Object.keys(DEFAULT_PRICES)) delete overrides[model];
     localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+    invalidatePriceOverridesCache();
     void priceCacheFlush();
     const hidden = hiddenPriceModels();
     for (const model of Object.keys(DEFAULT_PRICES)) hidden.delete(model);
@@ -12249,9 +12619,10 @@ const VERSION = "0.7.10-beta1";
   function deletePriceForModel(model) {
     const name = normalizeText(model);
     if (!name) return false;
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = { ...priceOverrides() };
     delete overrides[name];
     localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+    invalidatePriceOverridesCache();
     void priceCacheFlush();
     const hidden = hiddenPriceModels();
     hidden.add(name);
@@ -12541,7 +12912,7 @@ const VERSION = "0.7.10-beta1";
 
   function pricePopoverHtml(snap) {
     if (!state.priceEditorOpen) return "";
-    const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+    const overrides = priceOverrides();
     const draft = state.priceDraft;
     const model = normalizeText(draft?.model, 120) || normalizeText(state.priceEditorModel) || snap.model;
     const draftPrice = draft && normalizeText(draft.model, 120) === model ? draft : null;
@@ -13137,7 +13508,7 @@ const VERSION = "0.7.10-beta1";
 
   function renderSettingsOverlay(snap, options = {}) {
     if (state.embeddedPageContainer) {
-      renderEmbeddedSettingsPage(state.embeddedPageContainer, options);
+      renderEmbeddedSettingsPage(state.embeddedPageContainer, options, snap);
       return;
     }
     // 设置界面只以嵌入式页面存在；旧浮层 modal 路径不再允许创建，避免异常实例残留旧弹窗。
@@ -13395,10 +13766,11 @@ const VERSION = "0.7.10-beta1";
   }
 
   function applyCadencedShimmerActive(active) {
-    const nodes = state.root?.querySelectorAll?.(".cltc-cadenced-shimmer");
-    if (!nodes) return;
+    const root = state.root;
+    if (!root) return;
+    const nodes = hubSlots(root).shimmer;
     const elapsed = active && state.shimmerActiveStartedAt ? Math.max(0, Math.min(Date.now() - state.shimmerActiveStartedAt, SHIMMER_ACTIVE_MS)) : 0;
-    nodes.forEach((node) => {
+    for (const node of nodes) {
       const isActive = node.classList.contains("cltc-cadenced-shimmer-active");
       if (active) {
         if (!isActive) {
@@ -13409,7 +13781,7 @@ const VERSION = "0.7.10-beta1";
         node.style.removeProperty("--cltc-shimmer-active-delay");
         node.classList.remove("cltc-cadenced-shimmer-active");
       }
-    });
+    }
   }
 
   function clearCadencedShimmerTimers(options = {}) {
@@ -13429,6 +13801,11 @@ const VERSION = "0.7.10-beta1";
   }
 
   function pulseCadencedShimmer() {
+    if (document.hidden) return;
+    if (reconcileRunningWithComposerDom(currentSessionKey())) {
+      scheduleRender(0);
+      return;
+    }
     if (!state.shimmerRunning || prefersReducedMotion()) return;
     if (state.shimmerActiveTimer) {
       window.clearTimeout(state.shimmerActiveTimer);
@@ -13450,6 +13827,7 @@ const VERSION = "0.7.10-beta1";
   function stopCadencedShimmer(options = {}) {
     const finishActive = Boolean(options.finishActive);
     state.shimmerRunning = false;
+    state.shimmerRunStartedAt = 0;
     const remaining = Math.max(0, (state.shimmerActiveUntil || 0) - Date.now());
     clearCadencedShimmerTimers({ clearActive: !finishActive });
     if (finishActive && remaining > 0) {
@@ -13479,6 +13857,7 @@ const VERSION = "0.7.10-beta1";
       return;
     }
     state.shimmerRunning = true;
+    state.shimmerRunStartedAt = Date.now();
     if (prefersReducedMotion()) return;
     pulseCadencedShimmer();
     state.shimmerIntervalTimer = window.setInterval(pulseCadencedShimmer, SHIMMER_INTERVAL_MS);
@@ -13514,35 +13893,70 @@ const VERSION = "0.7.10-beta1";
     `;
   }
 
+  function hubSlots(root) {
+    if (!root) return { root: null, value: new Map(), text: new Map(), effort: null, modelPill: null, fastIcon: null, rateLive: [], rateAverage: [], shimmer: [] };
+    if (state.hubSlots?.root === root) return state.hubSlots;
+    const slots = {
+      root,
+      value: new Map(),
+      text: new Map(),
+      effort: null,
+      modelPill: null,
+      fastIcon: null,
+      rateLive: [],
+      rateAverage: [],
+      shimmer: [],
+    };
+    const add = (map, key, node) => {
+      const list = map.get(key);
+      if (list) list.push(node);
+      else map.set(key, [node]);
+    };
+    root.querySelectorAll?.("[data-cltc-value-key]").forEach((node) => add(slots.value, node.dataset.cltcValueKey || "", node));
+    root.querySelectorAll?.("[data-cltc-text-key]").forEach((node) => add(slots.text, node.dataset.cltcTextKey || "", node));
+    slots.effort = root.querySelector?.("[data-cltc-model-effort='true']") || null;
+    slots.modelPill = root.querySelector?.("[data-cltc-model-pill='true']") || null;
+    slots.fastIcon = root.querySelector?.("[data-cltc-fast-mode-icon='true']") || null;
+    slots.rateLive = Array.from(root.querySelectorAll?.("[data-cltc-output-rate='live']") || []);
+    slots.rateAverage = Array.from(root.querySelectorAll?.("[data-cltc-output-rate='average']") || []);
+    slots.shimmer = Array.from(root.querySelectorAll?.(".cltc-cadenced-shimmer") || []);
+    state.hubSlots = slots;
+    return slots;
+  }
+
   function ensureHubSkeleton(root, showOutputRate = outputRateVisible()) {
     const outputRateEnabled = Boolean(showOutputRate);
     if (root.dataset.cltcOutputRateVisible !== String(outputRateEnabled)) root.dataset.cltcOutputRateVisible = String(outputRateEnabled);
-    const hasOutputRateMarkup = Boolean(root.querySelector?.("[data-cltc-output-rate='average']"));
     if (
       root.dataset.cltcSkeletonVersion === VERSION &&
-      root.querySelector?.("[data-cltc-value-key='current-input']") &&
-      hasOutputRateMarkup === outputRateEnabled
-    ) return;
+      root.dataset.cltcSkeletonOutputRate === String(outputRateEnabled) &&
+      root.firstElementChild
+    ) {
+      return;
+    }
     root.innerHTML = hubSkeletonHtml(outputRateEnabled);
     root.dataset.cltcSkeletonVersion = VERSION;
+    root.dataset.cltcSkeletonOutputRate = String(outputRateEnabled);
+    state.hubSlots = null;
   }
 
   function updateValueSlot(root, key, value) {
-    root.querySelectorAll?.("[data-cltc-value-key]").forEach((slot) => {
-      if (slot.dataset.cltcValueKey !== key) return;
-      updateRollingValueSlot(slot, key, value);
-    });
+    const slots = hubSlots(root).value.get(key);
+    if (!slots) return;
+    for (const slot of slots) updateRollingValueSlot(slot, key, value);
   }
 
   function updateTextSlot(root, key, value) {
+    const slots = hubSlots(root).text.get(key);
+    if (!slots) return;
     const text = String(value ?? "");
-    root.querySelectorAll?.("[data-cltc-text-key]").forEach((slot) => {
-      if (slot.dataset.cltcTextKey !== key) return;
+    for (const slot of slots) {
       if (slot.textContent !== text) slot.textContent = text;
-    });
+    }
   }
 
   function updateHubContent(root, snap, sessionPricedLabel, dayPricedLabel) {
+    const slots = hubSlots(root);
     updateValueSlot(root, "current-input", fmtCount(snap.current.input));
     updateValueSlot(root, "current-output", fmtCount(snap.current.output));
     updateValueSlot(root, "current-output-rate", fmtCount(snap.rate.value));
@@ -13556,28 +13970,32 @@ const VERSION = "0.7.10-beta1";
     updateTextSlot(root, "day-priced-label", dayPricedLabel);
     updateTextSlot(root, "model", snap.displayModel || snap.model);
     updateTextSlot(root, "model-effort", snap.modelInfo.displayEffort || snap.modelInfo.effort || "");
-    const effortNode = root.querySelector?.("[data-cltc-model-effort='true']");
+    const effortNode = slots.effort;
     if (effortNode) setButtonAttribute(effortNode, "data-effort", snap.modelInfo.effort || "");
-    const modelPill = root.querySelector?.("[data-cltc-model-pill='true']");
-    if (modelPill) modelPill.removeAttribute("title");
-    const fastIcon = root.querySelector?.("[data-cltc-fast-mode-icon='true']");
+    const modelPill = slots.modelPill;
+    if (modelPill && modelPill.hasAttribute?.("title")) modelPill.removeAttribute("title");
+    const fastIcon = slots.fastIcon;
     if (fastIcon) {
       fastIcon.hidden = !snap.fastMode;
       if (snap.fastMode) fastIcon.removeAttribute?.("hidden");
       else fastIcon.setAttribute?.("hidden", "");
     }
-    root.querySelectorAll?.("[data-cltc-output-rate='live']").forEach((node) => {
+    for (const node of slots.rateLive) {
       const hidden = !snap.rate.visible;
       if (node.hidden !== hidden) node.hidden = hidden;
-    });
-    root.querySelectorAll?.("[data-cltc-output-rate='average']").forEach((node) => {
+    }
+    for (const node of slots.rateAverage) {
       const hidden = !snap.averageRate.visible;
       if (node.hidden !== hidden) node.hidden = hidden;
-    });
+    }
   }
 
   function render(force = false) {
     if (state.destroyed) return;
+    if (document.hidden) {
+      state.renderPendingWhileHidden = true;
+      return;
+    }
     if (!force && state.priceEditorOpen && state.settingsOverlay?.contains(document.activeElement) && document.activeElement?.closest?.(".cltc-settings-modal")) {
       return;
     }
@@ -13590,14 +14008,19 @@ const VERSION = "0.7.10-beta1";
     if (root.dataset.running !== String(snap.running)) root.dataset.running = String(snap.running);
     ensureHubSkeleton(root, snap.outputRateEnabled);
     updateHubContent(root, snap, sessionPricedLabel, dayPricedLabel);
-      syncCadencedShimmer(snap.running);
-      syncOutputRateRefresh(snap.rate);
-      syncHubVisibility(root);
-      if (!state.settingsOverlay?.isConnected || !state.priceEditorOpen) renderSettingsOverlay(snap);
-    }
+    syncCadencedShimmer(snap.running);
+    syncOutputRateRefresh(snap.rate);
+    syncHubVisibility(root);
+    if (!state.settingsOverlay?.isConnected || !state.priceEditorOpen) renderSettingsOverlay(snap, { fromRender: true });
+  }
 
   function scheduleRender(delay = 0) {
     if (state.destroyed) return;
+    // 页面隐藏时不排队渲染；可见时一次性补一次，避免后台每 250ms 重建设置页/HUB。
+    if (document.hidden) {
+      state.renderPendingWhileHidden = true;
+      return;
+    }
     if (state.renderTimer) return;
     const wait = Math.max(delay, RENDER_THROTTLE_MS - (Date.now() - state.lastRenderAt), 0);
     state.renderTimer = window.setTimeout(() => {
@@ -13610,7 +14033,7 @@ const VERSION = "0.7.10-beta1";
     const hubToggle = event.target?.closest?.("[data-misc-field='hubVisible']");
     if (hubToggle) {
       saveHubVisible(Boolean(hubToggle.checked));
-      syncHubVisibility();
+      syncHubVisibility(state.root, document, true);
       scheduleHubVisibilitySync(0);
       if (state.priceEditorOpen) renderSettingsOverlay(liveSnapshot());
       return;
@@ -13879,16 +14302,24 @@ const VERSION = "0.7.10-beta1";
     state.profileQueryClientDiscoveryObserver.observe(target, { childList: true, subtree: true });
   }
 
+  function handleVisibilityChange() {
+    if (document.hidden) return;
+    if (state.renderPendingWhileHidden) {
+      state.renderPendingWhileHidden = false;
+      render(true);
+    }
+    if (state.shimmerRunning) pulseCadencedShimmer();
+  }
+
   function start() {
     if (state.started || state.destroyed) return;
     state.started = true;
     loadLocalLedger();
     cleanupAutoZeroPriceModels();
     installLocalCapture();
-    trackListener(document, "keydown", rememberPendingInput, true);
     trackListener(document, "click", handleDocumentClick, true);
-    trackListener(document, "submit", rememberPendingInput, true);
     trackListener(document, "pointerdown", handleDocumentPointerDown, true);
+    trackListener(document, "visibilitychange", handleVisibilityChange, false);
     installOfficialModelObserver();
     installTaskRunningObserver();
     scheduleProfileQueryClientDiscovery();
@@ -13960,6 +14391,8 @@ const VERSION = "0.7.10-beta1";
     state.profileQueryClientDiscoveryObserver?.disconnect?.();
     state.officialModelObserver?.disconnect?.();
     state.officialModelRootObserver?.disconnect?.();
+    if (state.officialModelRebindTimer) window.clearTimeout(state.officialModelRebindTimer);
+    state.officialModelRebindTimer = 0;
     state.taskRunningObserver?.disconnect?.();
     state.officialModelObserver = null;
     state.officialModelRootObserver = null;
@@ -14066,10 +14499,11 @@ const VERSION = "0.7.10-beta1";
       if (rawValues.some((value) => value != null && value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0))) return false;
       const normalized = normalizePrice(price);
       if (!name || !normalized || !priceUsable(normalized)) return false;
-      const overrides = loadJson(PRICE_OVERRIDES_KEY, {});
+      const overrides = { ...priceOverrides() };
       overrides[name] = normalized;
       try {
         localStorage.setItem(PRICE_OVERRIDES_KEY, JSON.stringify(overrides));
+        invalidatePriceOverridesCache();
         void priceCacheFlush();
       } catch {
         // localStorage 接近配额时 setItem 会抛 QuotaExceededError；必须把失败
@@ -14134,6 +14568,7 @@ const VERSION = "0.7.10-beta1";
       rollComparableValue,
       rollTrend,
       parseModelEffortText,
+      normalizeOfficialEffort,
       officialModelInfoFromText,
       officialModelTriggerInfo,
       readOfficialModelTrigger,
@@ -14206,7 +14641,10 @@ const VERSION = "0.7.10-beta1";
       finishActiveTurnFromDomIfStopped,
       isCodexComposerCompleteDom,
       isCodexTaskRunningDom,
-      rememberPendingInput,
+      officialComposerRunState,
+      reconcileRunningWithComposerDom,
+      clearStaleRunningSignals,
+      isTurnShimmerRunning,
       startTurnShimmer,
       stopTurnShimmer,
       syncOutputRateRefresh,
