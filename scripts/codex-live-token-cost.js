@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.7.10-beta1
+// @version      0.8.0
 // @description  在 Codex 输入框上方显示 Token 与金额；ChatGPT 登录时可用本地统计覆盖官方个人资料页；通过设置按钮管理价格和资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-const VERSION = "0.7.10-beta1";
+const VERSION = "0.8.0";
   const ROOT_ID = "codex-live-token-cost";
   const STYLE_ID = "codex-live-token-cost-style";
   const FLATPICKR_STYLE_ID = "codex-live-token-cost-flatpickr-style";
@@ -7966,7 +7966,7 @@ const VERSION = "0.7.10-beta1";
     return `
       <section class="cltc-settings-section cltc-analytics" data-analytics-preset="${preset}" data-analytics-model-filter="${escapeHtml(model)}">
         <div class="cltc-settings-section-heading cltc-analytics-heading">
-          <div><h2>使用统计</h2><p>基于 HUD、Profile 与本地 ledger 的同一去重口径。</p></div>
+          <div><h2>使用统计</h2><p>基于 HUD、Profile 与本地 ledger 的同一去重口径</p></div>
           ${model ? `<button type="button" class="cltc-analytics-filter" data-action="clear-analytics-model">${escapeHtml(model)} ×</button>` : ""}
         </div>
         <div class="cltc-analytics-toolbar">
@@ -8019,7 +8019,7 @@ const VERSION = "0.7.10-beta1";
         <div class="cltc-analytics-section">
           <div class="cltc-analytics-section-head"><div><h3>模型明细</h3><p>点击模型可联动筛选整页</p></div></div>
           <div class="cltc-analytics-model-head"><span>模型</span><span>Token</span><span>模型调用</span><span>花费</span><span>占比</span></div>
-          <div class="cltc-analytics-models">${modelRows || `<div class="cltc-analytics-empty">当前范围内暂无真实模型调用。</div>`}</div>
+          <div class="cltc-analytics-models">${modelRows || `<div class="cltc-analytics-empty">当前范围内暂无真实模型调用</div>`}</div>
           ${current.models.length > 10 ? `<button type="button" class="cltc-analytics-expand" data-action="toggle-analytics-models">${state.analyticsModelsExpanded ? "收起" : `查看全部 ${current.models.length} 个模型`}</button>` : ""}
         </div>
       </section>
@@ -12800,7 +12800,7 @@ const VERSION = "0.7.10-beta1";
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
           <h2>常规</h2>
-          <p>管理 HUD 显示、本地资料与历史数据同步。</p>
+          <p>管理 HUD 显示、本地资料与历史数据同步</p>
         </div>
         <div class="cltc-group">
           <div class="cltc-group-head">
@@ -12810,14 +12810,14 @@ const VERSION = "0.7.10-beta1";
             <label class="cltc-toggle-field">
               <span>
                 <strong>显示 HUD</strong>
-                <small>在输入框上方显示本轮、会话与今日统计。</small>
+                <small>在输入框上方显示本轮、会话与今日统计</small>
               </span>
               <input type="checkbox" role="switch" aria-checked="${String(hubVisible())}" data-misc-field="hubVisible"${hubVisible() ? " checked" : ""}>
             </label>
             <label class="cltc-toggle-field"${hubVisible() ? "" : ' data-disabled="true"'}>
               <span>
                 <strong>显示 Token 输出速率</strong>
-                <small>${hubVisible() ? "显示本轮实时与上一轮平均输出速率。" : "需先开启 HUD。"}</small>
+                <small>${hubVisible() ? "显示本轮实时与上一轮平均输出速率" : "需先开启 HUD"}</small>
               </span>
               <input type="checkbox" role="switch" aria-checked="${String(outputRateVisible())}" data-misc-field="outputRateVisible"${outputRateVisible() ? " checked" : ""}${hubVisible() ? "" : " disabled"}>
             </label>
@@ -12832,10 +12832,10 @@ const VERSION = "0.7.10-beta1";
               <span>
                 <strong>本地 Profile</strong>
                 <small>${!profileRealChatgpt
-                  ? "API Key 登录下 Codex 无个人资料页；本地资料仅在 ChatGPT 登录后覆盖显示。"
+                  ? "API Key 登录下 Codex 无个人资料页；本地资料仅在 ChatGPT 登录后覆盖显示"
                   : profileEnabled
-                    ? "已启用；本地显示名与套餐在个人资料中管理。"
-                    : "未启用；开启后本地资料会覆盖 Profile 展示。"}</small>
+                    ? "已启用；本地显示名与套餐在个人资料中管理"
+                    : "未启用；开启后本地资料会覆盖 Profile 展示"}</small>
               </span>
               <button type="button" data-settings-panel="profile">管理</button>
             </div>
@@ -12881,7 +12881,7 @@ const VERSION = "0.7.10-beta1";
             <div class="cltc-settings-row cltc-sync-row">
               <span>
                 <strong>历史数据同步</strong>
-                <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数。</small>
+                <small>自动读取本机 Codex 会话记录，回填缺失的 token 用量；重复同步不会重复计数</small>
               </span>
               <button type="button" data-action="sync-usage" data-variant="primary" aria-busy="${String(busy)}"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
             </div>
@@ -12912,8 +12912,8 @@ const VERSION = "0.7.10-beta1";
         <div class="cltc-settings-section-heading">
           <h2>个人资料</h2>
           <p>${realChatgpt
-            ? "仅影响本地显示，不会改变账号、订阅或登录状态。"
-            : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示。"}</p>
+            ? "仅影响本地显示，不会改变账号、订阅或登录状态"
+            : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示"}</p>
         </div>
         <div class="cltc-profile-card" data-disabled="${String(!enabled)}">
           ${avatarHtml}
@@ -12930,7 +12930,7 @@ const VERSION = "0.7.10-beta1";
         <div class="cltc-group">
           <div class="cltc-group-head">
             <h3>套餐显示</h3>
-            <p>${enabled ? "选择要显示在 Profile 与账号菜单中的套餐。" : "启用本地 Profile 后可编辑。"}</p>
+            <p>${enabled ? "选择要显示在 Profile 与账号菜单中的套餐" : "启用本地 Profile 后可编辑"}</p>
           </div>
           <div class="cltc-group-body">
             <div class="cltc-price-grid cltc-profile-form">
@@ -13001,7 +13001,7 @@ const VERSION = "0.7.10-beta1";
       <section class="cltc-settings-section">
         <div class="cltc-settings-section-heading">
           <h2>模型价格</h2>
-          <p>按 USD / 1M tokens 设置输入、缓存与输出价格。</p>
+          <p>按 USD / 1M tokens 设置输入、缓存与输出价格</p>
         </div>
         <div class="cltc-price-sync" data-tone="${sync.tone}" role="status" aria-live="polite">
           <span>${escapeHtml(sync.text)}</span>
