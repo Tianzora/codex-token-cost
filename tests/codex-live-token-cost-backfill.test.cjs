@@ -547,7 +547,10 @@ const rolloutTurnRow = {
   assert.ok(syncTurnRecord, "token_count calls must register under the active turn");
   assert.equal(syncTurnRecord.model, "gpt-5.5");
   assert.equal(syncTurnRecord.effort, "high");
-  assert.equal(syncTurnRecord.calls.length, 2, "each token_count is one per-request call");
+  // token_count 不再直接进 calls：它是会重复的心跳，只能作为无 record 时的降级来源。
+  assert.equal(syncTurnRecord.calls.length, 0, "token_count must not land in the call list directly");
+  assert.equal(syncTurnRecord.fallbackCalls.length, 2, "each distinct token_count is one fallback entry");
+  assert.equal(syncTurnRecord.responses.size, 0, "no token_usage_record in this fixture");
   assert.equal(syncTurnRecord.skillCounts.get("sync-skill"), 1);
   assert.equal(syncTurnRecord.pluginCounts.get("github"), 1);
   assert.equal(syncTurnRecord.pluginCounts.get("plugin-tools"), 1);
@@ -559,6 +562,7 @@ const rolloutTurnRow = {
   assert.equal(syncTurnRow.usage.cached_input_tokens, 400);
   assert.equal(syncTurnRow.usage.total_tokens, 1060);
   assert.equal(syncTurnRow.durationMs, 120000);
+  assert.equal(syncTurnRow.usageSource, "token_count_fallback");
   assert.equal(syncTurnRow.source, "codex-usage-backfill");
   assert.equal(syncTurnRow.invocations.length, 3, "skill + mcp server + mcp function call must all map to invocations");
 

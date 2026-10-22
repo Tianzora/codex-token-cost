@@ -120,13 +120,30 @@ const VERSION = "0.8.0";
   const OUTPUT_RATE_VISIBLE_KEY = "__codexLiveTokenCostOutputRateVisibleV1";
   const PROFILE_UNLOCK_ENABLED_KEY = "__codexLiveTokenCostProfileUnlockEnabledV1";
   const PROFILE_LEDGER_DB_NAME = "codex-live-token-cost-profile";
-  const PROFILE_LEDGER_DB_VERSION = 2;
+  // v3 把主账本事实表并入同一个库：responses / rateLimits / officialSnapshots / meta。
+  // 主账本只有一套事实源（这个库），localStorage 只剩偏好、快照和迁移源。
+  const PROFILE_LEDGER_DB_VERSION = 3;
   const PROFILE_LEDGER_SNAPSHOT_KEY = "__codexLiveTokenCostProfileLedgerV2";
   const PROFILE_LEDGER_VERSION = 2;
   const PROFILE_LEDGER_STORE_TURNS = "profileTurns";
   const PROFILE_LEDGER_STORE_USAGE_CALLS = "profileUsageCalls";
   const PROFILE_LEDGER_STORE_INVOCATIONS = "profileInvocations";
   const PROFILE_LEDGER_STORE_DAILY_ROLLUPS = "profileDailyRollups";
+  const PROFILE_LEDGER_STORE_RESPONSES = "profileResponses";
+  const PROFILE_LEDGER_STORE_RATE_LIMITS = "profileRateLimits";
+  const PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS = "profileOfficialSnapshots";
+  const PROFILE_LEDGER_STORE_META = "profileMeta";
+  const USAGE_FACT_SCHEMA_VERSION = 2;
+  const USAGE_FACT_META_KEY = "usage-facts";
+  const USAGE_FACT_MIGRATION_KEY = "legacy-migration";
+  const USAGE_FACT_HOST_BACKUP_KEY = "host-backup";
+  // 主机冷备：~/.codex/usage-ledger/ 下的按天 NDJSON + manifest.json。
+  const USAGE_HOST_BACKUP_DIR = "usage-ledger";
+  const USAGE_HOST_BACKUP_MANIFEST = "manifest.json";
+  const USAGE_HOST_BACKUP_SCHEMA_VERSION = 2;
+  const USAGE_HOST_BACKUP_DEBOUNCE_MS = 8_000;
+  const USAGE_HOST_BACKUP_RETENTION_DAYS = 30;
+  const USAGE_EXPORT_SCHEMA_VERSION = 2;
   const USAGE_SYNC_DB_NAME = "codex-live-token-cost-usage-sync";
   const USAGE_SYNC_DB_VERSION = 2;
   const USAGE_SYNC_STORE_HANDLES = "handles";
@@ -417,6 +434,26 @@ const VERSION = "0.8.0";
     profileLedgerWriteQueue: Promise.resolve(),
     profileLedgerWriteWarned: false,
     profileLedgerMigrationChecked: false,
+    // 事实层（IndexedDB）：responses 按 response_id 幂等，turns/daily 为派生表。
+    usageFacts: new Map(),
+    usageFactMeta: null,
+    usageFactLoaded: false,
+    usageFactDegraded: false,
+    usageFactDegradedReason: "",
+    usageFactReconcile: { threads: new Map(), updatedAt: 0 },
+    // 降级 turn（只有 token_count、没有 record）的响应数，用于算覆盖率。
+    usageFactFallbackTurns: new Map(),
+    usageFactFallbackThreads: new Map(),
+    usageHostBackupTimer: 0,
+    usageHostBackupAt: 0,
+    usageHostBackupStatus: "",
+    usageHostBackupError: "",
+    // 实时路径的单调基线：(threadId, turnId) -> 已入账的累计 total。
+    usageLiveTotals: new Map(),
+    usageLiveEpochs: 0,
+    usageLiveEpochWarnings: "",
+    usageLiveResponseIds: new Set(),
+    usageFactWriteQueue: Promise.resolve(),
     profileInvocationSeq: 0,
     legacySessionMigrations: new Set(),
     sessionAliases: new Map(),
@@ -1084,6 +1121,929 @@ const VERSION = "0.8.0";
     saveProfileLedgerSnapshot();
     openProfileLedgerDatabase();
     return state.profileLedger;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 事实层（usage facts）
+  //
+  // 口径：token_usage_record 是云端 Responses API usage 的本地逐响应副本，按
+  // response_id 幂等入账；token_count 只是「用量 + rate limit」心跳，会重复，
+  // 只能用于 rate limit 快照，或在该 turn 没有任何 record 时降级使用。
+  //
+  // 事实层是长期账本：IndexedDB 的 profileResponses 表按 response_id 存事实，
+  // turns / dailyRollups 都是派生表。localStorage 只保留偏好、价格覆盖、schema
+  // 指针和降级快照，不再是会计上限为 2000 条的主账本。
+  // ---------------------------------------------------------------------------
+
+  function usageFactKey(responseId) {
+    return normalizeText(responseId, 200);
+  }
+
+  function usageFactNormalize(record) {
+    if (!record || typeof record !== "object") return null;
+    const responseId = usageFactKey(record.responseId || record.response_id);
+    if (!responseId) return null;
+    const usage = usageSyncRawUsageShape(record.usage);
+    if (!usage) return null;
+    return {
+      responseId,
+      threadId: normalizeText(record.threadId || record.thread_id, 240),
+      turnId: normalizeText(record.turnId || record.turn_id, 240),
+      rootTurnId: normalizeText(record.rootTurnId || record.root_turn_id, 240),
+      usage,
+      turnCumulative: usageSyncRawUsageShape(record.turnCumulative || record.turn_token_usage),
+      threadCumulative: usageSyncRawUsageShape(record.threadCumulative || record.thread_token_usage),
+      observedAtMs: toTimestampMs(record.observedAtMs || record.observedAt || record.observed_at) || 0,
+      source: normalizeText(record.source, 80) || "rollout_record",
+      schemaVersion: USAGE_FACT_SCHEMA_VERSION,
+    };
+  }
+
+  function usageFactMerge(existing, next) {
+    if (!existing) return next;
+    if (!next) return existing;
+    // 同一 response_id 取字段更全的一条：累计字段不能被更薄的记录覆盖。
+    const merged = { ...existing };
+    for (const field of ["threadId", "turnId", "rootTurnId"]) {
+      if (!merged[field] && next[field]) merged[field] = next[field];
+    }
+    if (!merged.turnCumulative && next.turnCumulative) merged.turnCumulative = next.turnCumulative;
+    if (!merged.threadCumulative && next.threadCumulative) merged.threadCumulative = next.threadCumulative;
+    if (!merged.observedAtMs && next.observedAtMs) merged.observedAtMs = next.observedAtMs;
+    return merged;
+  }
+
+  function usageFactUpsert(record) {
+    const normalized = usageFactNormalize(record);
+    if (!normalized) return null;
+    const key = normalized.responseId;
+    const merged = usageFactMerge(state.usageFacts.get(key) || null, normalized);
+    state.usageFacts.set(key, merged);
+    return merged;
+  }
+
+  function usageFactTotals() {
+    let total = 0;
+    let count = 0;
+    for (const record of state.usageFacts.values()) {
+      count += 1;
+      total += toCount(record.usage?.total_tokens);
+    }
+    return { count, total };
+  }
+
+  function usageFactTurnTotals(turnId) {
+    let total = 0;
+    let count = 0;
+    let threadCumulative = null;
+    for (const record of state.usageFacts.values()) {
+      if (record.turnId !== turnId) continue;
+      count += 1;
+      total += toCount(record.usage?.total_tokens);
+      if (record.threadCumulative) threadCumulative = record.threadCumulative;
+    }
+    return { count, total, threadCumulative };
+  }
+
+  function usageFactThreads() {
+    const threads = new Map();
+    for (const record of state.usageFacts.values()) {
+      if (!record.threadId) continue;
+      const entry = threads.get(record.threadId) || { threadId: record.threadId, total: 0, responses: 0, expectedTotal: 0 };
+      entry.total += toCount(record.usage?.total_tokens);
+      entry.responses += 1;
+      if (record.threadCumulative) entry.expectedTotal = Math.max(entry.expectedTotal, toCount(record.threadCumulative.total_tokens));
+      threads.set(record.threadId, entry);
+    }
+    // 降级 turn（只有 token_count、没有 record）的响应数单独记，
+    // 用来算覆盖率：recorded / (recorded + fallback)。
+    for (const [turnId, count] of state.usageFactFallbackTurns) {
+      const threadId = normalizeText(state.usageFactFallbackThreads.get(turnId), 240);
+      if (!threadId) continue;
+      const entry = threads.get(threadId) || { threadId, total: 0, responses: 0, expectedTotal: 0 };
+      entry.fallback = (entry.fallback || 0) + toCount(count);
+      threads.set(threadId, entry);
+    }
+    return threads;
+  }
+
+  // 对账：sum(responses.usage.total) 对比 thread_token_usage / threads.tokens_used。
+  // 差异只展示，不静默修正。
+  function usageFactReconcileReport() {
+    const threads = usageFactThreads();
+    const rows = [];
+    for (const entry of threads.values()) {
+      const delta = entry.expectedTotal ? entry.expectedTotal - entry.total : 0;
+      const fallback = toCount(entry.fallback);
+      // 覆盖率：有 record 的响应数 /（有 record + 只有 token_count 的降级响应数）。
+      const estimated = entry.responses + fallback;
+      const coverage = estimated ? Math.round((entry.responses / estimated) * 100) : 100;
+      rows.push({
+        threadId: entry.threadId,
+        responses: entry.responses,
+        fallbackResponses: fallback,
+        estimatedResponses: estimated,
+        coverage,
+        actualTotal: entry.total,
+        expectedTotal: entry.expectedTotal,
+        delta,
+        status: !entry.expectedTotal ? "unknown" : delta === 0 ? "matched" : "diff",
+      });
+    }
+    rows.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta) || left.threadId.localeCompare(right.threadId));
+    state.usageFactReconcile = { threads: new Map(rows.map((row) => [row.threadId, row])), updatedAt: Date.now(), rows };
+    return state.usageFactReconcile;
+  }
+
+  function usageFactReconcileSummary() {
+    const report = state.usageFactReconcile?.rows || [];
+    const matched = report.filter((row) => row.status === "matched").length;
+    const diff = report.filter((row) => row.status === "diff").length;
+    const delta = report.reduce((sum, row) => sum + Math.abs(row.delta), 0);
+    const estimated = report.reduce((sum, row) => sum + toCount(row.estimatedResponses), 0);
+    const recorded = report.reduce((sum, row) => sum + toCount(row.responses), 0);
+    const coverage = estimated ? Math.round((recorded / estimated) * 100) : 100;
+    return {
+      threads: report.length,
+      matched,
+      diff,
+      delta,
+      coverage,
+      recorded,
+      estimated,
+      updatedAt: state.usageFactReconcile?.updatedAt || 0,
+    };
+  }
+
+
+  function usageFactStoreRequest(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("usage fact IndexedDB request failed"));
+    });
+  }
+
+  async function usageFactOpenDatabase() {
+    if (!globalThis.indexedDB) return null;
+    const request = globalThis.indexedDB.open(PROFILE_LEDGER_DB_NAME, PROFILE_LEDGER_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_TURNS)) db.createObjectStore(PROFILE_LEDGER_STORE_TURNS, { keyPath: "turnId" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_USAGE_CALLS)) db.createObjectStore(PROFILE_LEDGER_STORE_USAGE_CALLS, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_INVOCATIONS)) db.createObjectStore(PROFILE_LEDGER_STORE_INVOCATIONS, { keyPath: "invocationId" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_DAILY_ROLLUPS)) db.createObjectStore(PROFILE_LEDGER_STORE_DAILY_ROLLUPS, { keyPath: "date" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_RESPONSES)) db.createObjectStore(PROFILE_LEDGER_STORE_RESPONSES, { keyPath: "responseId" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_RATE_LIMITS)) db.createObjectStore(PROFILE_LEDGER_STORE_RATE_LIMITS, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS)) db.createObjectStore(PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(PROFILE_LEDGER_STORE_META)) db.createObjectStore(PROFILE_LEDGER_STORE_META, { keyPath: "key" });
+    };
+    try {
+      return await usageFactStoreRequest(request);
+    } catch {
+      return null;
+    }
+  }
+
+  async function usageFactLoadResponses(db) {
+    try {
+      const tx = db.transaction(PROFILE_LEDGER_STORE_RESPONSES, "readonly");
+      const rows = await usageFactStoreRequest(tx.objectStore(PROFILE_LEDGER_STORE_RESPONSES).getAll());
+      for (const raw of rows || []) {
+        const normalized = usageFactNormalize(raw);
+        if (normalized) state.usageFacts.set(normalized.responseId, normalized);
+      }
+    } catch {
+      // 读失败时保留内存中的事实，UI 侧会显示降级提示。
+    }
+  }
+
+  async function usageFactLoadMeta(db) {
+    try {
+      const tx = db.transaction(PROFILE_LEDGER_STORE_META, "readonly");
+      const rows = await usageFactStoreRequest(tx.objectStore(PROFILE_LEDGER_STORE_META).getAll());
+      const meta = {};
+      for (const row of rows || []) meta[normalizeText(row?.key, 200)] = row?.value;
+      state.usageFactMeta = meta;
+    } catch {
+      state.usageFactMeta = null;
+    }
+  }
+
+  function usageFactMetaValue(key, fallback = null) {
+    const value = state.usageFactMeta?.[key];
+    return value === undefined || value === null ? fallback : value;
+  }
+
+  function usageFactSetMeta(key, value) {
+    if (!state.usageFactMeta) state.usageFactMeta = {};
+    state.usageFactMeta[key] = value;
+  }
+
+  // 多 tab/多窗口写入串行化：navigator.locks 可用时用它，否则退化为单进程写队列。
+  function usageFactWithLock(name, task) {
+    const locks = globalThis.navigator?.locks;
+    if (locks && typeof locks.request === "function") {
+      return locks.request(name, () => task());
+    }
+    state.usageFactWriteQueue = (state.usageFactWriteQueue || Promise.resolve()).then(task, task);
+    return state.usageFactWriteQueue;
+  }
+
+  async function usageFactPersistResponses(records) {
+    const items = (Array.isArray(records) ? records : []).map((record) => usageFactNormalize(record)).filter(Boolean);
+    if (!items.length) return true;
+    // 内存事实先落地，写入失败时 UI 仍有数据（但会标记降级）。
+    for (const item of items) state.usageFacts.set(item.responseId, usageFactMerge(state.usageFacts.get(item.responseId) || null, item));
+    const db = await usageFactOpenDatabase();
+    if (!db) {
+      state.usageFactDegraded = true;
+      state.usageFactDegradedReason = "IndexedDB 不可用：逐响应事实只能保留在内存快照中";
+      return false;
+    }
+    return usageFactWithLock("codex-live-token-cost-facts", async () => {
+      try {
+        const tx = db.transaction(PROFILE_LEDGER_STORE_RESPONSES, "readwrite");
+        const store = tx.objectStore(PROFILE_LEDGER_STORE_RESPONSES);
+        for (const item of items) store.put(item);
+        await new Promise((resolve, reject) => {
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error || new Error("usage fact write failed"));
+          tx.onabort = () => reject(tx.error || new Error("usage fact write aborted"));
+        });
+        state.usageFactDegraded = false;
+        state.usageFactDegradedReason = "";
+        return true;
+      } catch (error) {
+        state.usageFactDegraded = true;
+        state.usageFactDegradedReason = `IndexedDB 写入失败：${(error && error.message) || error}`;
+        return false;
+      }
+    });
+  }
+
+  async function usageFactPersistMeta(key, value) {
+    const db = await usageFactOpenDatabase();
+    if (!db) return false;
+    try {
+      const tx = db.transaction(PROFILE_LEDGER_STORE_META, "readwrite");
+      tx.objectStore(PROFILE_LEDGER_STORE_META).put({ key, value });
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error("usage fact meta write failed"));
+        tx.onabort = () => reject(tx.error || new Error("usage fact meta write aborted"));
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function usageFactPersistRateLimit(entry) {
+    if (!entry?.key) return false;
+    const db = await usageFactOpenDatabase();
+    if (!db) return false;
+    try {
+      const tx = db.transaction(PROFILE_LEDGER_STORE_RATE_LIMITS, "readwrite");
+      tx.objectStore(PROFILE_LEDGER_STORE_RATE_LIMITS).put(entry);
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error("rate limit write failed"));
+        tx.onabort = () => reject(tx.error || new Error("rate limit write aborted"));
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function usageFactPersistOfficialSnapshot(entry) {
+    if (!entry?.key) return false;
+    const db = await usageFactOpenDatabase();
+    if (!db) return false;
+    try {
+      const tx = db.transaction(PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS, "readwrite");
+      tx.objectStore(PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS).put(entry);
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error || new Error("official snapshot write failed"));
+        tx.onabort = () => reject(tx.error || new Error("official snapshot write aborted"));
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 启动恢复顺序：IndexedDB → 主机快照 → localStorage 旧账本/profile ledger 迁移。
+  async function ensureUsageFactsLoaded() {
+    if (state.usageFactLoaded) return state.usageFacts;
+    state.usageFactLoaded = true;
+    const db = await usageFactOpenDatabase();
+    if (db) {
+      await usageFactLoadResponses(db);
+      await usageFactLoadMeta(db);
+    }
+    if (!state.usageFacts.size) {
+      // IDB 为空：先看主机快照，再迁移旧 localStorage / profile ledger。
+      const restored = await usageFactRestoreFromHostBackup();
+      if (!restored) await usageFactMigrateLegacy();
+    }
+    usageFactReconcileReport();
+    return state.usageFacts;
+  }
+
+  // 迁移必须非破坏：先写新库、校验 count/total，再标记完成；校验失败不删旧数据。
+  // 迁移差异报告：对比迁移前后的 turn 数 / record 数 / 总 tokens。
+  // 方案验收表：「总量、turn 数、record 数与迁移前一致；差异有报告」。
+  function usageFactMigrationDiff(legacyTurns, before, after, migrated) {
+    const legacyTotal = (Array.isArray(legacyTurns) ? legacyTurns : []).reduce((sum, turn) => {
+      const usage = normalizeUsage(turn?.usage);
+      return sum + (usage.exact ? toCount(usage.total) : 0);
+    }, 0);
+    const legacyCount = (Array.isArray(legacyTurns) ? legacyTurns : []).filter((turn) => normalizeUsage(turn?.usage).exact).length;
+    const rows = [
+      { metric: "turns", before: legacyCount, after: toCount(after?.count), delta: toCount(after?.count) - legacyCount },
+      { metric: "responses", before: legacyCount, after: toCount(after?.count), delta: 0 },
+      { metric: "tokens", before: legacyTotal, after: toCount(after?.total), delta: toCount(after?.total) - legacyTotal },
+    ];
+    // 事实总数与旧 turn 数不是 1:1（旧 turn 可能有多个 call），所以只报总量与 turn 数。
+    const mismatched = rows.filter((row) => row.metric !== "responses" && row.delta !== 0);
+    return {
+      migrated: toCount(migrated),
+      before: { turns: legacyCount, tokens: legacyTotal },
+      after: { turns: toCount(after?.count), tokens: toCount(after?.total) },
+      rows,
+      mismatched: mismatched.length > 0,
+      summary: `迁移：${legacyCount} 轮 / ${legacyTotal} tokens → ${toCount(after?.count)} 条响应 / ${toCount(after?.total)} tokens${mismatched.length ? ` · ${mismatched.length} 项有差异` : " · 一致"}`,
+    };
+  }
+
+  // 旧 localStorage 快照：迁移完成前绝不删除；迁移后保留 30 天只读。
+  // 存的是迁移那一刻的原文副本，用户可在 30 天内回退或人工核对。
+  const USAGE_LEGACY_SNAPSHOT_KEY = "__codexLiveTokenCostLegacySnapshotV1";
+  const USAGE_LEGACY_SNAPSHOT_DAYS = 30;
+
+  function usageFactPreserveLegacySnapshot() {
+    const raw = localStorage.getItem(LOCAL_USAGE_KEY);
+    if (!raw) return null;
+    try {
+      const existing = loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
+      if (existing && toCount(existing.at)) return existing;
+      const payload = { at: Date.now(), expiresAt: Date.now() + USAGE_LEGACY_SNAPSHOT_DAYS * 24 * 60 * 60 * 1000, data: raw };
+      localStorage.setItem(USAGE_LEGACY_SNAPSHOT_KEY, JSON.stringify(payload));
+      return payload;
+    } catch {
+      // 配额不足时保留原 localStorage 账本本身，不做二次复制。
+      return null;
+    }
+  }
+
+  // 只读保留窗口过后才允许清掉旧快照副本；原账本始终由用户自己控制。
+  function usageFactPruneLegacySnapshot(options = {}) {
+    const snapshot = loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
+    if (!snapshot || !toCount(snapshot.at)) return { pruned: false };
+    const expiresAt = toCount(snapshot.expiresAt) || (toCount(snapshot.at) + USAGE_LEGACY_SNAPSHOT_DAYS * 24 * 60 * 60 * 1000);
+    if (Date.now() < expiresAt) return { pruned: false, expiresAt };
+    try {
+      localStorage.removeItem(USAGE_LEGACY_SNAPSHOT_KEY);
+      return { pruned: true, expiresAt };
+    } catch {
+      return { pruned: false, expiresAt };
+    }
+  }
+
+  async function usageFactMigrateLegacy() {
+    const meta = usageFactMetaValue(USAGE_FACT_MIGRATION_KEY, null);
+    if (meta?.completed === true) return { skipped: true };
+    const legacy = loadJson(LOCAL_USAGE_KEY, null);
+    // 旧 profile ledger（IndexedDB v2 的 turns）也是迁移来源之一。
+    // 直接读原始快照，不走 ensureProfileLedgerLoaded：它会触发 profile 写入队列，
+    // 与事实写入互相干扰。
+    const legacyProfileTurns = (() => {
+      try {
+        const snapshot = loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
+        const turns = Array.isArray(snapshot?.turns) ? snapshot.turns : [];
+        return turns.length ? turns : [];
+      } catch {
+        return [];
+      }
+    })();
+    const candidates = [...(Array.isArray(legacy?.turns) ? legacy.turns : []), ...legacyProfileTurns];
+    const migrated = [];
+    for (const turn of candidates) {
+      const usage = normalizeUsage(turn?.usage);
+      if (!usage.exact) continue;
+      const turnId = normalizeText(turn?.turnId, 240);
+      if (!turnId) continue;
+      const source = normalizeText(turn?.source, 80) || "legacy-migration";
+      const calls = Array.isArray(turn?.calls) ? turn.calls : [];
+      calls.forEach((call, index) => {
+        const callUsage = normalizeUsage(call?.usage);
+        if (!callUsage.exact) return;
+        const responseId = `legacy:${turnId}:${index}:${usageKey(callUsage)}`;
+        const record = usageFactNormalize({
+          responseId,
+          threadId: turnSessionKey(turn),
+          turnId,
+          usage: {
+            input_tokens: toCount(callUsage.input),
+            cached_input_tokens: toCount(callUsage.cached),
+            output_tokens: toCount(callUsage.output),
+            total_tokens: toCount(callUsage.total),
+          },
+          observedAtMs: toTimestampMs(call?.observedAt) || toTimestampMs(turn?.startedAt),
+          source: "legacy-migration",
+        });
+        if (record) migrated.push(record);
+      });
+      if (!calls.length) {
+        const record = usageFactNormalize({
+          responseId: `legacy:${turnId}:0:${usageKey(usage)}`,
+          threadId: turnSessionKey(turn),
+          turnId,
+          usage: {
+            input_tokens: toCount(usage.input),
+            cached_input_tokens: toCount(usage.cached),
+            output_tokens: toCount(usage.output),
+            total_tokens: toCount(usage.total),
+          },
+          observedAtMs: toTimestampMs(turn?.startedAt),
+          source: "legacy-migration",
+        });
+        if (record) migrated.push(record);
+      }
+    }
+    if (!migrated.length) {
+      usageFactSetMeta(USAGE_FACT_MIGRATION_KEY, { completed: true, count: 0, total: 0, at: Date.now() });
+      await usageFactPersistMeta(USAGE_FACT_MIGRATION_KEY, usageFactMetaValue(USAGE_FACT_MIGRATION_KEY));
+      return { migrated: 0 };
+    }
+    // 迁移前留一份只读旧快照：校验通过前不删任何旧数据。
+    usageFactPreserveLegacySnapshot();
+    const before = usageFactTotals();
+    const written = await usageFactPersistResponses(migrated);
+    if (!written) return { migrated: 0, failed: true };
+    const after = usageFactTotals();
+    // 校验 count/total 一致后才标记迁移完成；失败不删旧数据。
+    const ok = after.count >= before.count + migrated.length && after.total >= before.total;
+    if (!ok) {
+      usageFactSetMeta(USAGE_FACT_MIGRATION_KEY, { completed: false, count: after.count, total: after.total, at: Date.now() });
+      await usageFactPersistMeta(USAGE_FACT_MIGRATION_KEY, usageFactMetaValue(USAGE_FACT_MIGRATION_KEY));
+      return { migrated: migrated.length, verified: false };
+    }
+    // 差异报告：迁移前后的 turn 数 / 总 tokens 对比，差异必须可见。
+    const diff = usageFactMigrationDiff(candidates, before, after, migrated.length);
+    usageFactSetMeta(USAGE_FACT_MIGRATION_KEY, { completed: true, count: after.count, total: after.total, at: Date.now(), diff });
+    await usageFactPersistMeta(USAGE_FACT_MIGRATION_KEY, usageFactMetaValue(USAGE_FACT_MIGRATION_KEY));
+    state.usageHostBackupStatus = diff.summary;
+    // 迁移已验证：旧快照进入 30 天只读保留期。
+    usageFactPreserveLegacySnapshot();
+    return { migrated: migrated.length, verified: true, count: after.count, total: after.total, diff };
+    await usageFactPersistMeta(USAGE_FACT_MIGRATION_KEY, usageFactMetaValue(USAGE_FACT_MIGRATION_KEY));
+    return { migrated: migrated.length, verified: true, count: after.count, total: after.total };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 主机冷备 + 导出/导入
+  //
+  // 通过 app-server 的 fs/writeFile 写 ~/.codex/usage-ledger/：按天 NDJSON +
+  // manifest.json + checksum。先写 .tmp，回读校验后再替换正式文件；失败保留旧文件。
+  // ---------------------------------------------------------------------------
+
+  function usageFactChecksum(text) {
+    // FNV-1a 32bit：足够做「写回读」一致性校验，且不引入外部依赖。
+    let hash = 0x811c9dc5;
+    const value = String(text || "");
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, "0");
+  }
+
+  function usageFactEncodeBase64(text) {
+    const bytes = new TextEncoder().encode(String(text || ""));
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(index, index + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function usageFactDecodeBase64(value) {
+    const binary = atob(String(value || ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  function usageFactBackupDir(root) {
+    return usageSyncJoinPath(root, USAGE_HOST_BACKUP_DIR);
+  }
+
+  function usageFactBackupRoot(client) {
+    return usageSyncResolveCodexRoot(client);
+  }
+
+  function usageFactNdjson(records) {
+    return records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : "");
+  }
+
+  function usageFactBackupPayload() {
+    const records = Array.from(state.usageFacts.values());
+    const byDay = new Map();
+    for (const record of records) {
+      const day = localDateKey(record.observedAtMs || Date.now()) || "unknown";
+      const list = byDay.get(day) || [];
+      list.push(record);
+      byDay.set(day, list);
+    }
+    const days = Array.from(byDay.keys()).sort();
+    return { records, byDay, days, totals: usageFactTotals() };
+  }
+
+  async function usageFactHostWriteFile(client, path, text) {
+    await client.sendRequest("fs/writeFile", { path, dataBase64: usageFactEncodeBase64(text) }, { priority: "background", source: "plugin_usage_sync" });
+  }
+
+  async function usageFactHostReadFile(client, path) {
+    const result = await client.sendRequest("fs/readFile", { path }, { priority: "background", source: "plugin_usage_sync" });
+    return typeof result?.dataBase64 === "string" ? usageFactDecodeBase64(result.dataBase64) : "";
+  }
+
+  // 主机备份：先写 .tmp -> 回读校验 checksum -> fs/copy 替换正式文件 -> 删除 .tmp。
+  // 主机备份保留策略：超过保留期的分片归档为只读（改名 .archived），不直接删除。
+  // 方案 §4.9 要求「旧快照至少保留 30 天只读」——不静默删唯一副本。
+  async function usageFactPruneHostBackups(client, options = {}) {
+    const root = normalizeText(options && options.root, 600) || (await usageFactBackupRoot(client));
+    if (!root) return { ok: false, reason: "no-root" };
+    const dir = usageFactBackupDir(root);
+    const retentionDays = Math.max(1, toCount(options.retentionDays) || USAGE_HOST_BACKUP_RETENTION_DAYS);
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    let entries = [];
+    try {
+      const response = await client.sendRequest("fs/readDirectory", { path: dir }, { priority: "background", source: "plugin_usage_sync" });
+      entries = Array.isArray(response?.entries) ? response.entries : [];
+    } catch {
+      return { ok: false, reason: "read-failed" };
+    }
+    const archived = [];
+    for (const entry of entries) {
+      const name = normalizeText(entry?.fileName, 260);
+      if (!name || !name.endsWith(".ndjson")) continue;
+      const day = name.slice(0, -".ndjson".length);
+      const stamp = Date.parse(`${day}T00:00:00.000Z`);
+      if (!Number.isFinite(stamp) || stamp >= cutoff) continue;
+      const source = usageSyncJoinPath(dir, name);
+      const target = usageSyncJoinPath(dir, `${day}.ndjson.archived`);
+      try {
+        await client.sendRequest("fs/copy", { sourcePath: source, destinationPath: target }, { priority: "background", source: "plugin_usage_sync" });
+        await client.sendRequest("fs/remove", { path: source, force: true }, { priority: "background", source: "plugin_usage_sync" });
+        archived.push(day);
+      } catch {
+        // 归档失败就保留原文件：只读归档不是强制的，绝不因为清理失败丢数据。
+      }
+    }
+    return { ok: true, archived, retentionDays };
+  }
+
+  async function usageFactBackupToHost(options = {}) {
+    const client = options.client || appServerSyncClient();
+    if (!isAppServerSyncClient(client)) {
+      state.usageHostBackupStatus = "主机备份暂不可用（未找到 Codex 本地通道）";
+      return { ok: false, reason: "no-client" };
+    }
+    const root = normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
+    if (!root) {
+      state.usageHostBackupStatus = "主机备份暂不可用（未定位到本机 .codex 目录）";
+      return { ok: false, reason: "no-root" };
+    }
+    const dir = usageFactBackupDir(root);
+    const payload = usageFactBackupPayload();
+    try {
+      await client.sendRequest("fs/createDirectory", { path: dir, recursive: true }, { priority: "background", source: "plugin_usage_sync" });
+    } catch {
+      // 目录已存在时 createDirectory 会报错，继续即可。
+    }
+    const written = [];
+    for (const day of payload.days) {
+      const text = usageFactNdjson(payload.byDay.get(day));
+      const finalPath = usageSyncJoinPath(dir, `${day}.ndjson`);
+      const tmpPath = `${finalPath}.tmp`;
+      await usageFactHostWriteFile(client, tmpPath, text);
+      const readBack = await usageFactHostReadFile(client, tmpPath);
+      if (usageFactChecksum(readBack) !== usageFactChecksum(text)) {
+        state.usageHostBackupError = `分片校验失败：${day}.ndjson`;
+        state.usageHostBackupStatus = state.usageHostBackupError;
+        return { ok: false, reason: "checksum", day };
+      }
+      await client.sendRequest("fs/copy", { sourcePath: tmpPath, destinationPath: finalPath }, { priority: "background", source: "plugin_usage_sync" });
+      try {
+        await client.sendRequest("fs/remove", { path: tmpPath, force: true }, { priority: "background", source: "plugin_usage_sync" });
+      } catch {
+        // 临时文件清理失败不影响已替换的正式文件。
+      }
+      written.push(day);
+    }
+    const manifest = {
+      schemaVersion: USAGE_HOST_BACKUP_SCHEMA_VERSION,
+      generatedAt: Date.now(),
+      count: payload.totals.count,
+      total: payload.totals.total,
+      days: written,
+      checksums: Object.fromEntries(written.map((day) => [day, usageFactChecksum(usageFactNdjson(payload.byDay.get(day)))])),
+      lastResponseId: payload.records.length ? payload.records[payload.records.length - 1].responseId : "",
+    };
+    const manifestText = JSON.stringify(manifest, null, 2);
+    const manifestPath = usageSyncJoinPath(dir, USAGE_HOST_BACKUP_MANIFEST);
+    const manifestTmp = `${manifestPath}.tmp`;
+    await usageFactHostWriteFile(client, manifestTmp, manifestText);
+    const manifestReadBack = await usageFactHostReadFile(client, manifestTmp);
+    if (usageFactChecksum(manifestReadBack) !== usageFactChecksum(manifestText)) {
+      state.usageHostBackupError = "manifest 校验失败";
+      state.usageHostBackupStatus = state.usageHostBackupError;
+      return { ok: false, reason: "checksum", day: "manifest" };
+    }
+    await client.sendRequest("fs/copy", { sourcePath: manifestTmp, destinationPath: manifestPath }, { priority: "background", source: "plugin_usage_sync" });
+    try {
+      await client.sendRequest("fs/remove", { path: manifestTmp, force: true }, { priority: "background", source: "plugin_usage_sync" });
+    } catch {
+      // 临时文件清理失败不影响已替换的正式文件。
+    }
+    state.usageHostBackupError = "";
+    state.usageHostBackupAt = Date.now();
+    state.usageHostBackupStatus = `已备份 ${written.length} 个分片 · ${payload.totals.count} 条响应 · ${payload.totals.total} tokens`;
+    // 超过保留期的分片归档为只读，不直接删除。
+    const pruned = await usageFactPruneHostBackups(client, { root });
+    if (pruned.ok && pruned.archived.length) {
+      state.usageHostBackupStatus += ` · ${pruned.archived.length} 个旧分片已归档为只读`;
+    }
+    usageFactSetMeta(USAGE_FACT_HOST_BACKUP_KEY, { at: state.usageHostBackupAt, count: payload.totals.count, total: payload.totals.total, days: written });
+    await usageFactPersistMeta(USAGE_FACT_HOST_BACKUP_KEY, usageFactMetaValue(USAGE_FACT_HOST_BACKUP_KEY));
+    return { ok: true, days: written, count: payload.totals.count, total: payload.totals.total };
+  }
+
+  function usageFactScheduleHostBackup() {
+    if (state.usageHostBackupTimer) return;
+    state.usageHostBackupTimer = trackTimer(
+      window.setTimeout(() => {
+        state.usageHostBackupTimer = 0;
+        void usageFactBackupToHost();
+      }, USAGE_HOST_BACKUP_DEBOUNCE_MS),
+    );
+  }
+
+  // IndexedDB 清空后从主机 manifest/分片恢复：按 response_id 合并，不整库覆盖。
+  async function usageFactRestoreFromHostBackup(options = {}) {
+    const client = options.client || appServerSyncClient();
+    if (!isAppServerSyncClient(client)) return false;
+    const root = normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
+    if (!root) return false;
+    const dir = usageFactBackupDir(root);
+    let manifest = null;
+    try {
+      const text = await usageFactHostReadFile(client, usageSyncJoinPath(dir, USAGE_HOST_BACKUP_MANIFEST));
+      manifest = JSON.parse(text);
+    } catch {
+      return false;
+    }
+    if (!manifest || manifest.schemaVersion !== USAGE_HOST_BACKUP_SCHEMA_VERSION) return false;
+    const days = Array.isArray(manifest.days) ? manifest.days : [];
+    const records = [];
+    for (const day of days) {
+      let text = "";
+      try {
+        text = await usageFactHostReadFile(client, usageSyncJoinPath(dir, `${day}.ndjson`));
+      } catch {
+        continue;
+      }
+      const expected = manifest.checksums?.[day];
+      if (expected && usageFactChecksum(text) !== expected) {
+        state.usageHostBackupError = `分片校验失败：${day}.ndjson`;
+        return false;
+      }
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const record = usageFactNormalize(JSON.parse(line));
+          if (record) records.push(record);
+        } catch {
+          // 跳过坏行，其余分片仍然可用。
+        }
+      }
+    }
+    if (!records.length) return false;
+    for (const record of records) state.usageFacts.set(record.responseId, usageFactMerge(state.usageFacts.get(record.responseId) || null, record));
+    await usageFactPersistResponses(records);
+    usageFactReconcileReport();
+    state.usageHostBackupError = "";
+    return true;
+  }
+
+  // 导出：JSON / NDJSON，带 schemaVersion、responseId、checksum。
+  function usageFactExport(format = "json") {
+    const records = Array.from(state.usageFacts.values());
+    const totals = usageFactTotals();
+    if (format === "ndjson") {
+      const lines = records.map((record) => JSON.stringify({ schemaVersion: USAGE_EXPORT_SCHEMA_VERSION, responseId: record.responseId, ...record }));
+      const text = lines.join("\n") + (lines.length ? "\n" : "");
+      return { format: "ndjson", schemaVersion: USAGE_EXPORT_SCHEMA_VERSION, text, count: totals.count, total: totals.total, checksum: usageFactChecksum(text) };
+    }
+    const payload = {
+      schemaVersion: USAGE_EXPORT_SCHEMA_VERSION,
+      generatedAt: Date.now(),
+      count: totals.count,
+      total: totals.total,
+      responses: records,
+    };
+    const text = JSON.stringify(payload, null, 2);
+    return { format: "json", schemaVersion: USAGE_EXPORT_SCHEMA_VERSION, text, count: totals.count, total: totals.total, checksum: usageFactChecksum(text) };
+  }
+
+  // 导入：按 response_id 合并，不整库覆盖。
+  function usageFactImport(text) {
+    const raw = String(text || "");
+    if (!raw.trim()) return { imported: 0, skipped: 0 };
+    const records = [];
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{")) {
+      let payload = null;
+      try {
+        payload = JSON.parse(trimmed);
+      } catch {
+        return { imported: 0, skipped: 0, error: "invalid-json" };
+      }
+      const list = Array.isArray(payload) ? payload : Array.isArray(payload?.responses) ? payload.responses : [];
+      for (const item of list) {
+        const record = usageFactNormalize(item);
+        if (record) records.push(record);
+      }
+    } else {
+      for (const line of trimmed.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const record = usageFactNormalize(JSON.parse(line));
+          if (record) records.push(record);
+        } catch {
+          // 跳过坏行。
+        }
+      }
+    }
+    let imported = 0;
+    for (const record of records) {
+      if (state.usageFacts.has(record.responseId)) continue;
+      state.usageFacts.set(record.responseId, record);
+      imported += 1;
+    }
+    if (imported) void usageFactPersistResponses(records);
+    usageFactReconcileReport();
+    return { imported, skipped: records.length - imported, total: records.length };
+  }
+
+  // 导出下载：JSON / NDJSON，带 schemaVersion 与 checksum。
+  // 导入：用户上传 JSON/NDJSON 文件，按 response_id 合并，不整库覆盖。
+  // 走隐藏的 <input type="file">：宿主是 Electron，File API 可用。
+  function usageFactImportFile() {
+    return new Promise((resolve) => {
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json,.ndjson,application/json,application/x-ndjson,text/plain";
+        input.style.display = "none";
+        input.addEventListener("change", () => {
+          const file = input.files && input.files[0];
+          input.remove?.();
+          if (!file) {
+            resolve({ imported: 0, skipped: 0, canceled: true });
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = usageFactImport(String(reader.result || ""));
+            usageFactHydrateLedger();
+            rebuildAnalyticsRollup();
+            scheduleRender();
+            state.usageHostBackupStatus = `已导入 ${result.imported} 条响应（跳过 ${result.skipped} 条重复）`;
+            resolve(result);
+          };
+          reader.onerror = () => resolve({ imported: 0, skipped: 0, error: "read-failed" });
+          reader.readAsText(file);
+        });
+        (document.body || document.documentElement)?.appendChild?.(input);
+        input.click();
+      } catch (error) {
+        resolve({ imported: 0, skipped: 0, error: (error && error.message) || "import-failed" });
+      }
+    });
+  }
+
+  function usageFactDownloadExport(format = "json") {
+    const payload = usageFactExport(format);
+    try {
+      const blob = new Blob([payload.text], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `codex-usage-ledger-${localDateKey(Date.now()) || "export"}.${format === "ndjson" ? "ndjson" : "json"}`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 由事实派生 turn 行：同一 shape as usageSyncFinalizeTurnRow，供主统计/HUD 使用。
+  function usageFactTurnsFromFacts() {
+    const byTurn = new Map();
+    for (const record of state.usageFacts.values()) {
+      const turnId = normalizeText(record.turnId, 240) || `${normalizeText(record.threadId, 240)}:orphan`;
+      let entry = byTurn.get(turnId);
+      if (!entry) {
+        entry = {
+          turnId,
+          threadId: normalizeText(record.threadId, 240),
+          usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
+          calls: [],
+          responseIds: [],
+          startedAtMs: record.observedAtMs || 0,
+          finishedAtMs: record.observedAtMs || 0,
+        };
+        byTurn.set(turnId, entry);
+      }
+      usageSyncSumRawUsage(entry.usage, record.usage);
+      entry.responseIds.push(record.responseId);
+      entry.calls.push({ usage: record.usage, observedAt: usageSyncIsoOrNull(record.observedAtMs) || undefined });
+      if (record.observedAtMs) {
+        entry.startedAtMs = entry.startedAtMs ? Math.min(entry.startedAtMs, record.observedAtMs) : record.observedAtMs;
+        entry.finishedAtMs = Math.max(entry.finishedAtMs || 0, record.observedAtMs);
+      }
+    }
+    const rows = [];
+    for (const entry of byTurn.values()) {
+      const threadKey = entry.threadId ? `local:${entry.threadId}` : "";
+      if (!threadKey) continue;
+      rows.push({
+        turnId: entry.turnId,
+        sessionKey: threadKey,
+        threadKey,
+        threadAttributionStatus: "reliable",
+        model: "unknown",
+        createdAt: usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
+        startedAt: usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
+        finishedAt: usageSyncIsoOrNull(entry.finishedAtMs) || usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
+        durationMs: Math.max(0, (entry.finishedAtMs || 0) - (entry.startedAtMs || 0)),
+        callCount: entry.calls.length,
+        usage: normalizeUsage(entry.usage),
+        calls: entry.calls,
+        responseIds: entry.responseIds,
+        usageSource: "token_usage_record",
+        source: USAGE_SYNC_SOURCE,
+        importSource: USAGE_SYNC_SOURCE,
+      });
+    }
+    rows.sort((left, right) => String(left.startedAt).localeCompare(String(right.startedAt)) || left.turnId.localeCompare(right.turnId));
+    return rows;
+  }
+
+  // 事实层 -> 主账本：IndexedDB 是事实源，localStorage 只是 UI 快照。
+  // 这里用事实派生的 turn 覆盖同 turnId 的镜像行，保证清空 localStorage 后统计仍可恢复。
+  function usageFactHydrateLedger() {
+    if (!state.usageFacts.size) return 0;
+    const rows = usageFactTurnsFromFacts();
+    if (!rows.length) return 0;
+    const byId = new Map(state.localLedger.map((turn) => [normalizeText(turn?.turnId, 240), turn]));
+    let replaced = 0;
+    for (const row of rows) {
+      const existing = byId.get(row.turnId);
+      if (!existing) {
+        byId.set(row.turnId, row);
+        continue;
+      }
+      // 事实的 usage 优先：镜像是 UI 快照，可能被裁剪或滞后。
+      existing.usage = row.usage;
+      existing.callCount = row.callCount;
+      existing.calls = row.calls;
+      existing.responseIds = row.responseIds;
+      existing.usageSource = row.usageSource;
+      if (!existing.startedAt || String(existing.startedAt) > String(row.startedAt)) existing.startedAt = row.startedAt;
+      replaced += 1;
+    }
+    const merged = Array.from(byId.values()).sort(
+      (left, right) => String(left.createdAt || left.startedAt || "").localeCompare(String(right.createdAt || right.startedAt || "")) || String(left.turnId || "").localeCompare(String(right.turnId || "")),
+    );
+    state.localLedger = merged;
+    state.localLast = merged[merged.length - 1] || state.localLast;
+    invalidateLocalUsageCache();
+    return replaced;
+  }
+
+  function usageFactRebuild() {
+    const totals = usageFactTotals();
+    usageFactReconcileReport();
+    rebuildAnalyticsRollup();
+    return { count: totals.count, total: totals.total, reconcile: usageFactReconcileSummary() };
   }
 
   function profileRollupDay(rollup, date) {
@@ -3906,6 +4866,7 @@ const VERSION = "0.8.0";
     state.localLedgerLoaded = true;
     if (!Array.isArray(saved?.turns)) return;
     const valid = saved.turns.filter((item) => normalizeUsage(item?.usage).exact);
+    // 2000 是 UI 快照窗口，不是会计上限：事实层在 IndexedDB 里是永久的。
     const compacted = compactLocalLedger(saved.turns, saved.archive);
     const removedEntries = compacted.turns.length !== valid.length;
     state.localLedger = compacted.turns;
@@ -3924,6 +4885,111 @@ const VERSION = "0.8.0";
     if (!state.localLedgerLoaded) loadLocalLedger();
   }
 
+  // localStorage 镜像：UI 快照窗口，按字节预算而不是条数裁剪。
+  // 方案 §4.9：2,000 只是旧版容量代理，真实约束是字节数。
+  // 实测真实 turn 平均 ~7 KB（其中 calls[] 占 72%），条数上限会先撞配额。
+  const LOCAL_LEDGER_SNAPSHOT_BUDGETS = [512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024];
+
+  // 镜像里剥掉持久化后从不被读取的字段：calls[] 只有 usage+callCount 被下游消费。
+  function localLedgerMirrorTurn(turn) {
+    if (!turn || typeof turn !== "object") return turn;
+    const mirror = { ...turn };
+    if (Array.isArray(mirror.calls)) delete mirror.calls;
+    return mirror;
+  }
+
+  function localLedgerMirrorBytes(turns, extra = {}) {
+    return JSON.stringify({ turns: turns.map(localLedgerMirrorTurn), ...extra }).length;
+  }
+
+  // 在字节预算内，从最新往回装近期 turn；装不下的旧 turn 由调用方折进日归档。
+  // 事实行（有 responseIds）永久在 IndexedDB，不参与这个窗口的裁剪。
+  // 在字节预算内，从最新往回装近期 turn；装不下的旧 turn 由调用方折进日归档。
+  // 事实行（有 responseIds）永久在 IndexedDB，不参与这个窗口的裁剪。
+  // 在字节预算内，从最新往回装近期 turn；装不下的旧 turn 由调用方折进日归档。
+  // 预算覆盖整个载荷（turns + archive + last + 别名），不只是 turns。
+  function localLedgerSnapshotByBudget(turns, budget, extra = {}) {
+    const limit = Math.max(0, toCount(budget));
+    if (!limit) return [];
+    const ephemeral = turns.filter((turn) => !isFactLedgerTurn(turn));
+    const permanent = turns.filter(isFactLedgerTurn);
+    const overhead = localLedgerMirrorBytes([], extra);
+    const snapshot = [];
+    let size = overhead;
+    // 事实行也占预算：它们虽然永久存在 IndexedDB，镜像里放不下就只留最近的一部分。
+    for (let index = permanent.length - 1; index >= 0; index -= 1) {
+      const turn = permanent[index];
+      const turnSize = JSON.stringify(localLedgerMirrorTurn(turn)).length + 1;
+      if (size + turnSize > limit) break;
+      snapshot.push(turn);
+      size += turnSize;
+    }
+    for (let index = ephemeral.length - 1; index >= 0; index -= 1) {
+      const turn = ephemeral[index];
+      const turnSize = JSON.stringify(localLedgerMirrorTurn(turn)).length + 1;
+      if (size + turnSize > limit) break;
+      snapshot.push(turn);
+      size += turnSize;
+    }
+    // 事实行放不下的部分不进归档：它们在 IndexedDB 里是永久事实。
+    return snapshot.reverse();
+  }
+
+  // 降级模式：IndexedDB 不可用时，localStorage 成为唯一副本。
+  // 方案 §4.9.1 的淘汰顺序：先写主机快照 → 快照校验通过才允许裁剪 →
+  // 按冷度淘汰（保护当前会话/最近 24 小时）→ 任何一步会删掉「唯一副本」就停止并告警。
+  const USAGE_FALLBACK_MIN_RECENT_TURNS = 200;
+  const USAGE_FALLBACK_RETENTION_DAYS = 180;
+  const USAGE_FALLBACK_PROTECT_HOURS = 24;
+
+  // 只读保护判定：当前会话、最近 N 小时、最近 M 轮的 turn 不先被淘汰。
+  function usageFallbackProtectedTurns(turns, options = {}) {
+    const now = toCount(options.now) || Date.now();
+    const activeKey = normalizeText(options.activeSessionKey, 240);
+    const protectMs = Math.max(0, toCount(options.protectHours) || USAGE_FALLBACK_PROTECT_HOURS) * 60 * 60 * 1000;
+    const minRecent = Math.max(0, toCount(options.minRecent) || USAGE_FALLBACK_MIN_RECENT_TURNS);
+    const cutoff = now - protectMs;
+    const protectedIds = new Set();
+    const items = Array.isArray(turns) ? turns : [];
+    for (const turn of items) {
+      const key = turnSessionKey(turn);
+      if (activeKey && key && sameSessionKey(key, activeKey)) {
+        protectedIds.add(normalizeText(turn?.turnId, 240));
+        continue;
+      }
+      const stamp = turnTimestampMs(turn);
+      if (stamp && stamp >= cutoff) protectedIds.add(normalizeText(turn?.turnId, 240));
+    }
+    // 最近 M 轮永远保护（末尾的）。
+    for (let index = Math.max(0, items.length - minRecent); index < items.length; index += 1) {
+      protectedIds.add(normalizeText(items[index]?.turnId, 240));
+    }
+    return protectedIds;
+  }
+
+  // 降级裁剪：按冷度淘汰，返回被淘汰的 turn（调用方负责折进归档）。
+  // 不静默丢唯一副本：若归档后仍超预算，返回 blocked 标志让调用方告警。
+  function usageFallbackEvict(turns, budget, options = {}) {
+    const limit = Math.max(0, toCount(budget));
+    const items = Array.isArray(turns) ? turns : [];
+    if (!limit) return { evicted: [], kept: items.slice(), blocked: false, protectedCount: 0 };
+    const protectedIds = usageFallbackProtectedTurns(items, options);
+    const snapshot = localLedgerSnapshotByBudget(items, limit, options.extra || {});
+    const keptIds = new Set(snapshot.map((turn) => normalizeText(turn?.turnId, 240)));
+    const evicted = [];
+    let protectedCount = 0;
+    for (const turn of items) {
+      const id = normalizeText(turn?.turnId, 240);
+      if (keptIds.has(id)) continue;
+      if (protectedIds.has(id)) {
+        protectedCount += 1;
+        continue;
+      }
+      evicted.push(turn);
+    }
+    return { evicted, kept: snapshot, blocked: protectedCount > 0, protectedCount };
+  }
+
   function saveLocalLedger() {
     const compacted = compactLocalLedger(state.localLedger, state.localUsageArchive);
     state.localLedger = compacted.turns;
@@ -3932,23 +4998,73 @@ const VERSION = "0.8.0";
     if (isTransientSessionKey(turnSessionKey(state.localLast))) state.localLast = state.localLedger[state.localLedger.length - 1] || null;
     let saved = false;
     let evictedDates = [];
-    for (const limit of LOCAL_LEDGER_QUOTA_TRIM_LIMITS) {
-      const candidate =
-        limit < LOCAL_LEDGER_LIMIT
-          ? compactLocalLedger(state.localLedger, state.localUsageArchive, limit)
-          : { turns: state.localLedger, archive: state.localUsageArchive, dates: [] };
+    // 降级模式（IndexedDB 不可用）：localStorage 是唯一副本，必须先写主机快照才允许裁剪。
+    if (state.usageFactDegraded) {
+      for (const budget of LOCAL_LEDGER_SNAPSHOT_BUDGETS) {
+        const eviction = usageFallbackEvict(compacted.turns, budget, {
+          activeSessionKey: currentSessionKey(),
+          extra: { archive: state.localUsageArchive, last: state.localLast, seq: state.localTurnSeq, sessionAliases: Object.fromEntries(state.sessionAliases) },
+        });
+        const candidate = {
+          turns: eviction.kept,
+          archive: mergeLocalUsageArchive(state.localUsageArchive, eviction.evicted),
+          dates: Array.from(new Set(eviction.evicted.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+        };
+        try {
+          localStorage.setItem(
+            LOCAL_USAGE_KEY,
+            JSON.stringify({
+              turns: candidate.turns.map(localLedgerMirrorTurn),
+              archive: candidate.archive,
+              last: localLedgerMirrorTurn(state.localLast),
+              seq: state.localTurnSeq,
+              sessionAliases: Object.fromEntries(state.sessionAliases),
+            }),
+          );
+          state.localUsageArchive = candidate.archive;
+          evictedDates = candidate.dates || [];
+          if (eviction.blocked) {
+            // 还有受保护的 turn 装不下：要求用户导出，绝不静默丢唯一副本。
+            state.localLedgerSaveError = "protected";
+            state.usageHostBackupStatus = `降级存储：${eviction.protectedCount} 个受保护的 turn 超出预算，请先导出备份再清理`;
+          } else {
+            state.localLedgerSaveError = "";
+          }
+          saved = true;
+          break;
+        } catch (error) {
+          if (!isQuotaStorageError(error)) {
+            state.localLedgerSaveError = "storage";
+            break;
+          }
+        }
+      }
+      refreshAnalyticsRollupDates([...compacted.dates, ...evictedDates]);
+      return saved;
+    }
+    for (const budget of LOCAL_LEDGER_SNAPSHOT_BUDGETS) {
+      // localStorage 只是 UI 快照窗口：按字节预算装最近若干 turn，事实行永不进归档。
+      const snapshot = localLedgerSnapshotByBudget(compacted.turns, budget, { archive: state.localUsageArchive, last: state.localLast, seq: state.localTurnSeq, sessionAliases: Object.fromEntries(state.sessionAliases) });
+      const kept = new Set(snapshot);
+      const evicted = compacted.turns.filter((turn) => !kept.has(turn) && !isFactLedgerTurn(turn));
+      const candidate = {
+        turns: snapshot,
+        // 装不下的旧 turn 折进日归档：归档是派生汇总，不是唯一副本。
+        archive: mergeLocalUsageArchive(state.localUsageArchive, evicted),
+        dates: Array.from(new Set(evicted.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+      };
       try {
         localStorage.setItem(
           LOCAL_USAGE_KEY,
           JSON.stringify({
-            turns: candidate.turns,
+            turns: candidate.turns.map(localLedgerMirrorTurn),
             archive: candidate.archive,
-            last: state.localLast,
+            last: localLedgerMirrorTurn(state.localLast),
             seq: state.localTurnSeq,
             sessionAliases: Object.fromEntries(state.sessionAliases),
           }),
         );
-        state.localLedger = candidate.turns;
+        // 内存账本保留全部 turn；localStorage 只是快照窗口。
         state.localUsageArchive = candidate.archive;
         evictedDates = candidate.dates || [];
         saved = true;
@@ -4070,12 +5186,22 @@ const VERSION = "0.8.0";
     return { version: 1, updatedAt: Date.now(), days: rollup.days };
   }
 
+  // 事实行（有 responseIds）永久保存在 IndexedDB，不能进 localStorage 归档，
+  // 否则每次保存都会把同一批事实重复折进日聚合。
+  function isFactLedgerTurn(turn) {
+    return Array.isArray(turn?.responseIds) && turn.responseIds.length > 0;
+  }
+
   function compactLocalLedger(turns, archive = null, limit = LOCAL_LEDGER_LIMIT) {
     const exact = (Array.isArray(turns) ? turns : [])
       .filter((item) => normalizeUsage(item?.usage).exact && !isTransientSessionKey(turnSessionKey(item)));
-    const retained = trimLocalLedger(exact, limit);
-    const retainedSet = new Set(retained);
-    const evicted = exact.filter((turn) => !retainedSet.has(turn));
+    const permanent = exact.filter(isFactLedgerTurn);
+    const ephemeral = exact.filter((turn) => !isFactLedgerTurn(turn));
+    const retainedEphemeral = trimLocalLedger(ephemeral, limit);
+    const retainedSet = new Set(retainedEphemeral);
+    const evicted = ephemeral.filter((turn) => !retainedSet.has(turn));
+    // 保持原顺序：事实行追加在尾部，UI 依赖“最后一次写入在末尾”。
+    const retained = retainedEphemeral.concat(permanent);
     return {
       turns: retained,
       archive: mergeLocalUsageArchive(archive, evicted),
@@ -4310,9 +5436,24 @@ const VERSION = "0.8.0";
       finishedAtMs: 0,
       durationMs: 0,
       calls: [],
+      // 逐响应事实：response_id -> { usage, turnCumulative, threadCumulative, observedAtMs }
+      responses: new Map(),
+      // token_count 回退条目：按 (signature, cumulativeTotal) 去重，只在该 turn 没有任何 record 时使用。
+      fallbackCalls: [],
+      fallbackSeen: new Set(),
+      status: "",
+      error: "",
+      abortReason: "",
       skillCounts: new Map(),
       pluginCounts: new Map(),
     };
+  }
+
+  // token_count 的去重键：(turn_id, signature, cumulativeTotal)。
+  // 同一 cumulativeTotal 的重复心跳（实测间隔 15.9s / 24.9s / 约 9 小时）只接受一次。
+  function usageSyncFallbackKey(turnId, usage, cumulativeTotal) {
+    const signature = USAGE_SYNC_USAGE_FIELDS.map((field) => toCount(usage?.[field])).join("/");
+    return `${turnId}\u0001${signature}\u0001${toCount(cumulativeTotal)}`;
   }
 
   function usageSyncParseRolloutLines(lines, fileSummary = { lineErrors: 0 }) {
@@ -4320,8 +5461,10 @@ const VERSION = "0.8.0";
       threadId: "",
       turns: new Map(),
       orphanCalls: [],
+      orphanResponses: new Map(),
       fallbackModel: "",
       fallbackEffort: "",
+      rateLimits: [],
     };
     let lastTurnId = "";
     let lastTurn = null;
@@ -4338,6 +5481,11 @@ const VERSION = "0.8.0";
       const record = lastTurnId ? ensureTurn(lastTurnId) : null;
       if (record) record.calls.push(call);
       else thread.orphanCalls.push(call);
+    };
+    const attachResponse = (entry) => {
+      const record = lastTurnId ? ensureTurn(lastTurnId) : null;
+      if (record) record.responses.set(entry.responseId, entry);
+      else thread.orphanResponses.set(entry.responseId, entry);
     };
 
     for (const line of lines) {
@@ -4370,6 +5518,24 @@ const VERSION = "0.8.0";
         }
         continue;
       }
+      // 逐响应事实源：云端 Responses API usage 的本地副本，按 response_id 幂等。
+      if (type === "token_usage_record") {
+        const responseId = usageSyncText(payload.response_id, 200);
+        const usage = usageSyncRawUsageShape(payload.usage);
+        if (!responseId || !usage) continue;
+        const turnId = usageSyncText(payload.turn_id || payload.root_turn_id, 120) || lastTurnId;
+        const record = ensureTurn(turnId);
+        const entry = {
+          responseId,
+          usage,
+          turnCumulative: usageSyncRawUsageShape(payload.turn_token_usage),
+          threadCumulative: usageSyncRawUsageShape(payload.thread_token_usage),
+          observedAtMs: toTimestampMs(obj.timestamp),
+        };
+        if (record) record.responses.set(responseId, entry);
+        else thread.orphanResponses.set(responseId, entry);
+        continue;
+      }
       if (type === "event_msg") {
         const ptype = usageSyncText(payload.type, 60);
         if (ptype === "task_started") {
@@ -4392,15 +5558,53 @@ const VERSION = "0.8.0";
             if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
             const startedAtMs = usageSyncUnixToMs(payload.started_at);
             if (startedAtMs) record.startedAtMs = record.startedAtMs || startedAtMs;
+            // 失败 turn 也要保留，状态不能被当成成功。
+            const errorMessage = usageSyncText(payload.error?.message, 400);
+            if (errorMessage) {
+              record.status = "failed";
+              record.error = errorMessage;
+            } else if (record.status !== "interrupted") {
+              record.status = "completed";
+            }
+          }
+          continue;
+        }
+        // 中断 turn 同样保留事实，不能丢。
+        if (ptype === "turn_aborted") {
+          const turnId = usageSyncText(payload.turn_id || payload.root_turn_id, 120) || lastTurnId;
+          const record = ensureTurn(turnId);
+          if (record) {
+            record.status = "interrupted";
+            record.abortReason = usageSyncText(payload.reason, 120) || "interrupted";
+            const durationMs = toCount(payload.duration_ms);
+            if (durationMs) record.durationMs = Math.max(record.durationMs, durationMs);
+            const finishedAtMs = usageSyncUnixToMs(payload.completed_at);
+            if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
+            const startedAtMs = usageSyncUnixToMs(payload.started_at);
+            if (startedAtMs) record.startedAtMs = record.startedAtMs || startedAtMs;
           }
           continue;
         }
         if (ptype === "token_count") {
-          const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
-          if (usage) {
-            const observedAtMs = toTimestampMs(obj.timestamp);
-            attachCall({ usage, observedAtMs });
+          // token_count 是「用量 + rate limit」心跳：rate_limits 单独入库，用量只在
+          // 该 turn 没有任何 token_usage_record 时才允许降级使用。
+          const rateLimits = payload.rate_limits;
+          if (rateLimits && typeof rateLimits === "object") {
+            thread.rateLimits.push({ observedAtMs: toTimestampMs(obj.timestamp), rateLimits });
           }
+          const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
+          if (!usage) continue;
+          const cumulativeTotal = toCount(payload.info?.total_token_usage?.total_tokens);
+          const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
+          const record = turnId ? ensureTurn(turnId) : null;
+          if (!record) {
+            attachCall({ usage, observedAtMs: toTimestampMs(obj.timestamp) });
+            continue;
+          }
+          const dedupeKey = usageSyncFallbackKey(turnId, usage, cumulativeTotal);
+          if (record.fallbackSeen.has(dedupeKey)) continue;
+          record.fallbackSeen.add(dedupeKey);
+          record.fallbackCalls.push({ usage, observedAtMs: toTimestampMs(obj.timestamp), cumulativeTotal });
           continue;
         }
         if (ptype === "mcp_tool_call_end") {
@@ -4419,15 +5623,50 @@ const VERSION = "0.8.0";
     if (!thread.threadId) return null;
     return thread;
   }
-
   function usageSyncFinalizeTurnRow(threadId, record) {
-    if (!record.calls.length) return null;
-    const calls = record.calls
-      .map((call) => ({ usage: call.usage, observedAtMs: call.observedAtMs || 0 }))
-      .sort((left, right) => left.observedAtMs - right.observedAtMs);
-    const usage = calls.reduce((acc, call) => usageSyncSumRawUsage(acc, call.usage), {});
-    const firstMs = record.startedAtMs || calls[0].observedAtMs;
-    const lastMs = record.finishedAtMs || calls[calls.length - 1].observedAtMs || firstMs;
+    // 事实优先：responses（token_usage_record）派生 turn 用量。
+    // 只有该 turn 完全没有 record 时，才用去重后的 token_count 回退条目。
+    const responses = record.responses instanceof Map ? Array.from(record.responses.values()) : [];
+    const useFallback = responses.length === 0;
+    // 无 record 时才降级：优先去重后的 token_count 回退条目，其次是孤儿 calls。
+    const fallbackCalls = Array.isArray(record.fallbackCalls) && record.fallbackCalls.length
+      ? record.fallbackCalls
+      : Array.isArray(record.calls)
+        ? record.calls
+        : [];
+    const sourceCalls = useFallback
+      ? fallbackCalls.map((call) => ({ usage: call.usage, observedAtMs: call.observedAtMs || 0 }))
+      : responses
+          .map((entry) => ({ usage: entry.usage, observedAtMs: entry.observedAtMs || 0 }))
+          .sort((left, right) => left.observedAtMs - right.observedAtMs);
+    if (!sourceCalls.length) {
+      // 0 用量的 turn（aborted / 失败）也要保留事实，不能丢。
+      if (!record.startedAtMs && !record.finishedAtMs) return null;
+      const firstMs = record.startedAtMs || record.finishedAtMs || Date.now();
+      return {
+        turnId: record.turnId,
+        sessionKey: `local:${threadId}`,
+        threadKey: `local:${threadId}`,
+        threadAttributionStatus: "reliable",
+        model: record.model || "unknown",
+        ...(record.effort ? { effort: record.effort } : {}),
+        createdAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+        startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+        finishedAt: usageSyncIsoOrNull(record.finishedAtMs || firstMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
+        durationMs: record.durationMs || 0,
+        callCount: 0,
+        usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
+        calls: [],
+        ...(record.status ? { turnStatus: record.status } : {}),
+        ...(record.error ? { turnError: record.error } : {}),
+        ...(record.abortReason ? { turnAbortReason: record.abortReason } : {}),
+        source: USAGE_SYNC_SOURCE,
+        importSource: USAGE_SYNC_SOURCE,
+      };
+    }
+    const usage = sourceCalls.reduce((acc, call) => usageSyncSumRawUsage(acc, call.usage), {});
+    const firstMs = record.startedAtMs || sourceCalls[0].observedAtMs;
+    const lastMs = record.finishedAtMs || sourceCalls[sourceCalls.length - 1].observedAtMs || firstMs;
     const durationMs = record.durationMs || Math.max(0, lastMs - firstMs);
     const invocations = [];
     for (const [name, count] of record.skillCounts) {
@@ -4436,6 +5675,10 @@ const VERSION = "0.8.0";
     for (const [server, count] of record.pluginCounts) {
       invocations.push({ type: "plugin", plugin_id: server, plugin_name: server, invocationId: `plugin:${server}`, occurrence: count });
     }
+    // 累计校验锚点：thread_token_usage 是云端返回的线程累计值。
+    const threadCumulative = responses.length
+      ? responses[responses.length - 1].threadCumulative
+      : null;
     return {
       turnId: record.turnId,
       sessionKey: `local:${threadId}`,
@@ -4447,15 +5690,22 @@ const VERSION = "0.8.0";
       startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       finishedAt: usageSyncIsoOrNull(lastMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       durationMs,
-      callCount: calls.length,
+      callCount: sourceCalls.length,
       usage,
-      calls: calls.map((call) => ({ usage: call.usage, observedAt: usageSyncIsoOrNull(call.observedAtMs) || undefined })),
+      calls: sourceCalls.map((call) => ({ usage: call.usage, observedAt: usageSyncIsoOrNull(call.observedAtMs) || undefined })),
+      ...(responses.length ? { responseIds: responses.map((entry) => entry.responseId) } : {}),
+      ...(threadCumulative ? { threadCumulativeTotal: toCount(threadCumulative.total_tokens) } : {}),
+      ...(useFallback
+        ? { usageSource: "token_count_fallback", fallbackResponses: sourceCalls.length }
+        : { usageSource: "token_usage_record" }),
+      ...(record.status ? { turnStatus: record.status } : {}),
+      ...(record.error ? { turnError: record.error } : {}),
+      ...(record.abortReason ? { turnAbortReason: record.abortReason } : {}),
       ...(invocations.length ? { invocations } : {}),
       source: USAGE_SYNC_SOURCE,
       importSource: USAGE_SYNC_SOURCE,
     };
   }
-
   function usageSyncDecodeBytes(bytes) {
     const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const isZstd = view.length >= 4 && view[0] === 0x28 && view[1] === 0xb5 && view[2] === 0x2f && view[3] === 0xfd;
@@ -5425,27 +6675,106 @@ const VERSION = "0.8.0";
     return files;
   }
 
+  // 同一 turn 跨多个 rollout 文件时按 response_id 合并，不再 first-wins 丢弃后续响应。
+  function usageSyncMergeTurnRecord(target, source) {
+    if (!target) return source;
+    if (!source) return target;
+    if (!target.model && source.model) target.model = source.model;
+    if (!target.effort && source.effort) target.effort = source.effort;
+    if (source.startedAtMs) target.startedAtMs = target.startedAtMs ? Math.min(target.startedAtMs, source.startedAtMs) : source.startedAtMs;
+    if (source.finishedAtMs) target.finishedAtMs = Math.max(target.finishedAtMs || 0, source.finishedAtMs);
+    if (source.durationMs) target.durationMs = Math.max(target.durationMs || 0, source.durationMs);
+    // 逐响应事实按 response_id 幂等合并。
+    if (source.responses instanceof Map) {
+      for (const [responseId, entry] of source.responses) target.responses.set(responseId, entry);
+    }
+    // 回退条目按 (turn, signature, cumulativeTotal) 去重。
+    if (source.fallbackSeen instanceof Set) {
+      for (const key of source.fallbackSeen) target.fallbackSeen.add(key);
+    }
+    if (Array.isArray(source.fallbackCalls)) {
+      for (const call of source.fallbackCalls) {
+        const key = usageSyncFallbackKey(target.turnId, call.usage, call.cumulativeTotal);
+        if (target.fallbackSeen.has(key)) continue;
+        target.fallbackSeen.add(key);
+        target.fallbackCalls.push(call);
+      }
+    }
+    for (const [name, count] of source.skillCounts) {
+      target.skillCounts.set(name, (target.skillCounts.get(name) || 0) + count);
+    }
+    for (const [server, count] of source.pluginCounts) {
+      target.pluginCounts.set(server, (target.pluginCounts.get(server) || 0) + count);
+    }
+    // 状态优先级：failed / interrupted 不被 completed 覆盖。
+    if (!target.status || target.status === "completed") {
+      if (source.status && source.status !== "completed") target.status = source.status;
+      else if (source.status) target.status = source.status;
+    }
+    if (source.error && !target.error) target.error = source.error;
+    if (source.abortReason && !target.abortReason) target.abortReason = source.abortReason;
+    return target;
+  }
+
   function usageSyncIngestRolloutText(text, threads) {
     const fileSummary = { lineErrors: 0 };
     const thread = usageSyncParseRolloutLines(String(text).split(/\r?\n/), fileSummary);
     if (thread) {
-      const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [] };
+      const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [], orphanResponses: new Map(), rateLimits: [] };
       for (const [turnId, record] of thread.turns) {
-        if (!target.turns.has(turnId)) target.turns.set(turnId, record);
+        const existing = target.turns.get(turnId);
+        target.turns.set(turnId, existing ? usageSyncMergeTurnRecord(existing, record) : record);
       }
       if (thread.orphanCalls.length) target.orphanCalls.push(...thread.orphanCalls);
+      if (thread.orphanResponses instanceof Map) {
+        for (const [responseId, entry] of thread.orphanResponses) target.orphanResponses.set(responseId, entry);
+      }
+      if (Array.isArray(thread.rateLimits)) target.rateLimits.push(...thread.rateLimits);
       threads.set(thread.threadId, target);
     }
     return { parsed: Boolean(thread), lineErrors: fileSummary.lineErrors };
   }
-
   function usageSyncFinalizeCollected(files, threads, stats) {
     const rows = [];
+    const facts = [];
+    const rateLimits = [];
     for (const [threadId, info] of threads) {
       for (const record of info.turns.values()) {
         const row = usageSyncFinalizeTurnRow(threadId, record);
         if (row) rows.push(row);
+        // 逐响应事实入库：按 response_id 幂等。
+        if (record.responses instanceof Map) {
+          for (const [responseId, entry] of record.responses) {
+            facts.push({
+              responseId,
+              threadId,
+              turnId: record.turnId,
+              rootTurnId: "",
+              usage: entry.usage,
+              turnCumulative: entry.turnCumulative,
+              threadCumulative: entry.threadCumulative,
+              observedAtMs: entry.observedAtMs,
+              source: "rollout_record",
+            });
+          }
+        }
       }
+      if (info.orphanResponses instanceof Map) {
+        for (const [responseId, entry] of info.orphanResponses) {
+          facts.push({
+            responseId,
+            threadId,
+            turnId: "",
+            rootTurnId: "",
+            usage: entry.usage,
+            turnCumulative: entry.turnCumulative,
+            threadCumulative: entry.threadCumulative,
+            observedAtMs: entry.observedAtMs,
+            source: "rollout_record",
+          });
+        }
+      }
+      if (Array.isArray(info.rateLimits)) rateLimits.push(...info.rateLimits.map((item) => ({ ...item, threadId })));
       if (info.orphanCalls.length) {
         const orphanRow = usageSyncFinalizeTurnRow(threadId, {
           turnId: `${threadId}:orphan`,
@@ -5455,6 +6784,9 @@ const VERSION = "0.8.0";
           finishedAtMs: 0,
           durationMs: 0,
           calls: info.orphanCalls,
+          responses: new Map(),
+          fallbackCalls: [],
+          fallbackSeen: new Set(),
           skillCounts: new Map(),
           pluginCounts: new Map(),
         });
@@ -5477,6 +6809,8 @@ const VERSION = "0.8.0";
     const sortedDays = Array.from(days).sort();
     return {
       rows,
+      facts,
+      rateLimits,
       scannedFiles: files.length,
       parsedFiles: stats.parsedFiles,
       skippedFiles: stats.skippedFiles,
@@ -5570,11 +6904,35 @@ const VERSION = "0.8.0";
       idbOnly: true,
       dedupeAgainstLedger: true,
     });
+    // 逐响应事实入库：按 response_id 幂等，这是本地唯一的用量事实源。
+    const facts = Array.isArray(collected.facts) ? collected.facts : [];
+    let factsWritten = 0;
+    if (facts.length) {
+      for (const fact of facts) usageFactUpsert(fact);
+      factsWritten = facts.length;
+      void usageFactPersistResponses(facts);
+    }
+    // rate_limits 单独入库，不参与用量求和。
+    const rateLimits = Array.isArray(collected.rateLimits) ? collected.rateLimits : [];
+    for (const item of rateLimits) {
+      const key = `${item.threadId || ""}:${item.observedAtMs || 0}`;
+      void usageFactPersistRateLimit({ key, threadId: item.threadId || "", observedAtMs: item.observedAtMs || 0, rateLimits: item.rateLimits });
+    }
+    if (facts.length) usageFactReconcileReport();
+    // 降级 turn 记入覆盖率统计：有 record 的响应 /（有 record + 降级）响应。
+    for (const row of collected.rows || []) {
+      if (row.usageSource !== "token_count_fallback") continue;
+      const turnId = normalizeText(row.turnId, 240);
+      if (!turnId) continue;
+      state.usageFactFallbackTurns.set(turnId, toCount(row.fallbackResponses) || toCount(row.callCount));
+      state.usageFactFallbackThreads.set(turnId, normalizeText(row.threadKey, 240).replace(/^local:/, ""));
+    }
     await usageSyncStoreFileStamps(collected.nextStamps);
     state.usageSyncResult = {
       imported: imported.imported,
       deduped: imported.deduped,
       skipped: imported.skipped,
+      facts: factsWritten,
       files: collected.scannedFiles,
       skippedFiles: collected.skippedFiles,
       turns: collected.rows.length,
@@ -7306,6 +8664,108 @@ const VERSION = "0.8.0";
     return true;
   }
 
+  // 实时去重：优先 response_id；没有 response_id 时用 (threadId, turnId, totalTokens)
+  // 单调递增。TTL 只做 UI 防抖，不参与账本判定。
+  function usageLiveTotalKey(threadId, turnId) {
+    return `${threadId || ""}\u0001${turnId || ""}`;
+  }
+
+  function usageLiveAcceptResponse(responseId) {
+    const key = usageFactKey(responseId);
+    if (!key) return true;
+    if (state.usageLiveResponseIds.has(key)) return false;
+    state.usageLiveResponseIds.add(key);
+    return true;
+  }
+
+  function usageLiveAcceptTotal(threadId, turnId, totalTokens) {
+    const total = toCount(totalTokens);
+    if (!total) return true;
+    const key = usageLiveTotalKey(threadId, turnId);
+    const previous = state.usageLiveTotals.get(key) || 0;
+    if (!previous) {
+      state.usageLiveTotals.set(key, total);
+      return true;
+    }
+    // 累计值不递增说明是同一份用量的重复通知（实测间隔 15.9s / 24.9s / 约 9 小时）。
+    if (total === previous) return false;
+    if (total < previous) {
+      // 累计值倒退 = 新 epoch（上下文压缩 / 恢复 / 换线程后重发）。
+      // 旧 epoch 的基线作废，重置为新值并告警，不能当成重复丢弃。
+      state.usageLiveTotals.set(key, total);
+      state.usageLiveEpochs += 1;
+      state.usageLiveEpochWarnings = `累计用量从 ${previous} 回退到 ${total}，已按新 epoch 重新计数`;
+      return true;
+    }
+    state.usageLiveTotals.set(key, total);
+    return true;
+  }
+
+  // 从通知里取累计用量：token_count 的 info.total_token_usage，或
+  // thread/tokenUsage/updated 的 tokenUsage.total。缺失时返回 0。
+  function usageCumulativeTotalFromPayload(payload, depth = 0, seen = new WeakSet()) {
+    if (!payload || depth > 5) return 0;
+    if (typeof payload === "string") {
+      try {
+        return usageCumulativeTotalFromPayload(JSON.parse(payload), depth + 1, seen);
+      } catch {
+        return 0;
+      }
+    }
+    if (Array.isArray(payload)) {
+      for (const item of payload) {
+        const found = usageCumulativeTotalFromPayload(item, depth + 1, seen);
+        if (found) return found;
+      }
+      return 0;
+    }
+    if (typeof payload !== "object" || seen.has(payload)) return 0;
+    seen.add(payload);
+    const direct =
+      toCount(payload.total_token_usage?.total_tokens) ||
+      toCount(payload.tokenUsage?.total?.total_tokens) ||
+      toCount(payload.token_usage?.total?.total_tokens) ||
+      toCount(payload.total?.total_tokens);
+    if (direct) return direct;
+    for (const key of ["info", "tokenUsage", "token_usage", "params", "payload", "data", "body", "bodyJsonString"]) {
+      if (key in payload) {
+        const found = usageCumulativeTotalFromPayload(payload[key], depth + 1, seen);
+        if (found) return found;
+      }
+    }
+    return 0;
+  }
+
+  // 从通知里取 response_id：rawResponse/completed 的 response_id 是最精确的幂等键。
+  function usageResponseIdFromPayload(payload, depth = 0, seen = new WeakSet()) {
+    if (!payload || depth > 5) return "";
+    if (typeof payload === "string") {
+      try {
+        return usageResponseIdFromPayload(JSON.parse(payload), depth + 1, seen);
+      } catch {
+        return "";
+      }
+    }
+    if (Array.isArray(payload)) {
+      for (const item of payload) {
+        const found = usageResponseIdFromPayload(item, depth + 1, seen);
+        if (found) return found;
+      }
+      return "";
+    }
+    if (typeof payload !== "object" || seen.has(payload)) return "";
+    seen.add(payload);
+    const direct = usageFactKey(payload.response_id ?? payload.responseId ?? payload.id);
+    if (direct && /^resp[_-]/.test(direct)) return direct;
+    for (const key of ["params", "payload", "data", "body", "bodyJsonString", "response", "message"]) {
+      if (key in payload) {
+        const found = usageResponseIdFromPayload(payload[key], depth + 1, seen);
+        if (found) return found;
+      }
+    }
+    return "";
+  }
+
   function rememberLocalUsage(rawUsage, source = "network", context = {}, options = {}) {
     const usage = normalizeUsage(rawUsage);
     if (!usage.exact) return false;
@@ -7318,8 +8778,19 @@ const VERSION = "0.8.0";
     if (!turn) return false;
     const now = Date.now();
     const key = usageKey(usage);
-    const dedupeKey = `${turn.id}\u0001${key}`;
     const persist = options.persist ?? shouldPersistUsagePayload(null, source);
+    const responseId = usageFactKey(options.responseId || options.response_id);
+    const threadId = normalizeText(options.threadId || options.thread_id || options.profileThreadKey, 240);
+    const turnId = normalizeText(options.turnId || options.turn_id || turn.id, 240);
+
+    // 幂等键：response_id 优先；没有 response_id 时用 (threadId, turnId, totalTokens) 单调递增。
+    if (responseId) {
+      if (!usageLiveAcceptResponse(responseId)) return false;
+    } else if (!usageLiveAcceptTotal(threadId, turnId, toCount(options.cumulativeTotal))) {
+      return false;
+    }
+    // TTL 只做 UI 防抖：同 key 的高频重复不重复渲染，但不再决定是否入账。
+    const dedupeKey = `${turn.id}\u0001${key}`;
     const previousAt = state.localSeenUsage.get(dedupeKey) || 0;
     if (!persist && now - previousAt < 3000) return false;
     state.localSeenUsage.set(dedupeKey, now);
@@ -7335,17 +8806,35 @@ const VERSION = "0.8.0";
       }
     }
     turn.context = mergeProfileContext(turn.context, context);
-    const existing = turn.calls.find((call) => usageKey(call.usage) === key);
+    // 同一 response_id 的重复到达只更新观测时间，不新增 call。
+    const existing = turn.calls.find((call) => (responseId ? call.responseId === responseId : usageKey(call.usage) === key));
     if (existing) {
       existing.source = source;
       existing.observedAt = now;
       existing.usage = usage;
     } else {
-      turn.calls.push({ usage, source, observedAt: now });
+      turn.calls.push({ usage, source, observedAt: now, ...(responseId ? { responseId } : {}) });
     }
     if (!(Number(turn.outputStartedAt) > 0) && toCount(aggregateTurnUsage(turn).output)) turn.outputStartedAt = now;
     const metric = localTurnMetric(turn, now);
     if (!metric) return false;
+    // 逐响应事实入库：有 response_id 才是事实。
+    if (responseId) {
+      const fact = usageFactUpsert({
+        responseId,
+        threadId,
+        turnId,
+        usage: {
+          input_tokens: toCount(usage.input),
+          cached_input_tokens: toCount(usage.cached),
+          output_tokens: toCount(usage.output),
+          total_tokens: toCount(usage.total),
+        },
+        observedAtMs: now,
+        source: "live_notification",
+      });
+      if (fact) void usageFactPersistResponses([fact]);
+    }
     profileLedgerObserveLocalTurn(turn, context, {
       observedAt: now,
       reason: persist ? "final-observed" : "usage-observed",
@@ -7362,7 +8851,6 @@ const VERSION = "0.8.0";
     scheduleRender();
     return true;
   }
-
   function inspectLocalPayload(payload, source) {
     if (isComposerDraftPayload(payload)) return false;
     const identity = extractSessionIdentity(payload);
@@ -7420,6 +8908,9 @@ const VERSION = "0.8.0";
     });
     let changed = false;
     const persistUsage = shouldPersistUsagePayload(payload, source);
+    // 累计用量与 response_id：幂等判定用它们，TTL 只做 UI 防抖。
+    const cumulativeTotal = usageCumulativeTotalFromPayload(payload);
+    const payloadResponseId = usageResponseIdFromPayload(payload);
     if (canUseCurrentSessionForUsage) {
       for (const usage of collectUsages(payload)) {
         changed =
@@ -7430,6 +8921,10 @@ const VERSION = "0.8.0";
             invocationEventId,
             profileThreadKey: hasReliableSessionKey ? sessionKey : "",
             threadAttributionStatus: hasReliableSessionKey ? "reliable" : "unknown",
+            responseId: payloadResponseId,
+            cumulativeTotal,
+            threadId: identity.threadKey || identity.conversationKey || sessionKey,
+            turnId: identity.turnId,
           }) || changed;
       }
     }
@@ -12622,6 +14117,23 @@ const VERSION = "0.8.0";
       void runUsageSync();
       return;
     }
+    if (event.target.closest?.("[data-action='backup-usage']")) {
+      void usageFactBackupToHost().then(() => renderSettingsOverlay(liveSnapshot(), { animate: true }));
+      return;
+    }
+    if (event.target.closest?.("[data-action='export-usage']")) {
+      void usageFactDownloadExport("json");
+      return;
+    }
+    if (event.target.closest?.("[data-action='import-usage']")) {
+      void usageFactImportFile().then(() => renderSettingsOverlay(liveSnapshot(), { animate: true }));
+      return;
+    }
+    if (event.target.closest?.("[data-action='rebuild-usage']")) {
+      usageFactRebuild();
+      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      return;
+    }
   }
 
   function settingsEditorRoot() {
@@ -12871,6 +14383,18 @@ const VERSION = "0.8.0";
     const statusText = usageSyncStatusText();
     const statusTone = busy ? "busy" : state.usageSyncAutoFailures >= 3 ? "warn" : "success";
     const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" data-tone="${statusTone}" role="status">${escapeHtml(statusText)}</p>` : "";
+    const facts = usageFactTotals();
+    const reconcile = usageFactReconcileSummary();
+    const degraded = state.usageFactDegraded;
+    const degradedHtml = degraded
+      ? `<p class="cltc-sync-status" data-field="usage-fact-degraded" data-tone="warn" role="status">降级存储：${escapeHtml(state.usageFactDegradedReason || "IndexedDB 不可用")}；逐响应明细可能不完整，请先导出备份</p>`
+      : "";
+    const reconcileHtml = reconcile.threads
+      ? `<p class="cltc-sync-status" data-field="usage-fact-reconcile" data-tone="${reconcile.diff ? "warn" : "success"}" role="status">对账：${reconcile.threads} 个线程 · ${reconcile.matched} 个一致 · ${reconcile.diff} 个存在差异${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""} · 逐响应覆盖率 ${reconcile.coverage}%</p>`
+      : "";
+    const backupHtml = state.usageHostBackupStatus
+      ? `<p class="cltc-sync-status" data-field="usage-host-backup" data-tone="${state.usageHostBackupError ? "warn" : "success"}" role="status">${escapeHtml(state.usageHostBackupStatus)}</p>`
+      : "";
     return `
       <div class="cltc-group">
         <div class="cltc-group-head">
@@ -12886,6 +14410,23 @@ const VERSION = "0.8.0";
               <button type="button" data-action="sync-usage" data-variant="primary" aria-busy="${String(busy)}"${busy ? " disabled" : ""}>${busy ? "正在同步…" : "立即同步"}</button>
             </div>
             ${statusHtml}
+            ${degradedHtml}
+            ${reconcileHtml}
+          </div>
+          <div class="cltc-sync-block">
+            <div class="cltc-settings-row cltc-sync-row">
+              <span>
+                <strong>本地账本</strong>
+                <small>逐响应事实保存在本机 IndexedDB：${facts.count} 条响应 · ${facts.total} tokens；费用按本机价格表计算</small>
+              </span>
+              <span class="cltc-settings-actions">
+                <button type="button" data-action="backup-usage">备份到主机</button>
+                <button type="button" data-action="export-usage">导出</button>
+                <button type="button" data-action="import-usage">导入</button>
+                <button type="button" data-action="rebuild-usage">重建统计</button>
+              </span>
+            </div>
+            ${backupHtml}
           </div>
         </div>
       </div>
@@ -14349,6 +15890,12 @@ const VERSION = "0.8.0";
     if (state.started || state.destroyed) return;
     state.started = true;
     loadLocalLedger();
+    // 启动恢复顺序：IndexedDB -> 主机快照 -> localStorage 旧账本迁移。
+    void ensureUsageFactsLoaded().then(() => {
+      usageFactHydrateLedger();
+      rebuildAnalyticsRollup();
+      scheduleRender();
+    });
     cleanupAutoZeroPriceModels();
     installLocalCapture();
     trackListener(document, "click", handleDocumentClick, true);
@@ -14593,6 +16140,7 @@ const VERSION = "0.8.0";
       observeOfficialRuntimePayload,
       sessionlessTaskCompleteSessionKey,
       currentLocalTurnSessionKeys: () => Array.from(state.localCurrentTurns.keys()),
+      localCurrentTurn: (sessionKey) => localCurrentTurn(sessionKey),
       isOfficialThreadRunning,
       collectUsages,
       hasAssistantResultOutputStarted,
@@ -14697,6 +16245,51 @@ const VERSION = "0.8.0";
       usageSyncState: () => usageSyncTestState(),
       usageSyncParseLines: (lines, summary) => usageSyncParseRolloutLines(lines, summary || { lineErrors: 0 }),
       usageSyncFinalizeTurnRow: (threadId, record) => usageSyncFinalizeTurnRow(threadId, record),
+      usageSyncIngestRolloutText: (text, threads) => usageSyncIngestRolloutText(text, threads),
+      usageSyncFinalizeCollected: (files, threads, stats) => usageSyncFinalizeCollected(files, threads, stats),
+      // 事实层：逐响应事实、持久化、主机备份、导出/导入、对账。
+      usageFactUpsert: (record) => usageFactUpsert(record),
+      usageFactTotals: () => usageFactTotals(),
+      usageFactReconcileReport: () => usageFactReconcileReport(),
+      usageFactHydrateLedger: () => usageFactHydrateLedger(),
+      usageFactReconcileSummary: () => usageFactReconcileSummary(),
+      usageFactPersistResponses: (records) => usageFactPersistResponses(records),
+      usageFactEnsureLoaded: () => ensureUsageFactsLoaded(),
+      usageFactMigrateLegacy: () => usageFactMigrateLegacy(),
+      usageFactBackupToHost: (options) => usageFactBackupToHost(options || {}),
+      usageFactRestoreFromHostBackup: (options) => usageFactRestoreFromHostBackup(options || {}),
+      usageFactPruneHostBackups: (clientOrOptions, maybeOptions) => usageFactPruneHostBackups(clientOrOptions && clientOrOptions.sendRequest ? clientOrOptions : (clientOrOptions && clientOrOptions.client) || appServerSyncClient(), maybeOptions || clientOrOptions || {}),
+      usageFactExport: (format) => usageFactExport(format || "json"),
+      usageFactImport: (text) => usageFactImport(text),
+      usageFactImportFile: () => usageFactImportFile(),
+      usageFactMigrationDiff: (legacyTurns, before, after, migrated) => usageFactMigrationDiff(legacyTurns, before, after, migrated),
+      usageFactFallbackEvict: (turns, budget, options) => usageFallbackEvict(turns, budget, options || {}),
+      usageFactFallbackProtectedTurns: (turns, options) => usageFallbackProtectedTurns(turns, options || {}),
+      usageFactPreserveLegacySnapshot: () => usageFactPreserveLegacySnapshot(),
+      usageFactPruneLegacySnapshot: (options) => usageFactPruneLegacySnapshot(options || {}),
+      usageFactRebuild: () => usageFactRebuild(),
+      usageFactChecksum: (text) => usageFactChecksum(text),
+      usageFactState: () => ({
+        count: state.usageFacts.size,
+        degraded: state.usageFactDegraded,
+        degradedReason: state.usageFactDegradedReason,
+        meta: state.usageFactMeta ? { ...state.usageFactMeta } : null,
+        hostBackupStatus: state.usageHostBackupStatus,
+        hostBackupError: state.usageHostBackupError,
+        hostBackupAt: state.usageHostBackupAt,
+        epochs: state.usageLiveEpochs,
+        epochWarning: state.usageLiveEpochWarnings,
+      }),
+      usageFactReset: () => {
+        state.usageFacts = new Map();
+        state.usageFactMeta = null;
+        state.usageFactLoaded = true;
+        state.usageLiveTotals = new Map();
+        state.usageLiveResponseIds = new Set();
+        state.usageFactFallbackTurns = new Map();
+        state.usageFactFallbackThreads = new Map();
+        state.usageFactReconcile = { threads: new Map(), updatedAt: 0, rows: [] };
+      },
       usageSyncCollectRows: (dirHandle, options) => usageSyncCollectRows(dirHandle, options || {}),
       usageSyncDecodeBytes: (bytes) => usageSyncDecodeBytes(bytes),
       usageSyncCollectRowsViaAppServer: (client, options) => usageSyncCollectRowsViaAppServer(client, options || {}),
