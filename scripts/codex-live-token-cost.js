@@ -640,6 +640,18 @@ const VERSION = "0.8.0";
     return 0;
   }
 
+  // 时长格式化：秒 / 分 / 小时，超过 1 小时才显示小时部分。
+  function fmtDuration(ms) {
+    const total = Math.max(0, toCount(ms));
+    if (!total) return "0 秒";
+    const hours = Math.floor(total / 3_600_000);
+    const minutes = Math.floor((total % 3_600_000) / 60_000);
+    const seconds = Math.floor((total % 60_000) / 1000);
+    if (hours) return `${hours} 小时 ${minutes} 分`;
+    if (minutes) return `${minutes} 分 ${seconds} 秒`;
+    return `${seconds} 秒`;
+  }
+
   function fmtCount(value) {
     const n = toCount(value);
     for (const [unit, suffix] of [
@@ -5441,6 +5453,12 @@ const VERSION = "0.8.0";
       // token_count 回退条目：按 (signature, cumulativeTotal) 去重，只在该 turn 没有任何 record 时使用。
       fallbackCalls: [],
       fallbackSeen: new Set(),
+      // 时间模型：trigger / 父子关系 / item 耗时（方案 P1 #4）。
+      trigger: "",
+      parentTurnId: "",
+      rootTurnId: "",
+      timeToFirstTokenMs: 0,
+      itemDurations: new Map(),
       status: "",
       error: "",
       abortReason: "",
@@ -5545,6 +5563,13 @@ const VERSION = "0.8.0";
             lastTurn = ensureTurn(turnId);
             const startedAtMs = usageSyncUnixToMs(payload.started_at);
             if (startedAtMs) lastTurn.startedAtMs = lastTurn.startedAtMs || startedAtMs;
+            // 时间模型：触发方式与父子关系（子代理单独归组，不混进用户 turn）。
+            const trigger = usageSyncText(payload.turn_attribution?.turn_trigger, 60);
+            if (trigger) lastTurn.trigger = lastTurn.trigger || trigger;
+            const parentTurnId = usageSyncText(payload.turn_attribution?.parent_turn_id, 120);
+            if (parentTurnId) lastTurn.parentTurnId = lastTurn.parentTurnId || parentTurnId;
+            const rootTurnId = usageSyncText(payload.root_turn_id || payload.turn_attribution?.root_turn_id, 120);
+            if (rootTurnId) lastTurn.rootTurnId = lastTurn.rootTurnId || rootTurnId;
           }
           continue;
         }
@@ -5558,6 +5583,8 @@ const VERSION = "0.8.0";
             if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
             const startedAtMs = usageSyncUnixToMs(payload.started_at);
             if (startedAtMs) record.startedAtMs = record.startedAtMs || startedAtMs;
+            const ttft = toCount(payload.time_to_first_token_ms);
+            if (ttft) record.timeToFirstTokenMs = Math.max(record.timeToFirstTokenMs, ttft);
             // 失败 turn 也要保留，状态不能被当成成功。
             const errorMessage = usageSyncText(payload.error?.message, 400);
             if (errorMessage) {
@@ -5607,6 +5634,25 @@ const VERSION = "0.8.0";
           record.fallbackCalls.push({ usage, observedAtMs: toTimestampMs(obj.timestamp), cumulativeTotal });
           continue;
         }
+        // item 耗时：工具/消息的 started_at_ms -> completed_at_ms。
+        if (ptype === "item_completed") {
+          const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
+          const startedAt = toCount(payload.started_at_ms);
+          const completedAt = toCount(payload.completed_at_ms);
+          if (turnId && startedAt && completedAt && completedAt >= startedAt) {
+            const record = ensureTurn(turnId);
+            if (record) {
+              const itemType = usageSyncText(payload.item?.type, 60) || "unknown";
+              const durationMs = completedAt - startedAt;
+              const current = record.itemDurations.get(itemType) || { count: 0, totalMs: 0, maxMs: 0 };
+              current.count += 1;
+              current.totalMs += durationMs;
+              current.maxMs = Math.max(current.maxMs, durationMs);
+              record.itemDurations.set(itemType, current);
+            }
+          }
+          continue;
+        }
         if (ptype === "mcp_tool_call_end") {
           const record = lastTurnId ? ensureTurn(lastTurnId) : null;
           if (record) usageSyncBumpPlugin(record, usageSyncText(payload.invocation?.server || payload.server, 120));
@@ -5623,6 +5669,73 @@ const VERSION = "0.8.0";
     if (!thread.threadId) return null;
     return thread;
   }
+  // 时间模型聚合：同线程相邻 turn 的空闲间隔（真正的「9 小时」来源）、
+  // 活跃时长（durationMs 之和）、子代理与自动 turn 的占比。
+  // 实测：duration_ms 恒等于 completed_at - started_at（122/122），
+  // 所以活跃时长直接用官方 durationMs，墙钟差来自 turn 之间的间隔。
+  function usageTimeModel(turns) {
+    const items = Array.isArray(turns) ? turns : [];
+    const byThread = new Map();
+    let activeMs = 0;
+    let itemMs = 0;
+    let userTurns = 0;
+    let autoTurns = 0;
+    let subagentTurns = 0;
+    const triggers = {};
+    for (const turn of items) {
+      const duration = Math.max(0, toCount(turn?.durationMs));
+      activeMs += duration;
+      itemMs += Math.max(0, toCount(turn?.itemDurationTotalMs));
+      const trigger = normalizeText(turn?.turnTrigger, 60) || "unknown";
+      triggers[trigger] = (triggers[trigger] || 0) + 1;
+      // 自动 turn：不是用户主动发起的（guardian_review / daemon_recovery / resume）。
+      if (trigger === "user" || trigger === "composer" || trigger === "edit_user_message") userTurns += 1;
+      else autoTurns += 1;
+      if (normalizeText(turn?.parentTurnId, 240)) subagentTurns += 1;
+      const threadKey = turnSessionKey(turn);
+      if (!threadKey) continue;
+      const list = byThread.get(threadKey) || [];
+      list.push({
+        turnId: normalizeText(turn?.turnId, 240),
+        start: toTimestampMs(turn?.startedAt) || turnTimestampMs(turn),
+        end: toTimestampMs(turn?.finishedAt) || turnTimestampMs(turn),
+      });
+      byThread.set(threadKey, list);
+    }
+    // 同线程相邻 turn 的空闲间隔。
+    let idleMs = 0;
+    let maxIdleMs = 0;
+    let gapCount = 0;
+    for (const list of byThread.values()) {
+      list.sort((left, right) => left.start - right.start);
+      for (let index = 1; index < list.length; index += 1) {
+        const previousEnd = list[index - 1].end;
+        const currentStart = list[index].start;
+        if (!previousEnd || !currentStart || currentStart <= previousEnd) continue;
+        const gap = currentStart - previousEnd;
+        idleMs += gap;
+        maxIdleMs = Math.max(maxIdleMs, gap);
+        gapCount += 1;
+      }
+    }
+    const wallMs = activeMs + idleMs;
+    return {
+      turns: items.length,
+      activeMs,
+      idleMs,
+      wallMs,
+      maxIdleMs,
+      gapCount,
+      itemMs,
+      userTurns,
+      autoTurns,
+      subagentTurns,
+      triggers,
+      // 空闲占比过高说明用户离开了，不代表用量下降。
+      idleShare: wallMs ? Math.round((idleMs / wallMs) * 100) : 0,
+    };
+  }
+
   function usageSyncFinalizeTurnRow(threadId, record) {
     // 事实优先：responses（token_usage_record）派生 turn 用量。
     // 只有该 turn 完全没有 record 时，才用去重后的 token_count 回退条目。
@@ -5654,6 +5767,10 @@ const VERSION = "0.8.0";
         startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
         finishedAt: usageSyncIsoOrNull(record.finishedAtMs || firstMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
         durationMs: record.durationMs || 0,
+        ...(record.trigger ? { turnTrigger: record.trigger } : {}),
+        ...(record.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
+        ...(record.rootTurnId && record.rootTurnId !== record.turnId ? { rootTurnId: record.rootTurnId } : {}),
+        ...(record.timeToFirstTokenMs ? { timeToFirstTokenMs: record.timeToFirstTokenMs } : {}),
         callCount: 0,
         usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
         calls: [],
@@ -5675,6 +5792,15 @@ const VERSION = "0.8.0";
     for (const [server, count] of record.pluginCounts) {
       invocations.push({ type: "plugin", plugin_id: server, plugin_name: server, invocationId: `plugin:${server}`, occurrence: count });
     }
+    // 时间模型：item 耗时按类型聚合（count / totalMs / maxMs）。
+    const itemDurations = {};
+    if (record.itemDurations instanceof Map) {
+      for (const [itemType, value] of record.itemDurations) {
+        itemDurations[itemType] = { count: toCount(value?.count), totalMs: toCount(value?.totalMs), maxMs: toCount(value?.maxMs) };
+      }
+    }
+    const itemDurationTotalMs = Object.values(itemDurations).reduce((sum, item) => sum + item.totalMs, 0);
+    const itemDurationMaxMs = Object.values(itemDurations).reduce((max, item) => Math.max(max, item.maxMs), 0);
     // 累计校验锚点：thread_token_usage 是云端返回的线程累计值。
     const threadCumulative = responses.length
       ? responses[responses.length - 1].threadCumulative
@@ -5690,6 +5816,11 @@ const VERSION = "0.8.0";
       startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       finishedAt: usageSyncIsoOrNull(lastMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       durationMs,
+      ...(record.trigger ? { turnTrigger: record.trigger } : {}),
+      ...(record.parentTurnId ? { parentTurnId: record.parentTurnId } : {}),
+      ...(record.rootTurnId && record.rootTurnId !== record.turnId ? { rootTurnId: record.rootTurnId } : {}),
+      ...(record.timeToFirstTokenMs ? { timeToFirstTokenMs: record.timeToFirstTokenMs } : {}),
+      ...(Object.keys(itemDurations).length ? { itemDurations, itemDurationTotalMs, itemDurationMaxMs } : {}),
       callCount: sourceCalls.length,
       usage,
       calls: sourceCalls.map((call) => ({ usage: call.usage, observedAt: usageSyncIsoOrNull(call.observedAtMs) || undefined })),
@@ -8598,6 +8729,8 @@ const VERSION = "0.8.0";
       sessionKey: turn.sessionKey,
       threadKey: turn.threadKey || turn.sessionKey,
       source: "codex-live-token-cost",
+      // 实时捕获的 turn：没有 rollout record 佐证，标为 live_notification。
+      usageSource: "live_notification",
       callCount: turn.calls.length,
       model: modelName(),
       effort: normalizeReasoningEffort(turn.context?.effort || activeModelInfo().effort),
@@ -9401,6 +9534,67 @@ const VERSION = "0.8.0";
     return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}<g class="cltc-analytics-grid" aria-hidden="true">${grid}</g>${bars}</svg>`;
   }
 
+  // 来源标注（P1 #7）：每个数字标明是官方 / 本地估算 / 推断。
+  // 本项目按用户决定只用本机价格表计算金额，所以金额来源恒为「本地价格表」；
+  // token 来源分「逐响应事实」（record）与「降级估算」（token_count 去重回退）。
+  function usageSourceLabels(turns) {
+    const items = Array.isArray(turns) ? turns : [];
+    let recorded = 0;
+    let fallback = 0;
+    let live = 0;
+    let inferred = 0;
+    let unpriced = 0;
+    for (const turn of items) {
+      const source = normalizeText(turn?.usageSource, 60);
+      if (source === "token_usage_record") recorded += 1;
+      else if (source === "token_count_fallback") fallback += 1;
+      else if (source === "live_notification") live += 1;
+      else inferred += 1;
+      const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
+      if (!priceFor(model)) unpriced += 1;
+    }
+    const total = items.length || 1;
+    // 有 record 或实时通知都算「有事实来源」；只有降级/推断才算估算。
+    const sourced = recorded + live;
+    const estimated = fallback + inferred;
+    return {
+      turns: items.length,
+      recorded,
+      fallback,
+      live,
+      inferred,
+      unpriced,
+      sourcedShare: Math.round((sourced / total) * 100),
+      recordedShare: Math.round((recorded / total) * 100),
+      costSource: "本地价格表",
+      tokenSource: recorded ? "逐响应事实" : live ? "实时通知" : fallback ? "降级估算" : "推断",
+    };
+  }
+
+  function usageSourcePanelHtml(turns, timeModelHtml = "") {
+    const labels = usageSourceLabels(turns);
+    if (!labels.turns) return "";
+    const rows = [
+      ["Token 口径", `${labels.tokenSource} · 事实覆盖 ${labels.sourcedShare}%`, labels.sourcedShare >= 90 ? "success" : "warn"],
+      ["费用口径", `${labels.costSource}（未定价 ${labels.unpriced} 个模型）`, labels.unpriced ? "warn" : "success"],
+      ["事实明细", `逐响应 ${labels.recorded} 轮 · 实时 ${labels.live} 轮 · 降级 ${labels.fallback} 轮 · 推断 ${labels.inferred} 轮`, "neutral"],
+    ];
+    return `
+      <div class="cltc-analytics-section cltc-usage-sources">
+        <div class="cltc-analytics-section-head"><div><h3>数据来源</h3><p>每个数字的出处</p></div></div>
+        <div class="cltc-usage-source-rows">
+          ${rows
+            .map(
+              ([label, value, tone]) =>
+                `<div class="cltc-usage-source-row"><span>${escapeHtml(label)}</span><strong data-tone="${tone}">${escapeHtml(value)}</strong></div>`,
+            )
+            .join("")}
+          ${timeModelHtml}
+        </div>
+      </div>
+    `;
+  }
+
   function usageAnalyticsHtml(options = {}) {
     ensureLocalLedgerLoaded();
     const now = toTimestampMs(options.now) || Date.now();
@@ -9458,6 +9652,10 @@ const VERSION = "0.8.0";
         </button>`,
       )
       .join("");
+    const timeModel = usageTimeModel(filtered);
+    const timeModelHtml = timeModel.turns
+      ? `<div class="cltc-usage-source-row"><span>活跃 / 空闲</span><strong>${fmtDuration(timeModel.activeMs)} / ${fmtDuration(timeModel.idleMs)}${timeModel.maxIdleMs > 3600000 ? ` · 最长间隔 ${fmtDuration(timeModel.maxIdleMs)}` : ""}</strong></div>`
+      : "";
     return `
       <section class="cltc-settings-section cltc-analytics" data-analytics-preset="${preset}" data-analytics-model-filter="${escapeHtml(model)}">
         <div class="cltc-settings-section-heading cltc-analytics-heading">
@@ -9487,6 +9685,7 @@ const VERSION = "0.8.0";
           ${metricRow("模型调用", fmtCount(current.calls), { current: current.calls, previous: previous.calls }, false, comparisonTone("calls", current.calls, previous.calls))}
           ${metricRow("缓存命中率", current.cacheHitRate == null ? "—" : `${current.cacheHitRate}%`, { current: current.cacheHitRate, previous: previous.cacheHitRate }, current.cacheHitRate == null, comparisonTone("cache", current.cacheHitRate, previous.cacheHitRate))}
         </div>
+        ${usageSourcePanelHtml(filtered, timeModelHtml)}
         <div class="cltc-analytics-split">
           <div class="cltc-analytics-section">
             <div class="cltc-analytics-section-head">
@@ -12679,6 +12878,35 @@ const VERSION = "0.8.0";
         line-height: 24px;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .cltc-settings .cltc-usage-source-rows {
+        display: grid;
+        gap: 8px;
+      }
+      .cltc-settings .cltc-usage-source-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        min-width: 0;
+        font-size: 12px;
+        line-height: 17px;
+      }
+      .cltc-settings .cltc-usage-source-row > span {
+        color: var(--cltc-muted);
+        flex: 0 0 auto;
+      }
+      .cltc-settings .cltc-usage-source-row > strong {
+        font-weight: 500;
+        text-align: right;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .cltc-settings .cltc-usage-source-row > strong[data-tone='warn'] {
+        color: var(--cltc-warning);
+      }
+      .cltc-settings .cltc-usage-source-row > strong[data-tone='success'] {
+        color: var(--cltc-text);
       }
       .cltc-settings .cltc-analytics-section {
         display: grid;
@@ -16261,6 +16489,9 @@ const VERSION = "0.8.0";
       usageFactPruneHostBackups: (clientOrOptions, maybeOptions) => usageFactPruneHostBackups(clientOrOptions && clientOrOptions.sendRequest ? clientOrOptions : (clientOrOptions && clientOrOptions.client) || appServerSyncClient(), maybeOptions || clientOrOptions || {}),
       usageFactExport: (format) => usageFactExport(format || "json"),
       usageFactImport: (text) => usageFactImport(text),
+      usageTimeModel: (turns) => usageTimeModel(turns),
+      usageSourceLabels: (turns) => usageSourceLabels(turns),
+      usageSourcePanelHtml: (turns) => usageSourcePanelHtml(turns),
       usageFactImportFile: () => usageFactImportFile(),
       usageFactMigrationDiff: (legacyTurns, before, after, migrated) => usageFactMigrationDiff(legacyTurns, before, after, migrated),
       usageFactFallbackEvict: (turns, budget, options) => usageFallbackEvict(turns, budget, options || {}),

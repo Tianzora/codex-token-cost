@@ -770,6 +770,98 @@ const metaLine = (threadId) =>
     assert.equal(row.delta, 0, "the provisional and the record reconcile");
   }
 
+  // ==========================================================================
+  // A7. time model: trigger / parent / item durations / active-vs-idle
+  // ==========================================================================
+  {
+    const lines = [
+      metaLine("01thread-time"),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-time-1", root_turn_id: "turn-root-1", started_at: 1791639101, turn_attribution: { turn_id: "turn-time-1", turn_trigger: "user", parent_turn_id: null, root_turn_id: "turn-root-1" } } }),
+      recordLine("resp_time_1", "turn-time-1", { input: 100, output: 10, total: 110 }),
+      JSON.stringify({ timestamp: "2026-10-15T06:00:10.000Z", type: "event_msg", payload: { type: "item_completed", turn_id: "turn-time-1", started_at_ms: 1791639101000, completed_at_ms: 1791639105000, item: { type: "CommandExecution" } } }),
+      JSON.stringify({ timestamp: "2026-10-15T06:00:20.000Z", type: "event_msg", payload: { type: "item_completed", turn_id: "turn-time-1", started_at_ms: 1791639110000, completed_at_ms: 1791639112000, item: { type: "AgentMessage" } } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-time-1", started_at: 1791639101, completed_at: 1791639121, duration_ms: 20000, time_to_first_token_ms: 1500 } }),
+      // A subagent turn under the same root.
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-time-2", root_turn_id: "turn-root-1", started_at: 1791639200, turn_attribution: { turn_id: "turn-time-2", turn_trigger: "guardian_review", parent_turn_id: "turn-time-1", root_turn_id: "turn-root-1" } } }),
+      recordLine("resp_time_2", "turn-time-2", { input: 200, output: 20, total: 220 }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-time-2", started_at: 1791639200, completed_at: 1791639250, duration_ms: 50000 } }),
+    ];
+    const thread = api.usageSyncParseLines(lines, { lineErrors: 0 });
+    const row = api.usageSyncFinalizeTurnRow("01thread-time", thread.turns.get("turn-time-1"));
+    assert.equal(row.turnTrigger, "user", "the trigger is recorded");
+    assert.equal(row.durationMs, 20000, "the official duration is used as-is");
+    assert.equal(row.timeToFirstTokenMs, 1500, "the time to first token is recorded");
+    assert.equal(row.itemDurations.CommandExecution.count, 1);
+    assert.equal(row.itemDurations.CommandExecution.totalMs, 4000);
+    assert.equal(row.itemDurations.CommandExecution.maxMs, 4000);
+    assert.equal(row.itemDurations.AgentMessage.count, 1);
+    assert.equal(row.itemDurationTotalMs, 6000, "the item durations are aggregated");
+
+    const child = api.usageSyncFinalizeTurnRow("01thread-time", thread.turns.get("turn-time-2"));
+    assert.equal(child.turnTrigger, "guardian_review");
+    assert.equal(child.parentTurnId, "turn-time-1", "the subagent parent is recorded");
+    assert.equal(child.rootTurnId, "turn-root-1", "the subagent root is recorded");
+
+    const model = api.usageTimeModel([row, child]);
+    assert.equal(model.turns, 2);
+    assert.equal(model.activeMs, 70000, "active time is the sum of the official durations");
+    assert.equal(model.userTurns, 1, "the user turn is counted as a user turn");
+    assert.equal(model.autoTurns, 1, "guardian_review is an automatic turn");
+    assert.equal(model.subagentTurns, 1, "the subagent is counted separately");
+    assert.equal(model.itemMs, 6000, "item time is aggregated");
+    assert.equal(model.triggers.user, 1);
+    assert.equal(model.triggers.guardian_review, 1);
+  }
+
+  // Idle time is the gap BETWEEN turns in the same thread (the real "9 hour" source).
+  {
+    const make = (turnId, startIso, endIso, durationMs) => ({
+      turnId,
+      sessionKey: "local:01thread-idle",
+      threadKey: "local:01thread-idle",
+      usage: { input: 1, output: 0, cached: 0, total: 1, exact: true },
+      startedAt: startIso,
+      finishedAt: endIso,
+      durationMs,
+    });
+    const turns = [
+      make("turn-a", "2026-10-15T00:00:00.000Z", "2026-10-15T00:10:00.000Z", 600000),
+      make("turn-b", "2026-10-15T13:28:00.000Z", "2026-10-15T13:38:00.000Z", 600000),
+    ];
+    const model = api.usageTimeModel(turns);
+    assert.equal(model.activeMs, 1200000, "active time is the sum of durations");
+    assert.equal(model.gapCount, 1, "one gap between the two turns");
+    assert.ok(model.idleMs > 13 * 3600 * 1000, "the 13-hour gap is captured as idle time");
+    assert.equal(model.maxIdleMs, model.idleMs);
+    assert.ok(model.wallMs > model.activeMs, "wall time includes the idle gap");
+  }
+
+  // ==========================================================================
+  // A7b. source labelling (P1 #7)
+  // ==========================================================================
+  {
+    const turns = [
+      { turnId: "t1", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_usage_record", model: "gpt-5.5" },
+      { turnId: "t2", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_usage_record", model: "gpt-5.5" },
+      { turnId: "t3", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_count_fallback", model: "unknown-model-x" },
+    ];
+    const labels = api.usageSourceLabels(turns);
+    assert.equal(labels.turns, 3);
+    assert.equal(labels.recorded, 2);
+    assert.equal(labels.fallback, 1);
+    assert.equal(labels.inferred, 0);
+    assert.equal(labels.live, 0);
+    assert.equal(labels.sourcedShare, 67, "the sourced share counts recorded turns");
+    // The harness has no price table loaded, so every model counts as unpriced.
+    assert.equal(labels.unpriced, 3, "every model without a price is counted as unpriced");
+    assert.equal(labels.costSource, "本地价格表", "the cost source is the local price table");
+    assert.equal(labels.tokenSource, "逐响应事实");
+    const html = api.usageSourcePanelHtml(turns);
+    assert.ok(html.includes("数据来源"), "the source panel renders");
+    assert.ok(html.includes("本地价格表"), "the cost source is visible");
+    assert.ok(html.includes("逐响应"), "the token source is visible");
+  }
+
   console.log("usage accuracy P0 tests passed");
 })().catch((error) => {
   console.error(error);
