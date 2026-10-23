@@ -514,6 +514,7 @@ const VERSION = "0.8.0";
     updateClusterEl: null,
     analyticsModel: "",
     analyticsModelsExpanded: false,
+    analyticsHideUnknown: false,
     analyticsRollup: null,
     analyticsRollupLoaded: false,
     analyticsRollupSaveError: "",
@@ -1893,8 +1894,9 @@ const VERSION = "0.8.0";
     void hostProbeCapabilities(client, { path: root });
     try {
       await hostRequest(client, "fs/createDirectory", { path: dir, recursive: true }, { priority: "background", source: "plugin_usage_sync" });
-    } catch {
-      // 目录已存在时 createDirectory 会报错，继续即可。
+    } catch (error) {
+      // 目录已存在时 createDirectory 会报错，继续即可；这类错误说明方法本身可用。
+      hostCapabilityRecordExisting("fs/createDirectory", error);
     }
     const written = [];
     for (const day of payload.days) {
@@ -6647,12 +6649,19 @@ const VERSION = "0.8.0";
     const previous = matrix.methods[name];
     // missing 是稳定结论，不被偶发 error 覆盖；ok 可以被 missing 覆盖（宿主降级）。
     if (previous?.outcome === "missing" && outcome !== "ok") return;
-    if (previous?.outcome === outcome) {
-      previous.at = Date.now();
-      return;
-    }
+    // 同一结论不重复写盘：`at` 记的是「首次确认时间」，避免每次调用都写 localStorage。
+    if (previous?.outcome === outcome) return;
     matrix.methods[name] = { outcome, at: Date.now() };
     hostCapabilitySave();
+  }
+
+  // 真实的「方法存在但操作失败」（目录已存在、路径非空…）也应该算 ok：
+  // 否则 fs/createDirectory 只在目录不存在的那一次能记上，之后永远是「未观测」。
+  function hostCapabilityRecordExisting(method, error) {
+    const name = normalizeText(method, 80);
+    if (!name || !HOST_CAPABILITY_METHODS.includes(name)) return;
+    if (hostCapabilityMissingError(error)) return;
+    hostCapabilityRecord(name, "ok");
   }
 
   // 统一的 app-server 调用入口：成功/失败都回填能力矩阵，然后再把错误抛回去。
@@ -6712,12 +6721,21 @@ const VERSION = "0.8.0";
     };
   }
 
+  // 「未观测」必须点名：只说「2 个方法」用户永远不知道是哪两个。
+  // 3 个以内全列；更多时列前两个 + 计数，避免状态行被撑爆。
+  function hostCapabilityUnknownLabel(methods) {
+    const names = (Array.isArray(methods) ? methods : []).map((method) => normalizeText(method, 60)).filter(Boolean);
+    if (!names.length) return "";
+    if (names.length <= 3) return names.join(" / ");
+    return `${names.length} 个方法（${names.slice(0, 2).join(" / ")} 等）`;
+  }
+
   function hostCapabilityStatusText() {
     const summary = hostCapabilitySummary();
     if (!summary.ok && !summary.missing.length) return "";
     const parts = [];
     if (summary.missing.length) parts.push(`不支援 ${summary.missing.join(" / ")}`);
-    if (summary.unknown.length) parts.push(`未观测 ${summary.unknown.length} 个方法`);
+    if (summary.unknown.length) parts.push(`未观测 ${hostCapabilityUnknownLabel(summary.unknown)}`);
     if (!parts.length) return `主机能力：${summary.ok}/${HOST_CAPABILITY_METHODS.length} 个方法可用`;
     return `主机能力：${summary.ok}/${HOST_CAPABILITY_METHODS.length} 可用 · ${parts.join(" · ")}`;
   }
@@ -9945,6 +9963,16 @@ const VERSION = "0.8.0";
       previousStart.setDate(previousStart.getDate() - 1);
       return { startMs: previousStart.getTime(), endMs: previousStart.getTime() + (endMs - startMs) };
     }
+    // 7 天 / 30 天与「上一个完整日历区间」比较：当期从今天 00:00 起算，上期就必须是
+    // 前 N 个自然日整段（终点 = 当期起点前 1ms）。旧实现用「终点 = 起点前 1ms − 时长」，
+    // 起点会被当前时刻平移（16:42 时落在 07:27），边界日整块错位一天。
+    if (preset === "7d" || preset === "30d") {
+      const days = preset === "30d" ? 30 : 7;
+      const alignedStart = startOfLocalDay(startMs);
+      const previousStart = new Date(alignedStart);
+      previousStart.setDate(previousStart.getDate() - days);
+      return { startMs: previousStart.getTime(), endMs: alignedStart - 1 };
+    }
     const duration = endMs - startMs;
     const previousEnd = startMs - 1;
     return { startMs: previousEnd - duration, endMs: previousEnd };
@@ -9971,6 +9999,7 @@ const VERSION = "0.8.0";
       cost: 0,
       priced: true,
       cacheHitRate: null,
+      activeDays: 0,
       models: [],
     };
   }
@@ -9992,6 +10021,8 @@ const VERSION = "0.8.0";
     const endMs = toTimestampMs(range.endMs) || Number.MAX_SAFE_INTEGER;
     const totals = emptyUsageAnalytics();
     const models = new Map();
+    // 覆盖天数：区间内真正有数据的本地自然日，用来判断「上期样本是否够比」。
+    const activeDays = new Set();
     // 跨午夜拆分：一次建索引，供本批 turn 复用。
     const dayIndex = usageFactDayIndex();
     for (const turn of Array.isArray(turns) ? turns : []) {
@@ -10007,6 +10038,7 @@ const VERSION = "0.8.0";
         if (!slice.lastMs || slice.lastMs < startMs || slice.firstMs > endMs) continue;
         const usage = normalizeUsage(slice.usage);
         if (!usage.exact) continue;
+        activeDays.add(localDateKey(slice.firstMs || slice.lastMs));
         const cacheRead = Math.min(toCount(usage.input), toCount(usage.cached));
         const cacheWrite = Math.min(Math.max(0, toCount(usage.input) - cacheRead), toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
         const cost = usageSliceCost(turn, slice, model, wholeTotal);
@@ -10041,6 +10073,7 @@ const VERSION = "0.8.0";
       }
     }
     totals.cacheHitRate = totals.input ? Math.round((totals.cacheRead / totals.input) * 100) : null;
+    totals.activeDays = activeDays.size;
     totals.models = Array.from(models.values())
       .map((item) => ({
         ...item,
@@ -10188,10 +10221,20 @@ const VERSION = "0.8.0";
     const value = Number(current);
     const before = Number(previous);
     if (!Number.isFinite(value) || !Number.isFinite(before)) return "暂无对比";
+    // 上期覆盖不足：30 天前的窗口只剩两天归档时，百分比会是 +25604% 这种噪声。
+    // 只有多日区间才判覆盖度（今日区间上期本来就是 0 天或 1 天）。
+    const expectedDays = toCount(options.expectedDays);
+    const coveredDays = toCount(options.coveredDays);
+    if (expectedDays >= 3 && coveredDays < Math.ceil(expectedDays / 2)) {
+      if (!before) return "暂无对比";
+      return `上期仅 ${coveredDays} 天有数据`;
+    }
     if (!before) return value ? "较上期新增" : "暂无对比";
-    const percent = Math.round(((value - before) / before) * 100);
-    if (!percent) return "与上期持平";
-    return `较上期 ${percent > 0 ? "+" : ""}${percent}%`;
+    const percent = ((value - before) / before) * 100;
+    if (Math.abs(percent) < 0.5) return "与上期持平";
+    // 10% 以内保留一位小数：0.4% 与 3.2% 的差别不该被四舍五入成「持平」或「+3%」。
+    const rounded = Math.abs(percent) < 10 ? Math.round(percent * 10) / 10 : Math.round(percent);
+    return `较上期 ${rounded > 0 ? "+" : ""}${rounded}%`;
   }
 
   function analyticsChartBuckets(turns, range, metric = "tokens") {
@@ -10322,6 +10365,8 @@ const VERSION = "0.8.0";
           );
     const turns = analyticsVisibleTurns(sourceTurns);
     const model = options.model ?? state.analyticsModel;
+    // hideUnknown 既可来自 state（用户点「隐藏未知」），也可由测试显式传入。
+    const hideUnknown = typeof options.hideUnknown === "boolean" ? options.hideUnknown : state.analyticsHideUnknown;
     const filtered = model ? turns.filter((turn) => normalizeText(turn?.model, 120) === model) : turns;
     const current = aggregateUsageAnalytics(filtered, range);
     const previous = aggregateUsageAnalytics(filtered, previousRange);
@@ -10333,11 +10378,16 @@ const VERSION = "0.8.0";
       if (key === "cache") return up ? "good" : "bad";
       return "neutral";
     };
+    // 上期覆盖度：区间跨度天数 vs 真正有数据的天数，用来判断上期样本够不够比。
+    const previousExpectedDays = previousRange.startMs
+      ? Math.max(1, Math.round((endOfLocalDay(previousRange.endMs) - startOfLocalDay(previousRange.startMs) + 86_400_000) / 86_400_000))
+      : 0;
+    const comparisonOptions = { expectedDays: previousExpectedDays, coveredDays: previous.activeDays };
     const metricRow = (label, value, comparison, incomplete = false, tone = "neutral") => `
       <div class="cltc-analytics-metric">
         <span>${label}</span>
         <strong>${value}</strong>
-        <small data-tone="${tone}">${analyticsComparisonText(comparison.current, comparison.previous, { disabled: incomplete })}</small>
+        <small data-tone="${tone}">${analyticsComparisonText(comparison.current, comparison.previous, { disabled: incomplete, ...comparisonOptions })}</small>
       </div>`;
     const composition = [
       ["常规输入", current.regularInput, "neutral", true],
@@ -10346,18 +10396,24 @@ const VERSION = "0.8.0";
       ["写缓存", current.cacheWrite, "purple", current.cacheWriteAvailable],
     ];
     const compositionTotal = composition.reduce((sum, item) => sum + (item[3] ? item[1] : 0), 0);
-    const modelRows = current.models
+    const unknownModelPresent = current.models.some((item) => item.model === UNKNOWN_MODEL);
+    const visibleModels = current.models.filter((item) => !(hideUnknown && item.model === UNKNOWN_MODEL));
+    const modelRows = visibleModels
       .slice()
       .sort((left, right) => (left.model === UNKNOWN_MODEL) - (right.model === UNKNOWN_MODEL) || right.cost - left.cost || right.tokens - left.tokens)
-      .map(
-        (item, index) => `<button type="button" class="cltc-analytics-model-row" data-analytics-model="${escapeHtml(item.model)}" data-hidden="${String(index >= 10 && !state.analyticsModelsExpanded)}">
-          <span title="${escapeHtml(item.model)}">${escapeHtml(item.model)}</span>
+      .map((item, index) => {
+        // 「未知」不是模型识别失败，而是旧账本迁移时就没有 model 字段：行内必须说清楚。
+        const unknown = item.model === UNKNOWN_MODEL;
+        const label = unknown ? `${item.model}（历史）` : item.model;
+        const title = unknown ? "未知：旧账本迁移时缺少模型字段，无法回填（不是模型识别失败）" : item.model;
+        return `<button type="button" class="cltc-analytics-model-row" data-analytics-model="${escapeHtml(item.model)}" data-hidden="${String(index >= 10 && !state.analyticsModelsExpanded)}">
+          <span title="${escapeHtml(title)}">${escapeHtml(label)}</span>
           <span>${fmtCount(item.tokens)}</span>
           <span>${fmtCount(item.calls)}</span>
           <span>${item.priced ? fmtMoney(item.cost) : `${fmtMoney(item.cost)} · 部分`}</span>
           <span class="cltc-analytics-share" style="--cltc-share:${Math.max(0, Math.min(100, Math.round(item.share)))}%">${Math.round(item.share)}%</span>
-        </button>`,
-      )
+        </button>`;
+      })
       .join("");
     return `
       <section class="cltc-settings-section cltc-analytics" data-analytics-preset="${preset}" data-analytics-model-filter="${escapeHtml(model)}">
@@ -10413,7 +10469,10 @@ const VERSION = "0.8.0";
           </div>
         </div>
         <div class="cltc-analytics-section">
-          <div class="cltc-analytics-section-head"><div><h3>模型明细</h3><p>点击模型可联动筛选整页</p></div></div>
+          <div class="cltc-analytics-section-head">
+            <div><h3>模型明细</h3><p>点击模型可联动筛选整页${unknownModelPresent ? " · 「未知」= 旧账本迁移时缺少模型字段，不可回填" : ""}</p></div>
+            ${unknownModelPresent ? `<button type="button" class="cltc-analytics-expand" data-action="toggle-analytics-unknown">${hideUnknown ? "显示未知" : "隐藏未知"}</button>` : ""}
+          </div>
           <div class="cltc-analytics-model-head"><span>模型</span><span>Token</span><span>模型调用</span><span>花费</span><span>占比</span></div>
           <div class="cltc-analytics-models">${modelRows || `<div class="cltc-analytics-empty">当前范围内暂无真实模型调用</div>`}</div>
           ${current.models.length > 10 ? `<button type="button" class="cltc-analytics-expand" data-action="toggle-analytics-models">${state.analyticsModelsExpanded ? "收起" : `查看全部 ${current.models.length} 个模型`}</button>` : ""}
@@ -15015,6 +15074,11 @@ const VERSION = "0.8.0";
       renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
     }
+    if (event.target.closest?.("[data-action='toggle-analytics-unknown']")) {
+      state.analyticsHideUnknown = !state.analyticsHideUnknown;
+      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      return;
+    }
     const filterButton = event.target.closest?.("[data-price-filter]");
     if (filterButton) {
       const value = filterButton.getAttribute("data-price-filter") || "all";
@@ -15337,19 +15401,9 @@ const VERSION = "0.8.0";
     const statusTone = busy ? "busy" : state.usageSyncAutoFailures >= 3 ? "warn" : "success";
     const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" data-tone="${statusTone}" role="status">${escapeHtml(statusText)}</p>` : "";
     const facts = usageFactAuthoritativeTotals();
-    const reconcile = usageFactReconcileSummary();
     const degraded = state.usageFactDegraded;
     const degradedHtml = degraded
       ? `<p class="cltc-sync-status" data-field="usage-fact-degraded" data-tone="warn" role="status">降级存储：${escapeHtml(state.usageFactDegradedReason || "IndexedDB 不可用")}；逐响应明细可能不完整，请先导出备份</p>`
-      : "";
-    const reconcileHtml = reconcile.threads
-      ? `<p class="cltc-sync-status" data-field="usage-fact-reconcile" data-tone="${reconcile.diff ? "warn" : "success"}" role="status">对账：${reconcile.threads} 个线程 · ${reconcile.matched} 个一致${reconcile.counterReset ? ` · ${reconcile.counterReset} 个计数器重置${reconcile.counterResetDelta ? `（${reconcile.counterResetDelta} tokens，非真实差异）` : ""}` : ""}${reconcile.unknown ? ` · ${reconcile.unknown} 个无计数器` : ""} · ${reconcile.diff} 个真实差异${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""} · 逐响应覆盖率 ${reconcile.coverage}%</p>`
-      : "";
-    // 主机能力矩阵（P2 #3）：说清「宿主机有没有这个方法」，不只报「失败」。
-    const hostCapabilities = hostCapabilitySummary();
-    const capabilityText = hostCapabilityStatusText();
-    const capabilityHtml = capabilityText
-      ? `<p class="cltc-sync-status" data-field="usage-host-capabilities" data-tone="${hostCapabilities.missing.length ? "warn" : "success"}" role="status">${escapeHtml(capabilityText)}</p>`
       : "";
     // 可观测性（P2 #5）：解析行数 / 重复数集中展示。
     const observability = state.usageSyncResult?.observability;
@@ -15376,15 +15430,13 @@ const VERSION = "0.8.0";
             </div>
             ${statusHtml}
             ${degradedHtml}
-            ${capabilityHtml}
             ${observabilityHtml}
-            ${reconcileHtml}
           </div>
           <div class="cltc-sync-block">
             <div class="cltc-settings-row cltc-sync-row">
               <span>
                 <strong>本地账本</strong>
-                <small>逐条保存每次模型调用的用量（当前 ${fmtCount(facts.count)} 条响应 · ${fmtCount(facts.total)} tokens）。清除应用数据会丢失，建议定期备份；费用按本机价格表计算。</small>
+                <small>逐条保存每次模型调用的用量（当前 ${fmtCount(facts.count)} 条响应 · ${fmtCount(facts.total)} tokens）</small>
               </span>
               <span class="cltc-settings-actions">
                 <button type="button" data-action="backup-usage">备份到主机</button>
@@ -17254,7 +17306,9 @@ const VERSION = "0.8.0";
       // 主机能力矩阵（P2 #3）
       hostCapabilitySummary: () => hostCapabilitySummary(),
       hostCapabilityStatusText: () => hostCapabilityStatusText(),
+      hostCapabilityUnknownLabel: (methods) => hostCapabilityUnknownLabel(methods),
       hostCapabilityRecord: (method, outcome) => hostCapabilityRecord(method, outcome),
+      hostCapabilityRecordExisting: (method, error) => hostCapabilityRecordExisting(method, error),
       hostProbeCapabilities: (client, options) => hostProbeCapabilities(client, options || {}),
       hostCapabilityMissingError: (error) => hostCapabilityMissingError(error),
       hostCapabilityReset: () => {

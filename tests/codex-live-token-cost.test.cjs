@@ -1166,6 +1166,18 @@ assert.equal(api.analyticsComparisonText(0, 0), "暂无对比");
 assert.equal(api.analyticsComparisonText(5, 0), "较上期新增");
 assert.equal(api.analyticsComparisonText(5, 5), "与上期持平");
 assert.equal(api.analyticsComparisonText(0, 5), "较上期 -100%");
+// 百分比：10% 以下保留一位小数，0.5% 以内仍算持平。
+assert.equal(api.analyticsComparisonText(103.5, 100), "较上期 +3.5%");
+assert.equal(api.analyticsComparisonText(112, 100), "较上期 +12%");
+assert.equal(api.analyticsComparisonText(100.4, 100), "与上期持平");
+assert.equal(api.analyticsComparisonText(96.8, 100), "较上期 -3.2%");
+// 上期覆盖天数不足（历史归档缺口）时不输出百分比，避免 +25604% 这类误导读数。
+assert.equal(api.analyticsComparisonText(1_000, 100, { expectedDays: 30, coveredDays: 2 }), "上期仅 2 天有数据");
+assert.equal(api.analyticsComparisonText(1_000, 100, { expectedDays: 30, coveredDays: 30 }), "较上期 +900%");
+assert.equal(api.analyticsComparisonText(1_000, 100, { expectedDays: 7, coveredDays: 7 }), "较上期 +900%");
+assert.equal(api.analyticsComparisonText(0, 0, { expectedDays: 30, coveredDays: 0 }), "暂无对比");
+// 单日区间（今日）不做覆盖度降级：昨日覆盖就是 0 天或 1 天。
+assert.equal(api.analyticsComparisonText(10, 5, { expectedDays: 1, coveredDays: 1 }), "较上期 +100%");
 assert.equal(typeof api.spoofProfileAccountPayload, "function");
 assert.equal(typeof api.beginLocalTurn, "function");
 assert.equal(typeof api.persistLocalCurrentTurn, "function");
@@ -1464,6 +1476,22 @@ assert.equal(todayRange.endMs, localBoundaryTime);
 const previousTodayRange = api.analyticsComparisonRange(todayRange, "today");
 assert.equal(previousTodayRange.startMs, new Date(2026, 6, 10, 0, 0, 0, 0).getTime());
 assert.equal(previousTodayRange.endMs, new Date(2026, 6, 10, 0, 30, 0, 0).getTime());
+// 7 天 / 30 天与上一个完整日历区间比较：起点对齐到自然日 00:00，终点是前一自然日 23:59:59.999。
+const weekRange = api.analyticsRangeForPreset("7d", localBoundaryTime);
+assert.equal(weekRange.startMs, new Date(2026, 6, 5, 0, 0, 0, 0).getTime());
+const previousWeekRange = api.analyticsComparisonRange(weekRange, "7d");
+assert.equal(previousWeekRange.startMs, new Date(2026, 5, 28, 0, 0, 0, 0).getTime());
+assert.equal(previousWeekRange.endMs, new Date(2026, 6, 4, 23, 59, 59, 999).getTime());
+const monthRange = api.analyticsRangeForPreset("30d", localBoundaryTime);
+assert.equal(monthRange.startMs, new Date(2026, 5, 12, 0, 0, 0, 0).getTime());
+const previousMonthRange = api.analyticsComparisonRange(monthRange, "30d");
+assert.equal(previousMonthRange.startMs, new Date(2026, 4, 13, 0, 0, 0, 0).getTime());
+assert.equal(previousMonthRange.endMs, new Date(2026, 5, 11, 23, 59, 59, 999).getTime());
+// 自定义区间没有「日历对齐」概念，保持等长窗口（终点 = 当期起点前 1ms）。
+const customRange = api.analyticsRangeForPreset("custom", localBoundaryTime, { start: "2026-07-01", end: "2026-07-09" });
+const previousCustomRange = api.analyticsComparisonRange(customRange, "custom");
+assert.equal(previousCustomRange.endMs, customRange.startMs - 1);
+assert.equal(previousCustomRange.endMs - previousCustomRange.startMs, customRange.endMs - customRange.startMs);
 const analyticsTurns = [
   {
     turnId: "cc-day",
@@ -1515,6 +1543,7 @@ assert.equal(analytics.cacheHitRate, Math.round((48 / 140) * 100));
 assert.equal(analytics.priced, false);
 assert.equal(analytics.models.length, 2);
 assert.equal(analytics.models.find((item) => item.model === "unknown-test-model").priced, false);
+assert.equal(analytics.activeDays, 1, "activeDays counts the distinct days that contributed");
 const futureDatedCcDayAggregate = api.aggregateUsageAnalytics(
   [
     {
@@ -1693,6 +1722,44 @@ assert.equal(customRangeHtml.includes('data-action="clear-analytics-range"'), tr
 assert.equal(customRangeHtml.includes('<div class="cltc-analytics-date-range" hidden>'), false);
 assert.equal(analyticsHtml.includes("写缓存"), true);
 assert.equal(analyticsHtml.includes("模型明细"), true);
+// 「未知」行必须自带解释：旧账本迁移缺 model 字段，回填不了，不是模型识别失败。
+const unknownModelHtml = api.usageAnalyticsHtml({
+  now: new Date(2026, 6, 11, 15, 0).getTime(),
+  preset: "today",
+  turns: [
+    {
+      turnId: "legacy-unknown-model",
+      createdAt: new Date(2026, 6, 11, 9, 0).toISOString(),
+      observedAt: new Date(2026, 6, 11, 9, 0).getTime(),
+      usage: { input: 100, output: 20, cached: 40, total: 120, exact: true },
+    },
+  ],
+});
+assert.equal(unknownModelHtml.includes("未知（历史）"), true);
+assert.equal(unknownModelHtml.includes('data-action="toggle-analytics-unknown"'), true);
+assert.equal(unknownModelHtml.includes("旧账本迁移时缺少模型字段"), true);
+// 数据属性必须保留原始键「未知」，否则点击行筛选会失效。
+assert.equal(unknownModelHtml.includes('data-analytics-model="未知"'), true);
+assert.equal(unknownModelHtml.includes('data-analytics-model="未知（历史）"'), false);
+// 「隐藏未知」只影响模型行，不影响总数；隐藏后不再出现该行与切换按钮。
+const hideUnknownHtml = api.usageAnalyticsHtml({
+  now: new Date(2026, 6, 11, 15, 0).getTime(),
+  preset: "today",
+  hideUnknown: true,
+  turns: [
+    {
+      turnId: "legacy-unknown-model-hidden",
+      createdAt: new Date(2026, 6, 11, 9, 0).toISOString(),
+      observedAt: new Date(2026, 6, 11, 9, 0).getTime(),
+      usage: { input: 100, output: 20, cached: 40, total: 120, exact: true },
+    },
+  ],
+});
+assert.equal(hideUnknownHtml.includes("未知（历史）"), false);
+assert.equal(hideUnknownHtml.includes("cltc-analytics-model-row"), false);
+// 开关必须留在页面上，否则用户没法再把「未知」显示回来。
+assert.equal(hideUnknownHtml.includes('data-action="toggle-analytics-unknown"'), true);
+assert.equal(hideUnknownHtml.includes(">显示未知<"), true);
 const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   now: new Date(2026, 6, 11, 15, 0).getTime(),
   preset: "today",
@@ -1831,6 +1898,13 @@ assert.equal(syncSectionHtml.includes("自动读取本机 Codex 会话记录，�
 assert.equal(syncSectionHtml.includes("cltc-settings-row cltc-sync-row"), true);
 assert.equal(syncSectionHtml.includes("<strong>自动同步</strong>"), false);
 assert.equal(syncSectionHtml.includes('data-field="usage-sync-auto"'), false);
+// 主机能力 / 对账不再出现在设置页；内部能力矩阵 API 仍保留（另有用例覆盖）。
+assert.equal(code.includes('data-field="usage-host-capabilities"'), false);
+assert.equal(code.includes('data-field="usage-host-capabilities-detail"'), false);
+assert.equal(code.includes('data-field="usage-fact-reconcile"'), false);
+assert.equal(syncSectionHtml.includes("主机能力"), false);
+assert.equal(syncSectionHtml.includes("对账："), false);
+assert.equal(syncSectionHtml.includes("逐响应覆盖率"), false);
 assert.equal(syncSectionHtml.includes('data-action="sync-usage"'), true);
 assert.equal(syncSectionHtml.includes("立即同步"), true);
 assert.equal(syncSectionHtml.includes("正在同步"), false);

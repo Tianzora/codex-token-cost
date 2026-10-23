@@ -521,13 +521,30 @@ function createFakeAppServer(files = {}) {
     summary = api.hostCapabilitySummary();
     assert.equal(summary.missing.length, 0);
     assert.equal(summary.backupReady, true);
-    assert.match(api.hostCapabilityStatusText(), /^主机能力：1\/8 可用 · 未观测 7 个方法$/);
+    assert.match(api.hostCapabilityStatusText(), /^主机能力：1\/8 可用 · 未观测 7 个方法（fs\/readFile \/ fs\/getMetadata 等）$/);
 
     // The matrix survives a reload (24h cache in localStorage).
     context.__codexLiveTokenCost.destroy();
     api = boot();
     await settle();
     assert.equal(api.hostCapabilitySummary().methods["fs/copy"].outcome, "ok", "the matrix is cached across reloads");
+
+    // 真实宿主形态：6 个方法已确认可用，只剩 fs/createDirectory / fs/copy 从没被调用过。
+    // 状态行必须点名这 2 个方法，否则用户无法知道「未观测」到底指什么。
+    api.hostCapabilityReset();
+    for (const method of ["fs/readFile", "fs/getMetadata", "fs/readDirectory", "fs/writeFile", "fs/remove", "command/exec"]) {
+      api.hostCapabilityRecord(method, "ok");
+    }
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.ok, 6);
+    assert.equal(api.hostCapabilityStatusText(), "主机能力：6/8 可用 · 未观测 fs/createDirectory / fs/copy");
+
+    // 「目录已存在」不是能力缺失：createDirectory 必须从「未观测」变成 ok。
+    api.hostCapabilityRecordExisting("fs/createDirectory", new Error("EEXIST: file already exists, mkdir 'C:\\Users\\test\\.codex\\usage-ledger'"));
+    assert.equal(api.hostCapabilitySummary().methods["fs/createDirectory"]?.outcome, "ok", "an existing directory still proves the method exists");
+    api.hostCapabilityReset();
+    api.hostCapabilityRecordExisting("fs/createDirectory", new Error("unsupported method: fs/createDirectory"));
+    assert.equal(api.hostCapabilitySummary().methods["fs/createDirectory"], undefined, "a missing-method error must not be recorded as ok");
 
     // Only read-only methods are probed; no write/command is ever attempted.
     api.hostCapabilityReset();
@@ -950,7 +967,9 @@ function createFakeAppServer(files = {}) {
     assert.ok(html.includes('data-action="export-usage"'), "the export button is reachable");
     assert.ok(html.includes('data-action="rebuild-usage"'), "the rebuild button is reachable");
     assert.ok(html.includes('data-action="backup-usage"'), "the host backup button is reachable");
-    assert.ok(html.includes("逐响应覆盖率") || true, "the reconcile line renders when there is something to reconcile");
+    // 对账 / 主机能力不再渲染到数据同步区块（内部 API 仍保留，见 A/B 组用例）。
+    assert.equal(html.includes("逐响应覆盖率"), false, "the reconcile line is no longer rendered");
+    assert.equal(html.includes("主机能力"), false, "the host capability line is no longer rendered");
   }
 
   console.log("usage persistence P0 tests passed");
