@@ -261,7 +261,7 @@ assert.equal(code.includes('pushState(history.state, "", "/settings/profile")'),
 assert.equal(code.includes("@run-at       document-start"), true);
 assert.equal(code.includes("window.postMessage(message"), true);
 assert.equal(code.includes('"codex-message-from-view"'), true);
-assert.equal(code.includes('const VERSION = "0.8.0"'), true);
+assert.equal(code.includes('const VERSION = "0.8.1"'), true);
 assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
 assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
@@ -1803,7 +1803,7 @@ const unavailableCacheWriteHtml = api.usageAnalyticsHtml({
   ],
 });
 assert.equal(unavailableCacheWriteHtml.includes("写缓存<strong>未提供</strong>"), true);
-assert.equal(context.__codexLiveTokenCost.version, "0.8.0");
+assert.equal(context.__codexLiveTokenCost.version, "0.8.1");
 assert.equal(api.currentSessionKey().startsWith("new:startup:"), true);
 assert.equal(api.extractSessionKeyFromUrl("/thread/thread-1"), "thread-1");
 assert.equal(api.extractSessionKeyFromUrl("/api/conversation?conversationId=thread-1"), "thread-1");
@@ -3281,7 +3281,7 @@ const apiKeyQueryClient = {
       },
     };
     assert.equal(api.installProfileUiReadinessCoordinator(["ProfileFooterHarness"], realChatgptDocument), true);
-    assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.8.0");
+    assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.8.1");
     assert.equal(api.profileSyntheticAuth(), true);
     const realChatgptPatchedAuth = api.profileUiAuthContextValue(realChatgptAuthContext._currentValue);
     assert.equal(realChatgptPatchedAuth.accountId, "real-chatgpt-account");
@@ -3373,7 +3373,7 @@ delayedProfileButton = {
   },
 };
 profileReadinessObserver.callback([{ addedNodes: [delayedProfileButton] }]);
-assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.8.0");
+assert.equal(context.__codexLiveTokenCostProfileAuthPatch, "0.8.1");
 assert.equal(api.profileSyntheticAuth(), true);
 assert.equal(profileReadinessObserver.disconnected, true);
 assert.equal(delayedProfileCacheWrites.length > 0, true);
@@ -5967,7 +5967,7 @@ const profileLifecycleTest = Promise.resolve()
     const localMessageHandler = api.localMessageHandler();
     assert.equal(typeof localMessageHandler, "function");
     assert.equal((windowListeners.get("message") || []).length, messageListenersBeforeLocalCapture + 1);
-assert.equal(context.__codexLiveTokenCostMessageCapture, "0.8.0");
+assert.equal(context.__codexLiveTokenCostMessageCapture, "0.8.1");
     context.document.getElementById = () => null;
     context.__codexLiveTokenCost.destroy();
     assert.equal((windowListeners.get("message") || []).includes(localMessageHandler), false);
@@ -6560,7 +6560,7 @@ profileLifecycleTest.then(async () => {
     assert.equal(cleanups.length, 2);
     assert.equal(typeof context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled, "function");
     assert.equal(context.__codexLiveTokenCostActiveBridge.profileSyntheticEnabled(), false);
-    assert.equal(context.__codexLiveTokenCostVersion, "0.8.0");
+    assert.equal(context.__codexLiveTokenCostVersion, "0.8.1");
 
     assert.equal(cleanups[1](), undefined);
     assert.equal(context.__codexLiveTokenCostActiveBridge, undefined);
@@ -6673,7 +6673,7 @@ profileLifecycleTest.then(async () => {
     const readCalls = [];
     const writeCalls = [];
     const removeCalls = [];
-    let remoteSource = fakeSource("0.8.0");
+    let remoteSource = fakeSource("0.8.1");
     let writtenBase64 = "";
     let corruptTargetRead = false;
     const hostClient = {
@@ -6717,12 +6717,12 @@ profileLifecycleTest.then(async () => {
     assert.equal(updateApi.updateClusterHtml().includes("已是最新"), true);
     assert.equal(updateApi.updateClusterHtml().includes('data-action="open-repo"'), true);
 
-    remoteSource = fakeSource("0.8.1");
+    remoteSource = fakeSource("0.8.2");
     updateApi.updateResetState();
     assert.equal(await updateApi.checkForUpdateNow({ auto: true }), true);
     assert.equal(updateApi.updateStateSnapshot().phase, "available");
-    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "0.8.1");
-    assert.equal(updateApi.updateClusterHtml().includes("一键更新 v0.8.1"), true);
+    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "0.8.2");
+    assert.equal(updateApi.updateClusterHtml().includes("一键更新 v0.8.2"), true);
     const availableHtml = updateApi.updateClusterHtml();
     assert.equal(availableHtml.includes('data-action="open-repo"'), true);
     assert.equal(availableHtml.includes('class="cltc-update-github"'), true);
@@ -6755,7 +6755,7 @@ profileLifecycleTest.then(async () => {
     const versionBeforeUpdate = context.__codexLiveTokenCostVersion;
 
     const freshRemoteSource = remoteSource;
-    remoteSource = fakeSource("0.8.0");
+    remoteSource = fakeSource("0.8.1");
     assert.equal(await updateApi.runScriptUpdate(), false);
     assert.equal(updateApi.updateStateSnapshot().phase, "error");
     assert.equal(updateApi.updateStateSnapshot().errorKind, "update");
@@ -6772,7 +6772,7 @@ profileLifecycleTest.then(async () => {
     corruptTargetRead = false;
 
     assert.equal(await updateApi.runScriptUpdate(), true);
-    assert.equal(context.__codexLiveTokenCostVersion, "0.8.1");
+    assert.equal(context.__codexLiveTokenCostVersion, "0.8.2");
     assert.equal(context.__codexLiveTokenCost === previousInstance, false);
     assert.equal(typeof context.__codexLiveTokenCost.destroy, "function");
     assert.equal(registryEntry.cleanups[0], context.__codexLiveTokenCost.destroy);
@@ -6783,7 +6783,7 @@ profileLifecycleTest.then(async () => {
     assert.equal(writeCalls[1].dataBase64, base64Of(remoteSource));
     assert.equal(removeCalls.includes(downloadPath), true);
     assert.equal(readCalls.includes(targetPath), true);
-    assert.equal(updateToasts.some((entry) => String(entry.message).includes("已更新到 v0.8.1")), true);
+    assert.equal(updateToasts.some((entry) => String(entry.message).includes("已更新到 v0.8.2")), true);
     const lastCommand = commandCalls[commandCalls.length - 1];
     assert.equal(lastCommand[0], "curl");
     assert.equal(lastCommand.includes("-r"), false);

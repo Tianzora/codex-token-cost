@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Codex Live Token Cost
 // @namespace    codex-plus-plus
-// @version      0.8.0
+// @version      0.8.1
 // @description  在 Codex 输入框上方显示 Token 与金额；ChatGPT 登录时可用本地统计覆盖官方个人资料页；通过设置按钮管理价格和资料。
 // @match        app://-/*
 // @run-at       document-start
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
   // ---------------------------------------------------------------------------
   // 模块地图（按文件出现顺序；行号会漂移，这里只给入口符号，搜索符号名即可跳转）
   //
