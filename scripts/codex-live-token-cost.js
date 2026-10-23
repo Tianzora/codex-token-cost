@@ -11,6 +11,41 @@
   "use strict";
 
 const VERSION = "0.8.0";
+  // ---------------------------------------------------------------------------
+  // 模块地图（按文件出现顺序；行号会漂移，这里只给入口符号，搜索符号名即可跳转）
+  //
+  //   01 常量与配置              → ROOT_ID / USAGE_*_SCHEMA_VERSION / *_KEY
+  //   02 通用原语 UTIL           → UTIL.toCount / UTIL.normalizeText / UTIL.loadJson
+  //   03 内置打包依赖            → installBundledFlatpickr / installBundledFzstd
+  //   04 生命周期注册器          → trackTimer / trackObserver / trackListener / disposers
+  //   05 内存状态                → state（唯一可变状态树）
+  //   06 格式化（保留裸名）      → fmtCount / fmtMoney / escapeHtml / localDateKey
+  //   07 价格覆盖表缓存          → priceOverrides / invalidatePriceOverridesCache
+  //   08 逐响应事实层            → usageFactNormalize / usageFactPersistResponses
+  //   09 主机冷备 + 导出/导入    → usageFactBackupToHost / usageFactDownloadExport
+  //   10 事实 → turn 投影        → usageFactTurnsFromFacts / usageFactHydrateLedger
+  //   11 上游价格文件缓存        → priceCacheLoad / refreshDefaultPrices
+  //   12 定价与成本              → priceFor / costForModelUsage / storedTurnCost
+  //   13 账本合并与归档          → mergeProfileLedgerTurns / localUsageArchiveTurnsForAnalytics
+  //   14 会话标识与运行时绑定    → extractSessionIdentity / resolveRuntimeSessionBinding
+  //   15 会话识别 + profile 伪装 → requestUrl / isProfileUsageUrl
+  //   16 运行时观测              → observeModelInfo / startTurnShimmer / todayUsage
+  //   17 composer 运行态与采集   → composerActionButtons / officialComposerRunState
+  //   18 使用统计聚合            → aggregateUsageAnalytics / buildAnalyticsRollup
+  //   19 会话汇总与快照          → liveSnapshot / localDailyUsage / turnListCost
+  //   20 profile 请求补丁        → patchProfileRequestClient / installProfileMessageIntercept
+  //   21 设置页与嵌入式页面      → findComposerBox / renderEmbeddedSettingsPage
+  //   22 样式表                  → ensureStyle（全部 .cltc-* 样式）
+  //   23 UI 渲染与设置面板       → ensureRoot / render / handleSettingsClick / *Html()
+  //   24 启动与销毁              → start / scheduleStart / destroy
+  //
+  // 约定：新增顶层成员前先定位它属于哪个模块；跨模块调用一律写模块名（UTIL.xxx）或
+  // 具名函数的完整名字，不要用「子串能碰巧匹配」的缩写。
+  // ---------------------------------------------------------------------------
+  // 模块 01：常量与配置
+  // 全部魔法数字、localStorage 键、上游 URL、schema 版本集中在这里。
+  // 改动 schema 版本必须同时升 USAGE_SYNC_FILE_STAMPS_KEY（见 WORKSPACE_CONTEXT.md 约定）。
+  // ---------------------------------------------------------------------------
   const ROOT_ID = "codex-live-token-cost";
   const STYLE_ID = "codex-live-token-cost-style";
   const FLATPICKR_STYLE_ID = "codex-live-token-cost-flatpickr-style";
@@ -231,6 +266,76 @@ const VERSION = "0.8.0";
     { pattern: /^gpt-5\.5(?:$|[-_.])/, multiplier: 2.5 },
     { pattern: /^gpt-5\.4(?:$|[-_.])/, multiplier: 2 },
   ];
+  // ---------------------------------------------------------------------------
+  // 模块 02：通用原语（UTIL）
+  // 只收「无状态、纯函数、零测试文本引用」的底层工具：
+  //   * 收进 UTIL 是为了让每个调用点自带出处（UTIL.toCount / UTIL.normalizeText）。
+  //     17k 行单文件里靠裸名跳转，是查不到定义落在哪个板块的。
+  //   * fmtCount / fmtMoney / escapeHtml / localDateKey 刻意留在下面裸名位置：
+  //     tests/codex-live-token-cost.test.cjs 对它们做源码文本断言（code.includes(...)），
+  //     改名会让断言失效，属于「不要动」的稳定面。
+  // ---------------------------------------------------------------------------
+  const UTIL = {
+    toCount(value) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+    },
+    // 兼容秒 / 毫秒 / ISO 字符串三种时间戳口径。
+    toTimestampMs(value) {
+      if (value == null || value === "") return 0;
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) return Math.round(n < 10_000_000_000 ? n * 1000 : n);
+      const parsed = Date.parse(String(value));
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    },
+    firstTimestampMs(...values) {
+      for (const value of values) {
+        const timestamp = UTIL.toTimestampMs(value);
+        if (timestamp) return timestamp;
+      }
+      return 0;
+    },
+    // 时长格式化：秒 / 分 / 小时，超过 1 小时才显示小时部分。
+    fmtDuration(ms) {
+      const total = Math.max(0, UTIL.toCount(ms));
+      if (!total) return "0 秒";
+      const hours = Math.floor(total / 3_600_000);
+      const minutes = Math.floor((total % 3_600_000) / 60_000);
+      const seconds = Math.floor((total % 60_000) / 1000);
+      if (hours) return `${hours} 小时 ${minutes} 分`;
+      if (minutes) return `${minutes} 分 ${seconds} 秒`;
+      return `${seconds} 秒`;
+    },
+    fmtPercent(numerator, denominator) {
+      const total = UTIL.toCount(denominator);
+      return total ? `${Math.round((UTIL.toCount(numerator) / total) * 100)}%` : "0%";
+    },
+    // localStorage JSON 读取：任何异常都回落 fallback，绝不因为脏数据打断渲染。
+    loadJson(key, fallback) {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(key) || "null");
+        return parsed && typeof parsed === "object" ? parsed : fallback;
+      } catch {
+        return fallback;
+      }
+    },
+    loadJsonFromString(value, fallback) {
+      try {
+        const parsed = JSON.parse(String(value || "null"));
+        return parsed && typeof parsed === "object" ? parsed : fallback;
+      } catch {
+        return fallback;
+      }
+    },
+    // 文本归一：非字符串、空串、超长、以及 null/undefined/default 这类占位值一律视为缺失。
+    normalizeText(value, max = 120) {
+      if (typeof value !== "string") return "";
+      const text = value.trim();
+      if (!text || text.length > max || /^(null|undefined|default)$/i.test(text)) return "";
+      return text;
+    },
+  };
+
   /*
    * Flatpickr 4.6.13 + zh locale
    * Copyright (c) 2017 Gregory Petrosyan
@@ -253,6 +358,11 @@ const VERSION = "0.8.0";
    * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    * SOFTWARE.
    */
+  // ---------------------------------------------------------------------------
+  // 模块 03：内置打包依赖
+  // flatpickr 4.6.13 + zh locale、fzstd（zstd 解码）、flatpickr CSS(gzip) 全部内联，
+  // 不依赖任何 CDN：宿主是 Electron，离线也要能用。升级只替换这三段 blob。
+  // ---------------------------------------------------------------------------
   function installBundledFlatpickr() {
     if (typeof window.flatpickr === "function") return window.flatpickr;
     const exports = undefined;
@@ -366,6 +476,11 @@ const VERSION = "0.8.0";
   if (window.__codexLiveTokenCostVersion === VERSION) return;
   window.__codexLiveTokenCostVersion = VERSION;
 
+  // ---------------------------------------------------------------------------
+  // 模块 04：生命周期注册器
+  // 所有 timer / observer / listener 都必须经 trackXxx 注册，destroy() 才能统一拆除。
+  // tests 会断言 disposers 必须排空（仓库约定，别绕过）。
+  // ---------------------------------------------------------------------------
   const disposers = [];
   function trackTimer(id) {
     disposers.push(() => {
@@ -384,6 +499,11 @@ const VERSION = "0.8.0";
     return handler;
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 05：内存状态
+  // 唯一可变状态树。事实层（usageFacts）与 turn 投影（localLedger）是两套数据，
+  // 禁止在渲染路径里直接改写 usageFacts（走 usageFactPersistResponses）。
+  // ---------------------------------------------------------------------------
   const state = {
     startTimer: 0,
     root: null,
@@ -630,41 +750,13 @@ const VERSION = "0.8.0";
     priceOverridesValue: null,
   };
 
-  function toCount(value) {
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
-  }
-
-  function toTimestampMs(value) {
-    if (value == null || value === "") return 0;
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) return Math.round(n < 10_000_000_000 ? n * 1000 : n);
-    const parsed = Date.parse(String(value));
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  }
-
-  function firstTimestampMs(...values) {
-    for (const value of values) {
-      const timestamp = toTimestampMs(value);
-      if (timestamp) return timestamp;
-    }
-    return 0;
-  }
-
-  // 时长格式化：秒 / 分 / 小时，超过 1 小时才显示小时部分。
-  function fmtDuration(ms) {
-    const total = Math.max(0, toCount(ms));
-    if (!total) return "0 秒";
-    const hours = Math.floor(total / 3_600_000);
-    const minutes = Math.floor((total % 3_600_000) / 60_000);
-    const seconds = Math.floor((total % 60_000) / 1000);
-    if (hours) return `${hours} 小时 ${minutes} 分`;
-    if (minutes) return `${minutes} 分 ${seconds} 秒`;
-    return `${seconds} 秒`;
-  }
-
+  // ---------------------------------------------------------------------------
+  // 模块 06：格式化（保留裸名）
+  // fmtCount / fmtMoney / escapeHtml / localDateKey 被 tests 的源码文本断言钉住，
+  // 故意不并入 UTIL：改名会让 code.includes(...) 断言失效。
+  // ---------------------------------------------------------------------------
   function fmtCount(value) {
-    const n = toCount(value);
+    const n = UTIL.toCount(value);
     for (const [unit, suffix] of [
       [1_000_000_000, "B"],
       [1_000_000, "M"],
@@ -683,36 +775,17 @@ const VERSION = "0.8.0";
     return `$${n.toFixed(2)}`;
   }
 
-  function fmtPercent(numerator, denominator) {
-    const total = toCount(denominator);
-    return total ? `${Math.round((toCount(numerator) / total) * 100)}%` : "0%";
-  }
-
-  function loadJson(key, fallback) {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(key) || "null");
-      return parsed && typeof parsed === "object" ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  function loadJsonFromString(value, fallback) {
-    try {
-      const parsed = JSON.parse(String(value || "null"));
-      return parsed && typeof parsed === "object" ? parsed : fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
   // 价格覆盖表在每次渲染、每个 turn 成本计算里都会被读取；按 localStorage 原文缓存，
   // 避免同一帧内反复 JSON.parse 整张表。所有写入点都必须调用 invalidatePriceOverridesCache()。
+  // ---------------------------------------------------------------------------
+  // 模块 07：价格覆盖表缓存
+  // 每次渲染都会读，按 localStorage 原文缓存；所有写入点都要调 invalidatePriceOverridesCache()。
+  // ---------------------------------------------------------------------------
   function priceOverrides() {
     try {
       const raw = localStorage.getItem(PRICE_OVERRIDES_KEY) || "";
       if (state.priceOverridesRaw === raw && state.priceOverridesValue) return state.priceOverridesValue;
-      const value = loadJsonFromString(raw, {});
+      const value = UTIL.loadJsonFromString(raw, {});
       state.priceOverridesRaw = raw;
       state.priceOverridesValue = value;
       return value;
@@ -779,16 +852,16 @@ const VERSION = "0.8.0";
   }
 
   function profileTimestampIso(value, fallback = "") {
-    const numeric = toTimestampMs(value);
+    const numeric = UTIL.toTimestampMs(value);
     if (numeric) return new Date(numeric).toISOString();
     const parsed = Date.parse(String(value || ""));
     return Number.isFinite(parsed) ? new Date(parsed).toISOString() : fallback;
   }
 
   function profileNormalizeTurn(raw = {}) {
-    const turnId = normalizeText(raw.turnId || raw.turn_id || raw.id, 240);
+    const turnId = UTIL.normalizeText(raw.turnId || raw.turn_id || raw.id, 240);
     if (!turnId) return null;
-    const threadCandidate = normalizeText(raw.threadKey || raw.thread_key || raw.sessionKey || raw.session_key, 240);
+    const threadCandidate = UTIL.normalizeText(raw.threadKey || raw.thread_key || raw.sessionKey || raw.session_key, 240);
     const threadKey = raw.threadAttributionStatus === "unknown" || isTransientSessionKey(threadCandidate) ? "" : threadCandidate;
     const hasUsage = normalizeUsage(raw.usage).exact;
     const durationStatus = ["completed", "recovered", "incomplete"].includes(raw.durationStatus) ? raw.durationStatus : "incomplete";
@@ -812,11 +885,11 @@ const VERSION = "0.8.0";
       costUsd: Number.isFinite(Number(raw.costUsd)) && Number(raw.costUsd) > 0 ? Number(raw.costUsd) : null,
       fastMode: typeof raw.fastMode === "boolean" ? raw.fastMode : null,
       effort: normalizeReasoningEffort(raw.effort || raw.reasoningEffort),
-      callCount: Math.max(0, toCount(raw.callCount ?? raw.call_count)),
-      source: normalizeText(raw.source, 80) || "codex-live-token-cost",
+      callCount: Math.max(0, UTIL.toCount(raw.callCount ?? raw.call_count)),
+      source: UTIL.normalizeText(raw.source, 80) || "codex-live-token-cost",
       capturedAt: profileTimestampIso(raw.capturedAt || raw.captured_at || raw.observedAt || raw.observed_at, new Date().toISOString()),
-      persistReason: normalizeText(raw.persistReason || raw.persist_reason, 80) || "observed",
-      invocationIds: Array.from(new Set((Array.isArray(raw.invocationIds) ? raw.invocationIds : []).map((id) => normalizeText(id, 240)).filter(Boolean))),
+      persistReason: UTIL.normalizeText(raw.persistReason || raw.persist_reason, 80) || "observed",
+      invocationIds: Array.from(new Set((Array.isArray(raw.invocationIds) ? raw.invocationIds : []).map((id) => UTIL.normalizeText(id, 240)).filter(Boolean))),
       invocations,
     };
   }
@@ -840,7 +913,7 @@ const VERSION = "0.8.0";
   }
 
   function profileNormalizeUsageCall(call) {
-    const turnId = normalizeText(call?.turnId, 240);
+    const turnId = UTIL.normalizeText(call?.turnId, 240);
     const usage = normalizeUsage(call?.usage);
     if (!turnId || !usage.exact) return null;
     const canonicalUsageKey = usageKey(usage);
@@ -849,16 +922,16 @@ const VERSION = "0.8.0";
       turnId,
       usage,
       usageKey: canonicalUsageKey,
-      observedAt: toCount(call.observedAt),
-      source: normalizeText(call.source, 80),
+      observedAt: UTIL.toCount(call.observedAt),
+      source: UTIL.normalizeText(call.source, 80),
     };
   }
 
   function profileNormalizeLedgerInvocation(invocation) {
     const normalized = normalizeProfileInvocation(invocation);
-    const invocationId = normalizeText(invocation?.invocationId || invocation?.id, 300);
+    const invocationId = UTIL.normalizeText(invocation?.invocationId || invocation?.id, 300);
     return normalized && invocationId
-      ? { ...normalized, invocationId, turnId: normalizeText(invocation.turnId, 240), occurrence: toCount(invocation.occurrence) || 1, observedAt: toCount(invocation.observedAt), source: normalizeText(invocation.source, 80) }
+      ? { ...normalized, invocationId, turnId: UTIL.normalizeText(invocation.turnId, 240), occurrence: UTIL.toCount(invocation.occurrence) || 1, observedAt: UTIL.toCount(invocation.observedAt), source: UTIL.normalizeText(invocation.source, 80) }
       : null;
   }
 
@@ -928,7 +1001,7 @@ const VERSION = "0.8.0";
           model,
           createdAt: `${date}T12:00:00.000Z`,
           usage,
-          callCount: toCount(item?.calls) || 1,
+          callCount: UTIL.toCount(item?.calls) || 1,
           costUsd: Number(item?.storedCostUsd) > 0 ? Number(item.storedCostUsd) : null,
           durationStatus: "incomplete",
           persistReason: "legacy-migration",
@@ -940,7 +1013,7 @@ const VERSION = "0.8.0";
 
   function profileMigrateLegacyLedger(ledger) {
     if (ledger.migrationComplete) return false;
-    const legacy = loadJson(LOCAL_USAGE_KEY, null);
+    const legacy = UTIL.loadJson(LOCAL_USAGE_KEY, null);
     const candidates = [
       ...(Array.isArray(legacy?.turns) ? legacy.turns : []),
       ...profileLegacyArchiveTurns(legacy?.archive),
@@ -972,7 +1045,7 @@ const VERSION = "0.8.0";
       merged.threadAttributionStatus = existing.threadAttributionStatus;
     }
     if (!next.usage && existing.usage) merged.usage = existing.usage;
-    if (!toCount(next.callCount) && toCount(existing.callCount)) merged.callCount = existing.callCount;
+    if (!UTIL.toCount(next.callCount) && UTIL.toCount(existing.callCount)) merged.callCount = existing.callCount;
     if (typeof next.fastMode !== "boolean" && typeof existing.fastMode === "boolean") merged.fastMode = existing.fastMode;
     if (!next.effort && existing.effort) merged.effort = existing.effort;
     // 逐响应 id 只增不减：重复观察同一 turn 不能把已知身份洗掉。
@@ -1138,7 +1211,7 @@ const VERSION = "0.8.0";
   function ensureProfileLedgerLoaded() {
     if (state.profileLedgerLoaded) return state.profileLedger;
     state.profileLedgerLoaded = true;
-    const rawSnapshot = loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
+    const rawSnapshot = UTIL.loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
     state.profileLedger = profileNormalizeSnapshot(rawSnapshot);
     if (!state.profileLedgerMigrationChecked) {
       profileMigrateLegacyLedger(state.profileLedger);
@@ -1156,7 +1229,6 @@ const VERSION = "0.8.0";
     return state.profileLedger;
   }
 
-  // ---------------------------------------------------------------------------
   // 事实层（usage facts）
   //
   // 口径：token_usage_record 是云端 Responses API usage 的本地逐响应副本，按
@@ -1166,16 +1238,15 @@ const VERSION = "0.8.0";
   // 事实层是长期账本：IndexedDB 的 profileResponses 表按 response_id 存事实，
   // turns / dailyRollups 都是派生表。localStorage 只保留偏好、价格覆盖、schema
   // 指针和降级快照，不再是会计上限为 2000 条的主账本。
-  // ---------------------------------------------------------------------------
 
   function usageFactKey(responseId) {
-    return normalizeText(responseId, 200);
+    return UTIL.normalizeText(responseId, 200);
   }
 
   // Codex 旧版本 / 导入数据会把缺失模型写成英文 "unknown"；统一成本地未知模型，
   // 避免模型明细里同时出现 "unknown" 和 "未知" 两行。
   function usageModelLabel(value, fallback = UNKNOWN_MODEL) {
-    const name = normalizeText(value, 120);
+    const name = UTIL.normalizeText(value, 120);
     if (!name || name.toLowerCase() === "unknown" || name === UNKNOWN_MODEL) return fallback;
     return name;
   }
@@ -1183,9 +1254,14 @@ const VERSION = "0.8.0";
   // turn 的逐响应 id 列表：实时捕获 / 历史同步 / 导入三条来源之间最可靠的去重身份。
   function usageTurnResponseIdList(turn) {
     const raw = turn?.responseIds || turn?.response_ids;
-    return Array.from(new Set((Array.isArray(raw) ? raw : []).map((id) => normalizeText(id, 200)).filter(Boolean)));
+    return Array.from(new Set((Array.isArray(raw) ? raw : []).map((id) => UTIL.normalizeText(id, 200)).filter(Boolean)));
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 08：逐响应事实层（usage facts）
+  // 一条响应一条记录，responseId 为键。schema 变更必须同步升 USAGE_FACT_SCHEMA_VERSION。
+  // 权威口径 = usageFactAuthoritativeRecords()（剔除被 superseded 的 legacy 聚合行）。
+  // ---------------------------------------------------------------------------
   function usageFactNormalize(record) {
     if (!record || typeof record !== "object") return null;
     const responseId = usageFactKey(record.responseId || record.response_id);
@@ -1194,17 +1270,17 @@ const VERSION = "0.8.0";
     if (!usage) return null;
     return {
       responseId,
-      threadId: normalizeText(record.threadId || record.thread_id, 240),
-      turnId: normalizeText(record.turnId || record.turn_id, 240),
-      rootTurnId: normalizeText(record.rootTurnId || record.root_turn_id, 240),
+      threadId: UTIL.normalizeText(record.threadId || record.thread_id, 240),
+      turnId: UTIL.normalizeText(record.turnId || record.turn_id, 240),
+      rootTurnId: UTIL.normalizeText(record.rootTurnId || record.root_turn_id, 240),
       // 模型归到「每条响应」而不是「每轮」：一轮里换模型也能正确计费。
       model: usageModelLabel(record.model || record.model_name, ""),
       effort: normalizeReasoningEffort(record.effort || record.reasoningEffort || record.reasoning_effort),
       usage,
       turnCumulative: usageSyncRawUsageShape(record.turnCumulative || record.turn_token_usage),
       threadCumulative: usageSyncRawUsageShape(record.threadCumulative || record.thread_token_usage),
-      observedAtMs: toTimestampMs(record.observedAtMs || record.observedAt || record.observed_at) || 0,
-      source: normalizeText(record.source, 80) || "rollout_record",
+      observedAtMs: UTIL.toTimestampMs(record.observedAtMs || record.observedAt || record.observed_at) || 0,
+      source: UTIL.normalizeText(record.source, 80) || "rollout_record",
       schemaVersion: USAGE_FACT_SCHEMA_VERSION,
     };
   }
@@ -1270,7 +1346,7 @@ const VERSION = "0.8.0";
     let count = 0;
     for (const record of state.usageFacts.values()) {
       count += 1;
-      total += toCount(record.usage?.total_tokens);
+      total += UTIL.toCount(record.usage?.total_tokens);
     }
     return { count, total };
   }
@@ -1280,7 +1356,7 @@ const VERSION = "0.8.0";
     let count = 0;
     for (const record of usageFactAuthoritativeRecords()) {
       count += 1;
-      total += toCount(record.usage?.total_tokens);
+      total += UTIL.toCount(record.usage?.total_tokens);
     }
     return { count, total };
   }
@@ -1292,7 +1368,7 @@ const VERSION = "0.8.0";
     const index = new Map();
     const add = (turns) => {
       for (const turn of Array.isArray(turns) ? turns : []) {
-        const turnId = normalizeText(turn?.turnId, 240);
+        const turnId = UTIL.normalizeText(turn?.turnId, 240);
         const model = usageModelLabel(turn?.model, "");
         if (!turnId || !model || index.has(turnId)) continue;
         index.set(turnId, { model, effort: normalizeReasoningEffort(turn?.effort) });
@@ -1300,12 +1376,12 @@ const VERSION = "0.8.0";
     };
     add(state.profileLedger?.turns);
     try {
-      add(loadJson(LOCAL_USAGE_KEY, null)?.turns);
+      add(UTIL.loadJson(LOCAL_USAGE_KEY, null)?.turns);
     } catch {
       // best effort
     }
     try {
-      add(loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null)?.turns);
+      add(UTIL.loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null)?.turns);
     } catch {
       // best effort
     }
@@ -1318,7 +1394,7 @@ const VERSION = "0.8.0";
     const changed = [];
     for (const [responseId, record] of state.usageFacts) {
       if (record?.source !== "legacy-migration" || record.model) continue;
-      const found = index.get(normalizeText(record.turnId, 240));
+      const found = index.get(UTIL.normalizeText(record.turnId, 240));
       if (!found?.model) continue;
       const next = { ...record, model: found.model };
       if (found.effort && !next.effort) next.effort = found.effort;
@@ -1336,7 +1412,7 @@ const VERSION = "0.8.0";
     for (const record of usageFactAuthoritativeRecords()) {
       if (record.turnId !== turnId) continue;
       count += 1;
-      total += toCount(record.usage?.total_tokens);
+      total += UTIL.toCount(record.usage?.total_tokens);
       if (record.threadCumulative) threadCumulative = record.threadCumulative;
     }
     return { count, total, threadCumulative };
@@ -1353,12 +1429,12 @@ const VERSION = "0.8.0";
         expectedTotal: 0,
         counterSamples: [],
       };
-      entry.total += toCount(record.usage?.total_tokens);
+      entry.total += UTIL.toCount(record.usage?.total_tokens);
       entry.responses += 1;
       if (record.threadCumulative) {
-        const cumulative = toCount(record.threadCumulative.total_tokens);
+        const cumulative = UTIL.toCount(record.threadCumulative.total_tokens);
         entry.expectedTotal = Math.max(entry.expectedTotal, cumulative);
-        if (cumulative > 0) entry.counterSamples.push({ at: toCount(record.observedAtMs), cumulative });
+        if (cumulative > 0) entry.counterSamples.push({ at: UTIL.toCount(record.observedAtMs), cumulative });
       }
       threads.set(record.threadId, entry);
     }
@@ -1378,10 +1454,10 @@ const VERSION = "0.8.0";
     // 降级 turn（只有 token_count、没有 record）的响应数单独记，
     // 用来算覆盖率：recorded / (recorded + fallback)。
     for (const [turnId, count] of state.usageFactFallbackTurns) {
-      const threadId = normalizeText(state.usageFactFallbackThreads.get(turnId), 240);
+      const threadId = UTIL.normalizeText(state.usageFactFallbackThreads.get(turnId), 240);
       if (!threadId) continue;
       const entry = threads.get(threadId) || { threadId, total: 0, responses: 0, expectedTotal: 0, counterResets: 0 };
-      entry.fallback = (entry.fallback || 0) + toCount(count);
+      entry.fallback = (entry.fallback || 0) + UTIL.toCount(count);
       threads.set(threadId, entry);
     }
     return threads;
@@ -1394,8 +1470,8 @@ const VERSION = "0.8.0";
     const rows = [];
     for (const entry of threads.values()) {
       const delta = entry.expectedTotal ? entry.expectedTotal - entry.total : 0;
-      const counterResets = toCount(entry.counterResets);
-      const fallback = toCount(entry.fallback);
+      const counterResets = UTIL.toCount(entry.counterResets);
+      const fallback = UTIL.toCount(entry.fallback);
       // 覆盖率：有 record 的响应数 /（有 record + 只有 token_count 的降级响应数）。
       const estimated = entry.responses + fallback;
       const coverage = estimated ? Math.round((entry.responses / estimated) * 100) : 100;
@@ -1427,8 +1503,8 @@ const VERSION = "0.8.0";
     const counterResetDelta = report
       .filter((row) => row.status === "counter-reset")
       .reduce((sum, row) => sum + Math.abs(row.delta), 0);
-    const estimated = report.reduce((sum, row) => sum + toCount(row.estimatedResponses), 0);
-    const recorded = report.reduce((sum, row) => sum + toCount(row.responses), 0);
+    const estimated = report.reduce((sum, row) => sum + UTIL.toCount(row.estimatedResponses), 0);
+    const recorded = report.reduce((sum, row) => sum + UTIL.toCount(row.responses), 0);
     const coverage = estimated ? Math.round((recorded / estimated) * 100) : 100;
     return {
       threads: report.length,
@@ -1492,7 +1568,7 @@ const VERSION = "0.8.0";
       const tx = db.transaction(PROFILE_LEDGER_STORE_META, "readonly");
       const rows = await usageFactStoreRequest(tx.objectStore(PROFILE_LEDGER_STORE_META).getAll());
       const meta = {};
-      for (const row of rows || []) meta[normalizeText(row?.key, 200)] = row?.value;
+      for (const row of rows || []) meta[UTIL.normalizeText(row?.key, 200)] = row?.value;
       state.usageFactMeta = meta;
     } catch {
       state.usageFactMeta = null;
@@ -1630,23 +1706,23 @@ const VERSION = "0.8.0";
   function usageFactMigrationDiff(legacyTurns, before, after, migrated) {
     const legacyTotal = (Array.isArray(legacyTurns) ? legacyTurns : []).reduce((sum, turn) => {
       const usage = normalizeUsage(turn?.usage);
-      return sum + (usage.exact ? toCount(usage.total) : 0);
+      return sum + (usage.exact ? UTIL.toCount(usage.total) : 0);
     }, 0);
     const legacyCount = (Array.isArray(legacyTurns) ? legacyTurns : []).filter((turn) => normalizeUsage(turn?.usage).exact).length;
     const rows = [
-      { metric: "turns", before: legacyCount, after: toCount(after?.count), delta: toCount(after?.count) - legacyCount },
-      { metric: "responses", before: legacyCount, after: toCount(after?.count), delta: 0 },
-      { metric: "tokens", before: legacyTotal, after: toCount(after?.total), delta: toCount(after?.total) - legacyTotal },
+      { metric: "turns", before: legacyCount, after: UTIL.toCount(after?.count), delta: UTIL.toCount(after?.count) - legacyCount },
+      { metric: "responses", before: legacyCount, after: UTIL.toCount(after?.count), delta: 0 },
+      { metric: "tokens", before: legacyTotal, after: UTIL.toCount(after?.total), delta: UTIL.toCount(after?.total) - legacyTotal },
     ];
     // 事实总数与旧 turn 数不是 1:1（旧 turn 可能有多个 call），所以只报总量与 turn 数。
     const mismatched = rows.filter((row) => row.metric !== "responses" && row.delta !== 0);
     return {
-      migrated: toCount(migrated),
+      migrated: UTIL.toCount(migrated),
       before: { turns: legacyCount, tokens: legacyTotal },
-      after: { turns: toCount(after?.count), tokens: toCount(after?.total) },
+      after: { turns: UTIL.toCount(after?.count), tokens: UTIL.toCount(after?.total) },
       rows,
       mismatched: mismatched.length > 0,
-      summary: `迁移：${legacyCount} 轮 / ${legacyTotal} tokens → ${toCount(after?.count)} 条响应 / ${toCount(after?.total)} tokens${mismatched.length ? ` · ${mismatched.length} 项有差异` : " · 一致"}`,
+      summary: `迁移：${legacyCount} 轮 / ${legacyTotal} tokens → ${UTIL.toCount(after?.count)} 条响应 / ${UTIL.toCount(after?.total)} tokens${mismatched.length ? ` · ${mismatched.length} 项有差异` : " · 一致"}`,
     };
   }
 
@@ -1659,8 +1735,8 @@ const VERSION = "0.8.0";
     const raw = localStorage.getItem(LOCAL_USAGE_KEY);
     if (!raw) return null;
     try {
-      const existing = loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
-      if (existing && toCount(existing.at)) return existing;
+      const existing = UTIL.loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
+      if (existing && UTIL.toCount(existing.at)) return existing;
       const payload = { at: Date.now(), expiresAt: Date.now() + USAGE_LEGACY_SNAPSHOT_DAYS * 24 * 60 * 60 * 1000, data: raw };
       localStorage.setItem(USAGE_LEGACY_SNAPSHOT_KEY, JSON.stringify(payload));
       return payload;
@@ -1672,9 +1748,9 @@ const VERSION = "0.8.0";
 
   // 只读保留窗口过后才允许清掉旧快照副本；原账本始终由用户自己控制。
   function usageFactPruneLegacySnapshot(options = {}) {
-    const snapshot = loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
-    if (!snapshot || !toCount(snapshot.at)) return { pruned: false };
-    const expiresAt = toCount(snapshot.expiresAt) || (toCount(snapshot.at) + USAGE_LEGACY_SNAPSHOT_DAYS * 24 * 60 * 60 * 1000);
+    const snapshot = UTIL.loadJson(USAGE_LEGACY_SNAPSHOT_KEY, null);
+    if (!snapshot || !UTIL.toCount(snapshot.at)) return { pruned: false };
+    const expiresAt = UTIL.toCount(snapshot.expiresAt) || (UTIL.toCount(snapshot.at) + USAGE_LEGACY_SNAPSHOT_DAYS * 24 * 60 * 60 * 1000);
     if (Date.now() < expiresAt) return { pruned: false, expiresAt };
     try {
       localStorage.removeItem(USAGE_LEGACY_SNAPSHOT_KEY);
@@ -1687,13 +1763,13 @@ const VERSION = "0.8.0";
   async function usageFactMigrateLegacy() {
     const meta = usageFactMetaValue(USAGE_FACT_MIGRATION_KEY, null);
     if (meta?.completed === true) return { skipped: true };
-    const legacy = loadJson(LOCAL_USAGE_KEY, null);
+    const legacy = UTIL.loadJson(LOCAL_USAGE_KEY, null);
     // 旧 profile ledger（IndexedDB v2 的 turns）也是迁移来源之一。
     // 直接读原始快照，不走 ensureProfileLedgerLoaded：它会触发 profile 写入队列，
     // 与事实写入互相干扰。
     const legacyProfileTurns = (() => {
       try {
-        const snapshot = loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
+        const snapshot = UTIL.loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null);
         const turns = Array.isArray(snapshot?.turns) ? snapshot.turns : [];
         return turns.length ? turns : [];
       } catch {
@@ -1705,9 +1781,9 @@ const VERSION = "0.8.0";
     for (const turn of candidates) {
       const usage = normalizeUsage(turn?.usage);
       if (!usage.exact) continue;
-      const turnId = normalizeText(turn?.turnId, 240);
+      const turnId = UTIL.normalizeText(turn?.turnId, 240);
       if (!turnId) continue;
-      const source = normalizeText(turn?.source, 80) || "legacy-migration";
+      const source = UTIL.normalizeText(turn?.source, 80) || "legacy-migration";
       const calls = Array.isArray(turn?.calls) ? turn.calls : [];
       calls.forEach((call, index) => {
         const callUsage = normalizeUsage(call?.usage);
@@ -1720,12 +1796,12 @@ const VERSION = "0.8.0";
           model: turn?.model,
           effort: turn?.effort,
           usage: {
-            input_tokens: toCount(callUsage.input),
-            cached_input_tokens: toCount(callUsage.cached),
-            output_tokens: toCount(callUsage.output),
-            total_tokens: toCount(callUsage.total),
+            input_tokens: UTIL.toCount(callUsage.input),
+            cached_input_tokens: UTIL.toCount(callUsage.cached),
+            output_tokens: UTIL.toCount(callUsage.output),
+            total_tokens: UTIL.toCount(callUsage.total),
           },
-          observedAtMs: toTimestampMs(call?.observedAt) || toTimestampMs(turn?.startedAt),
+          observedAtMs: UTIL.toTimestampMs(call?.observedAt) || UTIL.toTimestampMs(turn?.startedAt),
           source: "legacy-migration",
         });
         if (record) migrated.push(record);
@@ -1738,12 +1814,12 @@ const VERSION = "0.8.0";
           model: turn?.model,
           effort: turn?.effort,
           usage: {
-            input_tokens: toCount(usage.input),
-            cached_input_tokens: toCount(usage.cached),
-            output_tokens: toCount(usage.output),
-            total_tokens: toCount(usage.total),
+            input_tokens: UTIL.toCount(usage.input),
+            cached_input_tokens: UTIL.toCount(usage.cached),
+            output_tokens: UTIL.toCount(usage.output),
+            total_tokens: UTIL.toCount(usage.total),
           },
-          observedAtMs: toTimestampMs(turn?.startedAt),
+          observedAtMs: UTIL.toTimestampMs(turn?.startedAt),
           source: "legacy-migration",
         });
         if (record) migrated.push(record);
@@ -1777,12 +1853,10 @@ const VERSION = "0.8.0";
     return { migrated: migrated.length, verified: true, count: after.count, total: after.total, diff };
   }
 
-  // ---------------------------------------------------------------------------
   // 主机冷备 + 导出/导入
   //
   // 通过 app-server 的 fs/writeFile 写 ~/.codex/usage-ledger/：按天 NDJSON +
   // manifest.json + checksum。先写 .tmp，回读校验后再替换正式文件；失败保留旧文件。
-  // ---------------------------------------------------------------------------
 
   function usageFactChecksum(text) {
     // FNV-1a 32bit：足够做「写回读」一致性校验，且不引入外部依赖。
@@ -1812,6 +1886,11 @@ const VERSION = "0.8.0";
     return new TextDecoder("utf-8").decode(bytes);
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 09：主机冷备 + 导出/导入
+  // ~/.codex/usage-ledger/<date>.ndjson + manifest.json；写 .tmp → 回读校验 → copy。
+  // 导出/备份一律走权威口径；导出优先 File System Access（可选位置），否则回退 <a download>。
+  // ---------------------------------------------------------------------------
   function usageFactBackupDir(root) {
     return usageSyncJoinPath(root, USAGE_HOST_BACKUP_DIR);
   }
@@ -1852,10 +1931,10 @@ const VERSION = "0.8.0";
   // 主机备份保留策略：超过保留期的分片归档为只读（改名 .archived），不直接删除。
   // 方案 §4.9 要求「旧快照至少保留 30 天只读」——不静默删唯一副本。
   async function usageFactPruneHostBackups(client, options = {}) {
-    const root = normalizeText(options && options.root, 600) || (await usageFactBackupRoot(client));
+    const root = UTIL.normalizeText(options && options.root, 600) || (await usageFactBackupRoot(client));
     if (!root) return { ok: false, reason: "no-root" };
     const dir = usageFactBackupDir(root);
-    const retentionDays = Math.max(1, toCount(options.retentionDays) || USAGE_HOST_BACKUP_RETENTION_DAYS);
+    const retentionDays = Math.max(1, UTIL.toCount(options.retentionDays) || USAGE_HOST_BACKUP_RETENTION_DAYS);
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     let entries = [];
     try {
@@ -1866,7 +1945,7 @@ const VERSION = "0.8.0";
     }
     const archived = [];
     for (const entry of entries) {
-      const name = normalizeText(entry?.fileName, 260);
+      const name = UTIL.normalizeText(entry?.fileName, 260);
       if (!name || !name.endsWith(".ndjson")) continue;
       const day = name.slice(0, -".ndjson".length);
       const stamp = Date.parse(`${day}T00:00:00.000Z`);
@@ -1893,7 +1972,7 @@ const VERSION = "0.8.0";
       if (!quiet) state.usageHostBackupStatus = "主机备份暂不可用（未找到 Codex 本地通道）";
       return { ok: false, reason: "no-client" };
     }
-    const root = normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
+    const root = UTIL.normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
     if (!root) {
       if (!quiet) state.usageHostBackupStatus = "主机备份暂不可用（未定位到本机 .codex 目录）";
       return { ok: false, reason: "no-root" };
@@ -1983,7 +2062,7 @@ const VERSION = "0.8.0";
   async function usageFactRestoreFromHostBackup(options = {}) {
     const client = options.client || appServerSyncClient();
     if (!isAppServerSyncClient(client)) return false;
-    const root = normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
+    const root = UTIL.normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
     if (!root) return false;
     const dir = usageFactBackupDir(root);
     let manifest = null;
@@ -2089,6 +2168,82 @@ const VERSION = "0.8.0";
   }
 
   // 导出下载：JSON / NDJSON，带 schemaVersion 与 checksum。
+  // 位置选择优先级：showSaveFilePicker（选到具体文件）→ showDirectoryPicker（选目录后按固定文件名写入）
+  // → <a download>（浏览器下载目录）。Electron 渲染进程常常两个 picker 都没有，此时**不是失败**，
+  // 只是位置由浏览器决定，状态行要说清楚，不要让用户以为导出坏了。
+  function usageFactExportFileName(format) {
+    return `codex-usage-ledger-${localDateKey(Date.now()) || "export"}.${format === "ndjson" ? "ndjson" : "json"}`;
+  }
+
+  function usageFactExportMime(format) {
+    return format === "ndjson" ? "application/x-ndjson" : "application/json";
+  }
+
+  function usageFactExportCanceled(error) {
+    // 只有 AbortError 是「用户取消」。NotAllowedError 等其他错误必须如实报错：
+    // 把它当取消会让「策略禁止写入」伪装成「用户点了取消」。
+    return Boolean(error && error.name === "AbortError");
+  }
+
+  async function usageFactSaveWithHandle(handle, text) {
+    const writable = await handle.createWritable();
+    try {
+      await writable.write(text);
+    } finally {
+      await writable.close();
+    }
+  }
+
+  async function usageFactDownloadExport(format = "json") {
+    const normalized = format === "ndjson" ? "ndjson" : "json";
+    const payload = usageFactExport(normalized);
+    const name = usageFactExportFileName(normalized);
+    const mime = usageFactExportMime(normalized);
+    const base = { format: normalized, count: payload.count, total: payload.total, name };
+    // 1) 选到具体文件：用户完全掌控路径与文件名。
+    const savePicker = usageSaveFilePicker();
+    if (savePicker) {
+      try {
+        const handle = await savePicker({
+          suggestedName: name,
+          types: [{ description: normalized === "ndjson" ? "NDJSON" : "JSON", accept: { [mime]: [`${normalized === "ndjson" ? ".ndjson" : ".json"}`] } }],
+        });
+        await usageFactSaveWithHandle(handle, payload.text);
+        return { ...base, ok: true, method: "picker", name: UTIL.normalizeText(handle?.name, 240) || name };
+      } catch (error) {
+        if (usageFactExportCanceled(error)) return { ...base, ok: false, canceled: true, method: "picker" };
+        // picker 存在但写入失败：不能静默回落到下载（用户会以为文件已存到选的位置）。
+        return { ...base, ok: false, method: "picker", reason: (error && error.message) || String(error) };
+      }
+    }
+    // 2) 只给选目录：写入用户挑的文件夹，文件名沿用统一规则。
+    const dirPicker = usageSyncDirectoryPicker();
+    if (dirPicker) {
+      try {
+        const dir = await dirPicker({ id: "codex-live-token-cost-export", mode: "readwrite" });
+        const handle = await dir.getFileHandle(name, { create: true });
+        await usageFactSaveWithHandle(handle, payload.text);
+        return { ...base, ok: true, method: "directory", dir: UTIL.normalizeText(dir?.name, 240) };
+      } catch (error) {
+        if (usageFactExportCanceled(error)) return { ...base, ok: false, canceled: true, method: "directory" };
+        return { ...base, ok: false, method: "directory", reason: (error && error.message) || String(error) };
+      }
+    }
+    // 3) 宿主没开放选择器：走浏览器下载，位置由宿主决定。
+    try {
+      const blob = new Blob([payload.text], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = name;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      return { ...base, ok: true, method: "download" };
+    } catch (error) {
+      return { ...base, ok: false, method: "download", reason: (error && error.message) || String(error) };
+    }
+  }
+
   // 导入：用户上传 JSON/NDJSON 文件，按 response_id 合并，不整库覆盖。
   // 走隐藏的 <input type="file">：宿主是 Electron，File API 可用。
   function usageFactImportFile() {
@@ -2143,33 +2298,21 @@ const VERSION = "0.8.0";
     });
   }
 
-  function usageFactDownloadExport(format = "json") {
-    const payload = usageFactExport(format);
-    try {
-      const blob = new Blob([payload.text], { type: format === "ndjson" ? "application/x-ndjson" : "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `codex-usage-ledger-${localDateKey(Date.now()) || "export"}.${format === "ndjson" ? "ndjson" : "json"}`;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   // 由事实派生 turn 行：同一 shape as usageSyncFinalizeTurnRow，供主统计/HUD 使用。
   // 模型按「该轮出现最多的模型」归属；没有模型时统一显示 UNKNOWN_MODEL。
+  // ---------------------------------------------------------------------------
+  // 模块 10：事实 → turn 投影
+  // usageFactHydrateLedger() 用 responseId 并集重算 localLedger；不写 IndexedDB，只重算内存投影。
+  // ---------------------------------------------------------------------------
   function usageFactTurnsFromFacts() {
     const byTurn = new Map();
     for (const record of usageFactAuthoritativeRecords()) {
-      const turnId = normalizeText(record.turnId, 240) || `${normalizeText(record.threadId, 240)}:orphan`;
+      const turnId = UTIL.normalizeText(record.turnId, 240) || `${UTIL.normalizeText(record.threadId, 240)}:orphan`;
       let entry = byTurn.get(turnId);
       if (!entry) {
         entry = {
           turnId,
-          threadId: normalizeText(record.threadId, 240),
+          threadId: UTIL.normalizeText(record.threadId, 240),
           usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
           calls: [],
           responseIds: [],
@@ -2275,7 +2418,7 @@ const VERSION = "0.8.0";
     const byId = new Map();
     const byResponse = new Map();
     for (const turn of state.localLedger) {
-      const turnId = normalizeText(turn?.turnId, 240);
+      const turnId = UTIL.normalizeText(turn?.turnId, 240);
       if (turnId) byId.set(turnId, turn);
       for (const responseId of usageTurnResponseIdList(turn)) if (!byResponse.has(responseId)) byResponse.set(responseId, turn);
     }
@@ -2315,7 +2458,7 @@ const VERSION = "0.8.0";
       if (!existing.startedAt || String(existing.startedAt) > String(row.startedAt)) existing.startedAt = row.startedAt;
       if (!existing.createdAt || String(existing.createdAt) > String(row.createdAt)) existing.createdAt = row.createdAt;
       byId.set(row.turnId, existing);
-      const existingId = normalizeText(existing.turnId, 240);
+      const existingId = UTIL.normalizeText(existing.turnId, 240);
       if (existingId) byId.set(existingId, existing);
       for (const responseId of ids) byResponse.set(responseId, existing);
       replaced += 1;
@@ -2400,12 +2543,12 @@ const VERSION = "0.8.0";
   }
 
   function profileAddBucket(bucket, turn, usage, cost) {
-    bucket.input += toCount(usage.input);
-    bucket.output += toCount(usage.output);
-    bucket.cached += toCount(usage.cached);
-    bucket.total += toCount(usage.total || usage.input + usage.output);
+    bucket.input += UTIL.toCount(usage.input);
+    bucket.output += UTIL.toCount(usage.output);
+    bucket.cached += UTIL.toCount(usage.cached);
+    bucket.total += UTIL.toCount(usage.total || usage.input + usage.output);
     bucket.cost += Number(cost) || 0;
-    bucket.requests += toCount(turn.callCount) || 1;
+    bucket.requests += UTIL.toCount(turn.callCount) || 1;
     bucket.turns += 1;
   }
 
@@ -2413,11 +2556,11 @@ const VERSION = "0.8.0";
     const local = day?.local || profileEmptyBucket();
     return {
       date: day?.date || "",
-      tokens: toCount(local?.total),
-      input: toCount(local?.input),
-      output: toCount(local?.output),
-      cached: toCount(local?.cached),
-      requests: toCount(local?.requests),
+      tokens: UTIL.toCount(local?.total),
+      input: UTIL.toCount(local?.input),
+      output: UTIL.toCount(local?.output),
+      cached: UTIL.toCount(local?.cached),
+      requests: UTIL.toCount(local?.requests),
       cost: Number(local?.cost) || 0,
     };
   }
@@ -2430,8 +2573,8 @@ const VERSION = "0.8.0";
   function profileActivityStats(activity, options = {}) {
     const source = activity || profileEmptyRollup().activity;
     const effortEntries = Object.entries(source.effortCounts || {})
-      .filter(([effort, count]) => effort && toCount(count) > 0)
-      .sort((left, right) => toCount(right[1]) - toCount(left[1]) || left[0].localeCompare(right[0]));
+      .filter(([effort, count]) => effort && UTIL.toCount(count) > 0)
+      .sort((left, right) => UTIL.toCount(right[1]) - UTIL.toCount(left[1]) || left[0].localeCompare(right[0]));
     const invocationEntries = Object.entries(source.invocationCounts || {})
       .map(([key, item]) => profileInvocationOutput(item.invocation, item.count))
       .filter(Boolean)
@@ -2439,28 +2582,28 @@ const VERSION = "0.8.0";
     const topEffort = effortEntries[0];
     const skillItems = invocationEntries.filter((item) => item.type === "skill");
     const pluginItems = invocationEntries.filter((item) => item.type === "plugin");
-    const totalEffort = effortEntries.reduce((sum, item) => sum + toCount(item[1]), 0);
+    const totalEffort = effortEntries.reduce((sum, item) => sum + UTIL.toCount(item[1]), 0);
     const stats = {
       fastModePercent: source.totalTokens ? Math.round((source.fastModeTokens / source.totalTokens) * 100) : null,
-      fastModeCount: toCount(source.fastModeTokens),
-      fastModeTotal: toCount(source.totalTokens),
-      longestRunningTurnSec: Math.round(toCount(source.longestRunningDurationMs ?? source.longestCompletedDurationMs) / 1000),
+      fastModeCount: UTIL.toCount(source.fastModeTokens),
+      fastModeTotal: UTIL.toCount(source.totalTokens),
+      longestRunningTurnSec: Math.round(UTIL.toCount(source.longestRunningDurationMs ?? source.longestCompletedDurationMs) / 1000),
       reasoningEffort: topEffort?.[0] || null,
-      reasoningEffortPercent: totalEffort && topEffort ? Math.round((toCount(topEffort[1]) / totalEffort) * 100) : null,
+      reasoningEffortPercent: totalEffort && topEffort ? Math.round((UTIL.toCount(topEffort[1]) / totalEffort) * 100) : null,
       uniqueSkillsUsed: new Set(skillItems.map((item) => item.skill_id || item.skill_name).filter(Boolean)).size,
-      totalSkillsUsed: skillItems.reduce((sum, item) => sum + toCount(item.usage_count), 0),
+      totalSkillsUsed: skillItems.reduce((sum, item) => sum + UTIL.toCount(item.usage_count), 0),
       uniquePluginsUsed: new Set(pluginItems.map((item) => item.plugin_id || item.plugin_name).filter(Boolean)).size,
-      totalPluginsUsed: pluginItems.reduce((sum, item) => sum + toCount(item.usage_count), 0),
+      totalPluginsUsed: pluginItems.reduce((sum, item) => sum + UTIL.toCount(item.usage_count), 0),
       topInvocations: invocationEntries.slice(0, 5),
       topPlugins: pluginItems.slice(0, 5),
     };
     if (!options.includeLedgerFields) return stats;
     return {
       ...stats,
-      fastModeTurns: toCount(source.fastModeTurns),
-      totalTurns: toCount(source.totalTurns),
-      longestCompletedTurnSec: Math.round(toCount(source.longestCompletedDurationMs) / 1000),
-      longestObservedTurnSec: Math.round(toCount(source.longestObservedDurationMs) / 1000),
+      fastModeTurns: UTIL.toCount(source.fastModeTurns),
+      totalTurns: UTIL.toCount(source.totalTurns),
+      longestCompletedTurnSec: Math.round(UTIL.toCount(source.longestCompletedDurationMs) / 1000),
+      longestObservedTurnSec: Math.round(UTIL.toCount(source.longestObservedDurationMs) / 1000),
     };
   }
 
@@ -2485,23 +2628,23 @@ const VERSION = "0.8.0";
       const date = localDateKey(turnTimestampMs(turn));
       if (!date) continue;
       const day = profileRollupDay(rollup, date);
-      const durationMs = Math.max(0, toCount(turn.durationMs));
+      const durationMs = Math.max(0, UTIL.toCount(turn.durationMs));
       day.maxObservedDurationMs = Math.max(day.maxObservedDurationMs, durationMs);
       day.maxCompletedDurationMs = Math.max(day.maxCompletedDurationMs, turn.durationStatus === "completed" ? durationMs : 0);
       if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
       rollup.activity.longestObservedDurationMs = Math.max(rollup.activity.longestObservedDurationMs, durationMs);
       if (turn.durationStatus === "completed") rollup.activity.longestCompletedDurationMs = Math.max(rollup.activity.longestCompletedDurationMs, durationMs);
-      if (!usage.exact || !toCount(usage.total || usage.input + usage.output)) continue;
+      if (!usage.exact || !UTIL.toCount(usage.total || usage.input + usage.output)) continue;
       const cost = turnCost(turn, turn.model).value;
       profileAddBucket(day.local, turn, usage, cost);
       day.totalTurns += 1;
-      day.totalTokens += toCount(usage.total || usage.input + usage.output);
+      day.totalTokens += UTIL.toCount(usage.total || usage.input + usage.output);
       if (turn.fastMode === true) {
-        day.fastModeTokens += toCount(usage.total || usage.input + usage.output);
+        day.fastModeTokens += UTIL.toCount(usage.total || usage.input + usage.output);
         day.fastModeTurns += 1;
       }
       const effort = normalizeReasoningEffort(turn.effort);
-      if (effort) day.reasoningEffort[effort] = toCount(day.reasoningEffort[effort]) + 1;
+      if (effort) day.reasoningEffort[effort] = UTIL.toCount(day.reasoningEffort[effort]) + 1;
       if (turn.threadAttributionStatus === "reliable" && turn.threadKey && !isTransientSessionKey(turn.threadKey)) threadKeys.add(turn.threadKey);
       const invocationIds = Array.isArray(turn.invocationIds) ? turn.invocationIds : [];
       for (const invocationId of invocationIds) {
@@ -2509,17 +2652,17 @@ const VERSION = "0.8.0";
         if (!invocation) continue;
         const key = profileInvocationKey(invocation);
         const current = rollup.activity.invocationCounts[key] || { invocation: normalizeProfileInvocation(invocation), count: 0 };
-        current.count += toCount(invocation.occurrence) || 1;
+        current.count += UTIL.toCount(invocation.occurrence) || 1;
         rollup.activity.invocationCounts[key] = current;
         const dayCurrent = day.invocationCounts[key] || { invocation: normalizeProfileInvocation(invocation), count: 0 };
-        dayCurrent.count += toCount(invocation.occurrence) || 1;
+        dayCurrent.count += UTIL.toCount(invocation.occurrence) || 1;
         day.invocationCounts[key] = dayCurrent;
       }
-      if (effort) rollup.activity.effortCounts[effort] = toCount(rollup.activity.effortCounts[effort]) + 1;
+      if (effort) rollup.activity.effortCounts[effort] = UTIL.toCount(rollup.activity.effortCounts[effort]) + 1;
       rollup.activity.totalTurns += 1;
-      rollup.activity.totalTokens += toCount(usage.total || usage.input + usage.output);
+      rollup.activity.totalTokens += UTIL.toCount(usage.total || usage.input + usage.output);
       if (turn.fastMode === true) {
-        rollup.activity.fastModeTokens += toCount(usage.total || usage.input + usage.output);
+        rollup.activity.fastModeTokens += UTIL.toCount(usage.total || usage.input + usage.output);
         rollup.activity.fastModeTurns += 1;
       }
     }
@@ -2552,7 +2695,7 @@ const VERSION = "0.8.0";
   function profileLedgerObserveLocalTurn(turn, context = {}, options = {}) {
     if (!turn) return false;
     const ledger = ensureProfileLedgerLoaded();
-    const now = toTimestampMs(options.observedAt) || Date.now();
+    const now = UTIL.toTimestampMs(options.observedAt) || Date.now();
     const metric = localTurnMetric(turn, now);
     const metricBase = metric || {
       turnId: turn.id,
@@ -2562,16 +2705,16 @@ const VERSION = "0.8.0";
       model: modelName(),
       effort: context.effort || turn.context?.effort || activeModelInfo().effort,
       fastMode: typeof context.fastMode === "boolean" ? context.fastMode : turn.context?.fastMode,
-      startedAt: new Date(toTimestampMs(turn.startedAt) || now).toISOString(),
+      startedAt: new Date(UTIL.toTimestampMs(turn.startedAt) || now).toISOString(),
       observedAt: now,
       usage: null,
     };
     const previousIndex = profileLedgerTurnIndex(ledger).get(metricBase.turnId);
     const previous = previousIndex === undefined ? null : ledger.turns[previousIndex];
     const durationStatus = options.durationStatus === "completed" ? "completed" : options.durationStatus === "recovered" ? "recovered" : "incomplete";
-    const startedAt = toTimestampMs(metricBase.startedAt) || now;
-    const completedAtMs = durationStatus === "completed" ? toTimestampMs(turn.officialTiming?.completedAtMs || options.completedAt) || now : 0;
-    const threadCandidate = normalizeText(options.threadKey || metricBase.threadKey, 240);
+    const startedAt = UTIL.toTimestampMs(metricBase.startedAt) || now;
+    const completedAtMs = durationStatus === "completed" ? UTIL.toTimestampMs(turn.officialTiming?.completedAtMs || options.completedAt) || now : 0;
+    const threadCandidate = UTIL.normalizeText(options.threadKey || metricBase.threadKey, 240);
     const profileThreadKey = options.threadAttributionStatus === "reliable" && !isTransientSessionKey(threadCandidate) ? threadCandidate : "";
     const profileTurn = profileNormalizeTurn({
       ...metricBase,
@@ -2598,7 +2741,7 @@ const VERSION = "0.8.0";
       const canonicalUsageKey = usageKey(usage);
       const id = `${metricBase.turnId}\u0001${canonicalUsageKey}`;
       if (ledger.usageCalls[id]) continue;
-      const record = { id, turnId: metricBase.turnId, usageKey: canonicalUsageKey, usage, observedAt: now, source: normalizeText(call?.source, 80) || metricBase.source };
+      const record = { id, turnId: metricBase.turnId, usageKey: canonicalUsageKey, usage, observedAt: now, source: UTIL.normalizeText(call?.source, 80) || metricBase.source };
       ledger.usageCalls[id] = record;
       calls.push(record);
     }
@@ -2606,7 +2749,7 @@ const VERSION = "0.8.0";
     profileTurn.usage = turnCalls.length
       ? turnCalls.reduce((sum, call) => addUsage(sum, call.usage), { input: 0, output: 0, cached: 0, total: 0, exact: true })
       : metricBase.usage;
-    profileTurn.callCount = turnCalls.length || toCount(metricBase.callCount) || (profileTurn.usage ? 1 : 0);
+    profileTurn.callCount = turnCalls.length || UTIL.toCount(metricBase.callCount) || (profileTurn.usage ? 1 : 0);
     const invocations = [];
     const seenInvocationIds = new Set(profileTurn.invocationIds || []);
     const invocationInputs = Array.isArray(options.invocations) ? options.invocations : Array.isArray(metricBase.invocations) ? metricBase.invocations : [];
@@ -2614,7 +2757,7 @@ const VERSION = "0.8.0";
       const invocation = normalizeProfileInvocation(rawInvocation);
       if (!invocation) return;
       const explicitId = profileInvocationEventId(rawInvocation);
-      const eventId = normalizeText(options.invocationEventId, 180);
+      const eventId = UTIL.normalizeText(options.invocationEventId, 180);
       // ponytail: anonymous observations stay separate; add a transport event ID if duplicate envelopes become observable.
       const fallbackId = eventId ? `event:${eventId}:${index}` : `observed:${now}:${++state.profileInvocationSeq}:${index}`;
       const invocationId = `${metricBase.turnId}\u0001${explicitId || fallbackId}`;
@@ -2640,11 +2783,11 @@ const VERSION = "0.8.0";
   }
 
   function loadDefaultPrices() {
-    return normalizePriceTable(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.prices);
+    return normalizePriceTable(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.prices);
   }
 
   function loadDefaultPriceMeta() {
-    return normalizePriceMeta(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.meta);
+    return normalizePriceMeta(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.meta);
   }
 
   function normalizePriceMeta(source) {
@@ -2652,10 +2795,10 @@ const VERSION = "0.8.0";
     return Object.fromEntries(
       Object.entries(source)
         .map(([model, value]) => [
-          normalizeText(model, 120),
+          UTIL.normalizeText(model, 120),
           {
-            mode: normalizeText(value?.mode, 40).toLowerCase(),
-            deprecationDate: normalizeText(value?.deprecationDate, 40),
+            mode: UTIL.normalizeText(value?.mode, 40).toLowerCase(),
+            deprecationDate: UTIL.normalizeText(value?.deprecationDate, 40),
           },
         ])
         .filter(([model]) => model),
@@ -2665,6 +2808,10 @@ const VERSION = "0.8.0";
   // 本地文件缓存：同步成功后把紧凑价格表写到用户脚本目录，启动时先读它，
   // 这样即使本次上游不可达（或 localStorage 已满）也不会丢失已有定价。
   // v3 起同一文件还镜像保存用户的「自定义价格」，作为 localStorage 之外的备份。
+  // ---------------------------------------------------------------------------
+  // 模块 11：上游价格文件缓存
+  // 价格来自 LiteLLM 上游；本地只缓存最近一次成功同步的紧凑表。
+  // ---------------------------------------------------------------------------
   function priceCachePath(targetPath) {
     return `${targetPath}.prices.cache.json`;
   }
@@ -2693,7 +2840,7 @@ const VERSION = "0.8.0";
       return {
         prices: pricesValid ? prices : {},
         meta: pricesValid ? normalizePriceMeta(parsed?.meta) : {},
-        fetchedAt: pricesValid ? toCount(parsed?.fetchedAt) : 0,
+        fetchedAt: pricesValid ? UTIL.toCount(parsed?.fetchedAt) : 0,
         overrides: normalizePriceTable(parsed?.overrides),
       };
     } catch {
@@ -2717,7 +2864,7 @@ const VERSION = "0.8.0";
     }
     let prices = DEFAULT_PRICES;
     let meta = DEFAULT_PRICE_META;
-    let fetchedAt = toCount(state.priceSyncedAt) || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+    let fetchedAt = UTIL.toCount(state.priceSyncedAt) || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
     if (!Object.keys(prices).length) {
       // 还没拿到上游表时，合并文件里已有的数据，避免只写自定义价格把旧表覆盖掉。
       const existing = await priceCacheLoad(client, target.targetPath);
@@ -2774,7 +2921,7 @@ const VERSION = "0.8.0";
     if (!source || typeof source !== "object" || Array.isArray(source)) return {};
     return Object.fromEntries(
       Object.entries(source)
-        .map(([model, price]) => [normalizeText(model, 120), normalizePrice(price)])
+        .map(([model, price]) => [UTIL.normalizeText(model, 120), normalizePrice(price)])
         .filter(([model, price]) => model && price),
     );
   }
@@ -2795,8 +2942,8 @@ const VERSION = "0.8.0";
     let count = 0;
     for (const [rawModel, entry] of Object.entries(payload)) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-      if (normalizeText(entry.litellm_provider, 40).toLowerCase() !== "openai") continue;
-      const model = normalizeText(rawModel, 120);
+      if (UTIL.normalizeText(entry.litellm_provider, 40).toLowerCase() !== "openai") continue;
+      const model = UTIL.normalizeText(rawModel, 120);
       if (!model) continue;
       const price = normalizePrice({
         input: priceUsdPerMillionTokens(entry.input_cost_per_token),
@@ -2808,8 +2955,8 @@ const VERSION = "0.8.0";
       if (![price.input, price.cachedInput, price.cacheWrite, price.output].some((value) => Number(value) > 0)) continue;
       prices[model] = price;
       meta[model] = {
-        mode: normalizeText(entry.mode, 40).toLowerCase(),
-        deprecationDate: normalizeText(entry.deprecation_date, 40),
+        mode: UTIL.normalizeText(entry.mode, 40).toLowerCase(),
+        deprecationDate: UTIL.normalizeText(entry.deprecation_date, 40),
       };
       count += 1;
     }
@@ -2924,7 +3071,7 @@ const VERSION = "0.8.0";
             try {
               await priceCacheWrite(client, target.targetPath, {
                 version: 3,
-                fetchedAt: cached.fetchedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt) || 0,
+                fetchedAt: cached.fetchedAt || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt) || 0,
                 prices: DEFAULT_PRICES,
                 meta: DEFAULT_PRICE_META,
                 overrides: storedOverrides,
@@ -2937,7 +3084,7 @@ const VERSION = "0.8.0";
           if (restoredOverrides && state.started) render();
         }
       }
-      const cachedAt = Math.max(toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt), toCount(state.priceSyncedAt));
+      const cachedAt = Math.max(UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt), UTIL.toCount(state.priceSyncedAt));
       if (cachedAt && Date.now() - cachedAt < PRICE_SYNC_MIN_INTERVAL_MS) {
         if (!state.priceSyncedAt) state.priceSyncedAt = cachedAt;
         return true;
@@ -2992,11 +3139,11 @@ const VERSION = "0.8.0";
   function priceSyncStatus() {
     if (state.priceRemoteRequest) return { tone: "busy", text: "正在同步上游价格…" };
     if (state.priceSyncError) {
-      const cachedAt = state.priceSyncedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+      const cachedAt = state.priceSyncedAt || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
       const cachedNote = cachedAt ? `（沿用 ${priceSyncTimeLabel(cachedAt)} 的缓存）` : "";
       return { tone: "warn", text: `上游价格同步失败：${state.priceSyncError}${cachedNote}`, retry: true };
     }
-    const syncedAt = state.priceSyncedAt || toCount(loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
+    const syncedAt = state.priceSyncedAt || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
     if (!syncedAt) return { tone: "idle", text: "上游价格尚未同步" };
     return { tone: "ok", text: `上游价格（${PRICE_SYNC_SOURCE_LABEL}）· 同步于 ${priceSyncTimeLabel(syncedAt)}` };
   }
@@ -3296,7 +3443,7 @@ const VERSION = "0.8.0";
   }
 
   function normalizeProfileImageUrl(value) {
-    const text = normalizeText(value, PROFILE_IMAGE_MAX_LENGTH);
+    const text = UTIL.normalizeText(value, PROFILE_IMAGE_MAX_LENGTH);
     if (!text) return null;
     return repairLegacyChunkedProfileImageUrl(text);
   }
@@ -3412,11 +3559,11 @@ const VERSION = "0.8.0";
       const day = byDate.get(date);
       buckets.push({
         start_date: date,
-        tokens: toCount(day?.tokens),
-        input_tokens: toCount(day?.input),
-        output_tokens: toCount(day?.output),
-        cached_tokens: toCount(day?.cached),
-        requests: toCount(day?.requests),
+        tokens: UTIL.toCount(day?.tokens),
+        input_tokens: UTIL.toCount(day?.input),
+        output_tokens: UTIL.toCount(day?.output),
+        cached_tokens: UTIL.toCount(day?.cached),
+        requests: UTIL.toCount(day?.requests),
         cost: Number(day?.cost || 0),
       });
     }
@@ -3424,7 +3571,7 @@ const VERSION = "0.8.0";
   }
 
   function localProfileStreakStats(days, todayIso = isoDateUtc()) {
-    const usageDates = new Set(days.filter((day) => toCount(day.tokens) > 0).map((day) => day.date));
+    const usageDates = new Set(days.filter((day) => UTIL.toCount(day.tokens) > 0).map((day) => day.date));
     let current = 0;
     for (let date = todayIso; usageDates.has(date); date = isoDateAddDays(date, -1)) current++;
 
@@ -3449,15 +3596,8 @@ const VERSION = "0.8.0";
       .replaceAll("'", "&#39;");
   }
 
-  function normalizeText(value, max = 120) {
-    if (typeof value !== "string") return "";
-    const text = value.trim();
-    if (!text || text.length > max || /^(null|undefined|default)$/i.test(text)) return "";
-    return text;
-  }
-
   function isTransientSessionKey(value) {
-    return normalizeText(value, 240).startsWith("new:");
+    return UTIL.normalizeText(value, 240).startsWith("new:");
   }
 
   function stripProfileUsername(value) {
@@ -3470,18 +3610,18 @@ const VERSION = "0.8.0";
   }
 
   function validProfileEmail(value) {
-    const email = normalizeText(value, 128);
+    const email = UTIL.normalizeText(value, 128);
     return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
   }
 
   function profileDefaultEmail() {
-    return validProfileEmail(loadJson(PROFILE_DEFAULTS_KEY, {}).email) || LOCAL_PROFILE_EMAIL;
+    return validProfileEmail(UTIL.loadJson(PROFILE_DEFAULTS_KEY, {}).email) || LOCAL_PROFILE_EMAIL;
   }
 
   function saveProfileDefaultEmail(email) {
     const normalized = validProfileEmail(email);
     if (!normalized) return false;
-    const defaults = loadJson(PROFILE_DEFAULTS_KEY, {});
+    const defaults = UTIL.loadJson(PROFILE_DEFAULTS_KEY, {});
     localStorage.setItem(PROFILE_DEFAULTS_KEY, JSON.stringify({ ...defaults, email: normalized }));
     return true;
   }
@@ -3492,16 +3632,16 @@ const VERSION = "0.8.0";
 
   function normalizeProfileAccountStructure(value) {
     if (!PROFILE_WORKSPACE_ACCOUNT_ENABLED) return "personal";
-    const text = normalizeText(value, 32).toLowerCase();
+    const text = UTIL.normalizeText(value, 32).toLowerCase();
     return text === "workspace" ? "workspace" : "personal";
   }
 
   function normalizeProfileWorkspaceName(value, fallback = "Codex Workspace") {
-    return normalizeText(value, 64) || fallback;
+    return UTIL.normalizeText(value, 64) || fallback;
   }
 
   function profilePlanOption(value) {
-    const text = normalizeText(value, 64).toLowerCase();
+    const text = UTIL.normalizeText(value, 64).toLowerCase();
     if (!text) return null;
     return PROFILE_PLAN_OPTIONS.find((option) => option.value.toLowerCase() === text || option.label.toLowerCase() === text) || null;
   }
@@ -3509,8 +3649,8 @@ const VERSION = "0.8.0";
   function normalizeProfilePlan(planType, planLabel) {
     const option = profilePlanOption(planType) || profilePlanOption(planLabel);
     if (option) return { planType: option.value, planLabel: option.label };
-    const rawPlanType = normalizeText(planType, 64);
-    const rawPlanLabel = normalizeText(planLabel, 64);
+    const rawPlanType = UTIL.normalizeText(planType, 64);
+    const rawPlanLabel = UTIL.normalizeText(planLabel, 64);
     const fallback = profilePlanOption(LOCAL_PROFILE_PLAN) || { value: LOCAL_PROFILE_PLAN, label: "Pro 20x" };
     const label = rawPlanLabel || rawPlanType || fallback.label;
     return { planType: rawPlanType || (rawPlanLabel ? rawPlanLabel : fallback.value), planLabel: label };
@@ -3782,13 +3922,13 @@ const VERSION = "0.8.0";
     const dailyUsage = daily.map((bucket) => {
       const next = { ...bucket, chat_turns: 0 };
       const week = isoWeekStartUtc(bucket.start_date);
-      weeklyMap.set(week, (weeklyMap.get(week) || 0) + toCount(bucket.tokens));
+      weeklyMap.set(week, (weeklyMap.get(week) || 0) + UTIL.toCount(bucket.tokens));
       return next;
     });
     const weeklyUsage = Array.from(weeklyMap, ([start_date, tokens]) => ({ start_date, tokens, chat_turns: 0 }));
     let cumulative = 0;
     const cumulativeUsage = dailyUsage.map((bucket) => {
-      cumulative += toCount(bucket.tokens);
+      cumulative += UTIL.toCount(bucket.tokens);
       return { ...bucket, tokens: cumulative };
     });
     return {
@@ -4053,7 +4193,7 @@ const VERSION = "0.8.0";
   }
 
   function parseModelEffortText(value) {
-    const text = normalizeText(value, 500);
+    const text = UTIL.normalizeText(value, 500);
     const raw = text.match(/\b(gpt-[a-z0-9._-]+|o\d[a-z0-9._-]*)\b/i)?.[1] || "";
     if (!raw) return { model: "", effort: "" };
     const split = raw.match(/^(.*?)[._\s-]+(minimal|low|medium|high|xhigh|ultra|max)$/i);
@@ -4087,14 +4227,14 @@ const VERSION = "0.8.0";
   };
 
   function normalizeOfficialEffort(value) {
-    const text = normalizeText(String(value ?? ""), 80);
+    const text = UTIL.normalizeText(String(value ?? ""), 80);
     if (!text) return "";
     const lower = text.toLowerCase().replace(/[\s-]+/g, "_");
     return OFFICIAL_EFFORT_ALIASES[text] || OFFICIAL_EFFORT_ALIASES[lower] || "";
   }
 
   function officialVersionedModelFromText(textValue) {
-    const text = normalizeText(String(textValue ?? ""), 500);
+    const text = UTIL.normalizeText(String(textValue ?? ""), 500);
     const match = text.match(/\b(?:gpt[._\s-]?)?(\d+(?:\.\d+)+)(?:[._\s-]?(codex|mini|nano|pro|sol|terra|luna))?\b/i);
     if (match) {
       const suffix = match[2] ? `-${match[2].toLowerCase()}` : "";
@@ -4105,14 +4245,14 @@ const VERSION = "0.8.0";
   }
 
   function officialModelInfoFromText(textValue, effortValue = "") {
-    const text = normalizeText(String(textValue ?? ""), 500);
+    const text = UTIL.normalizeText(String(textValue ?? ""), 500);
     const parsed = parseModelEffortText(text);
     let model = officialVersionedModelFromText(text) || parsed.model;
     if (!model) {
       const candidate =
         text
           .split(/\r?\n/)
-          .map((line) => normalizeText(line, 120))
+          .map((line) => UTIL.normalizeText(line, 120))
           .find((line) => line && !normalizeOfficialEffort(line)) || text;
       const custom = candidate.match(/\b[a-z][a-z0-9._-]*(?:[._-][a-z0-9]+)+\b/i)?.[0] || candidate.match(/\b[a-z][a-z0-9._-]*\d[a-z0-9._-]*\b/i)?.[0] || "";
       if (custom && !normalizeOfficialEffort(custom)) model = custom.toLowerCase();
@@ -4159,7 +4299,7 @@ const VERSION = "0.8.0";
   // （后者来自 ModelPickerTriggerMeasurement 的隐藏测量节点）。这些文案不能当作
   // 模型名或推理强度显示，否则模型名和强度会同时变成同一句占位文案。
   function isModelPickerPlaceholder(value) {
-    const text = normalizeText(String(value ?? ""), 160);
+    const text = UTIL.normalizeText(String(value ?? ""), 160);
     if (!text) return false;
     return /正在加载|加载中|载入中|loading|select\s+(?:a\s+)?(?:model|reasoning)|选择(?:模型|推理强度)/i.test(text);
   }
@@ -4202,17 +4342,17 @@ const VERSION = "0.8.0";
       return { model: "", displayModel: "", effort: "", displayEffort: "", fastMode: false };
     }
     const text = trigger.innerText || trigger.textContent || "";
-    const rawEffort = normalizeText(trigger.getAttribute?.("data-selected-reasoning-effort") || "", 40);
+    const rawEffort = UTIL.normalizeText(trigger.getAttribute?.("data-selected-reasoning-effort") || "", 40);
     const effortLabelNode = trigger.querySelector?.("[class*='ModelPickerTriggerEffortLabel']");
     const effortLayers = Array.from(trigger.querySelectorAll?.("[data-reasoning-effort]") || []);
     const selectedEffortNode = effortLayers.find((node) => rawEffort && node.getAttribute?.("data-reasoning-effort") === rawEffort);
-    const srOnlyEffort = normalizeText(effortLabelNode?.querySelector?.(".sr-only")?.textContent || "", 40);
+    const srOnlyEffort = UTIL.normalizeText(effortLabelNode?.querySelector?.(".sr-only")?.textContent || "", 40);
     const info = officialModelInfoFromText(text, rawEffort);
     const modelCandidates = [
-      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelText']")?.textContent || "", 120),
-      normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelLabel']")?.textContent || "", 120),
-      normalizeText(trigger.querySelector?.("[class*='ComposerDropdownLabel']")?.textContent || "", 120),
-      normalizeText(String(text).split(/\r?\n/)[0], 120),
+      UTIL.normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelText']")?.textContent || "", 120),
+      UTIL.normalizeText(trigger.querySelector?.("[class*='ModelPickerTriggerModelLabel']")?.textContent || "", 120),
+      UTIL.normalizeText(trigger.querySelector?.("[class*='ComposerDropdownLabel']")?.textContent || "", 120),
+      UTIL.normalizeText(String(text).split(/\r?\n/)[0], 120),
     ];
     // 只接受“像模型名”的候选：排除占位文案，也排除纯推理强度标签（“高”“中”）。
     const displayModel = modelCandidates.find((value) => value && !isModelPickerPlaceholder(value) && !normalizeOfficialEffort(value)) || "";
@@ -4223,18 +4363,18 @@ const VERSION = "0.8.0";
       normalizeOfficialEffort(rawEffort) ||
       normalizeOfficialEffort(srOnlyEffort) ||
       info.effort ||
-      normalizeText(rawEffort, 40).toLowerCase();
-    let displayEffort = normalizeText(selectedEffortNode?.textContent || "", 40);
+      UTIL.normalizeText(rawEffort, 40).toLowerCase();
+    let displayEffort = UTIL.normalizeText(selectedEffortNode?.textContent || "", 40);
     if (!displayEffort && srOnlyEffort && !isModelPickerPlaceholder(srOnlyEffort)) displayEffort = srOnlyEffort;
     if (!displayEffort) {
       displayEffort =
-        normalizeText(
+        UTIL.normalizeText(
           effortLayers.find((node) => node.getAttribute?.("data-reasoning-effort") === effort)?.textContent || "",
           40,
         ) ||
         String(text)
           .split(/\r?\n/)
-          .map((line) => normalizeText(line, 40))
+          .map((line) => UTIL.normalizeText(line, 40))
           .find(
             (line) =>
               line &&
@@ -4275,6 +4415,10 @@ const VERSION = "0.8.0";
     return changed;
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 12：定价与成本
+  // priceFor / costForModelUsage / storedTurnCost：所有金额的唯一来源，禁止在别处重复计价。
+  // ---------------------------------------------------------------------------
   function modelName(ledgerModel = null) {
     const recentModel = ledgerModel === null ? recentLedgerModel() : ledgerModel;
     return state.detectedModel || recentModel || UNKNOWN_MODEL;
@@ -4316,30 +4460,30 @@ const VERSION = "0.8.0";
   }
 
   function priceModelKey(model, overrides = priceOverrides()) {
-    const name = normalizeText(model, 120);
+    const name = UTIL.normalizeText(model, 120);
     if (!name || name === UNKNOWN_MODEL) return "";
     if (Object.hasOwn(overrides, name) || Object.hasOwn(DEFAULT_PRICES, name)) return name;
     const lower = name.toLowerCase();
-    const overrideKey = Object.keys(overrides).find((key) => normalizeText(key, 120).toLowerCase() === lower);
+    const overrideKey = Object.keys(overrides).find((key) => UTIL.normalizeText(key, 120).toLowerCase() === lower);
     if (overrideKey) return overrideKey;
     const defaultKey = Object.keys(DEFAULT_PRICES).find((key) => key.toLowerCase() === lower);
     return defaultKey || name;
   }
 
   function priceModelHidden(model) {
-    const name = normalizeText(model, 120);
+    const name = UTIL.normalizeText(model, 120);
     const lower = name.toLowerCase();
     const hidden = hiddenPriceModels();
     return hidden.has(name) || Array.from(hidden).some((item) => item.toLowerCase() === lower);
   }
 
   function hiddenPriceModels() {
-    const hidden = loadJson(HIDDEN_PRICE_MODELS_KEY, []);
-    return new Set(Array.isArray(hidden) ? hidden.map((item) => normalizeText(item)).filter(Boolean) : []);
+    const hidden = UTIL.loadJson(HIDDEN_PRICE_MODELS_KEY, []);
+    return new Set(Array.isArray(hidden) ? hidden.map((item) => UTIL.normalizeText(item)).filter(Boolean) : []);
   }
 
   function saveHiddenPriceModels(hidden) {
-    const list = Array.from(hidden).map((item) => normalizeText(item)).filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const list = Array.from(hidden).map((item) => UTIL.normalizeText(item)).filter(Boolean).sort((a, b) => a.localeCompare(b));
     localStorage.setItem(HIDDEN_PRICE_MODELS_KEY, JSON.stringify(list));
   }
 
@@ -4355,7 +4499,7 @@ const VERSION = "0.8.0";
   }
 
   function priceModelMeta(model) {
-    const name = normalizeText(model, 120);
+    const name = UTIL.normalizeText(model, 120);
     if (!name) return null;
     const key = Object.keys(DEFAULT_PRICE_META).find((item) => item.toLowerCase() === name.toLowerCase());
     return key ? DEFAULT_PRICE_META[key] : null;
@@ -4367,14 +4511,14 @@ const VERSION = "0.8.0";
     ensureLocalLedgerLoaded();
     const turns = Array.isArray(archiveTurns) ? archiveTurns : localUsageArchiveTurns();
     const names = [state.detectedModel, state.localLast?.model, ...state.localLedger.map((turn) => turn?.model), ...turns.map((turn) => turn?.model)];
-    return new Set(names.map((name) => normalizeText(name, 120).toLowerCase()).filter(Boolean));
+    return new Set(names.map((name) => UTIL.normalizeText(name, 120).toLowerCase()).filter(Boolean));
   }
 
   // 默认展示：gpt 的对话/推理模型（chat/responses）且未过期；其余模型（o 系列、
   // 图像模型、非 openai 模型等）只有用户使用过后才出现在「模型价格」里。
   // 「模型价格」只展示 gpt-5.4 及以上版本（含新版本；无版本号的旧系列不展示）。
   function priceModelAtLeastMinVersion(model) {
-    const match = normalizeText(model, 120).match(/^gpt-(\d+)(?:\.(\d+))?/i);
+    const match = UTIL.normalizeText(model, 120).match(/^gpt-(\d+)(?:\.(\d+))?/i);
     if (!match) return false;
     const major = Number(match[1]);
     const minor = Number(match[2] || 0);
@@ -4384,7 +4528,7 @@ const VERSION = "0.8.0";
   // 默认展示：gpt 官方定价页在售、版本 ≥ 5.4 的对话/推理模型；o 系列与
   // 低版本/第三方模型不会因为「用过」而进入列表。
   function priceModelShownByDefault(model, used = null) {
-    const name = normalizeText(model, 120);
+    const name = UTIL.normalizeText(model, 120);
     if (!name || !/^gpt/i.test(name)) return false;
     if (!priceModelAtLeastMinVersion(name)) return false;
     if ((used || priceUsedModelSet()).has(name.toLowerCase())) return true;
@@ -4401,7 +4545,7 @@ const VERSION = "0.8.0";
 
   // 「用过的模型」只保留 gpt 5.4 及以上：中转/第三方模型与低版本不会进入价格列表。
   function priceListableUsedNames(names) {
-    return (Array.isArray(names) ? names : []).filter((name) => /^gpt/i.test(normalizeText(name, 120)) && priceModelAtLeastMinVersion(name));
+    return (Array.isArray(names) ? names : []).filter((name) => /^gpt/i.test(UTIL.normalizeText(name, 120)) && priceModelAtLeastMinVersion(name));
   }
 
   function priceListModels(extraModel = "") {
@@ -4421,13 +4565,13 @@ const VERSION = "0.8.0";
       extraModel,
       ...usedNames,
     ];
-    return Array.from(new Set(names.map((name) => normalizeText(name, 120)).filter((name) => name && name !== UNKNOWN_MODEL && !priceModelHidden(name)))).sort(
+    return Array.from(new Set(names.map((name) => UTIL.normalizeText(name, 120)).filter((name) => name && name !== UNKNOWN_MODEL && !priceModelHidden(name)))).sort(
       (a, b) => a.localeCompare(b),
     );
   }
 
   function priceListModelLabel(model) {
-    const name = normalizeText(model, 120);
+    const name = UTIL.normalizeText(model, 120);
     return priceFor(name) ? name : `${name} · 未定价`;
   }
 
@@ -4448,12 +4592,12 @@ const VERSION = "0.8.0";
 
   function normalizeUsage(raw) {
     const u = raw && typeof raw === "object" ? raw : {};
-    const rawInput = toCount(u.inputTokens ?? u.input_tokens ?? u.prompt_tokens ?? u.promptTokens);
-    const explicitInputTotal = toCount(u.input ?? u.inputTotalTokens ?? u.input_total_tokens ?? u.prompt_total_tokens ?? u.promptTotalTokens);
-    const output = toCount(
+    const rawInput = UTIL.toCount(u.inputTokens ?? u.input_tokens ?? u.prompt_tokens ?? u.promptTokens);
+    const explicitInputTotal = UTIL.toCount(u.input ?? u.inputTotalTokens ?? u.input_total_tokens ?? u.prompt_total_tokens ?? u.promptTotalTokens);
+    const output = UTIL.toCount(
       u.output ?? u.outputTotalTokens ?? u.output_total_tokens ?? u.outputTokens ?? u.output_tokens ?? u.completion_tokens,
     );
-    const reasoningOutputTokens = toCount(
+    const reasoningOutputTokens = UTIL.toCount(
       u.reasoningOutputTokens ??
         u.reasoning_output_tokens ??
         u.outputTokensDetails?.reasoningTokens ??
@@ -4461,7 +4605,7 @@ const VERSION = "0.8.0";
         u.completionTokensDetails?.reasoningTokens ??
         u.completion_tokens_details?.reasoning_tokens,
     );
-    const cachedTokens = toCount(
+    const cachedTokens = UTIL.toCount(
       u.cached ??
         u.cachedTokens ??
         u.cached_tokens ??
@@ -4472,12 +4616,12 @@ const VERSION = "0.8.0";
         u.promptTokensDetails?.cachedTokens ??
         u.prompt_tokens_details?.cached_tokens,
     );
-    const cacheReadTokens = toCount(
+    const cacheReadTokens = UTIL.toCount(
       u.cachedReadTokens ?? u.cached_read_tokens ?? u.cacheReadTokens ?? u.cache_read_tokens ?? u.cacheReadInputTokens ?? u.cache_read_input_tokens,
     );
-    const cacheCreationTokens = toCount(u.cacheCreationTokens ?? u.cache_creation_tokens ?? u.cacheCreationInputTokens ?? u.cache_creation_input_tokens);
+    const cacheCreationTokens = UTIL.toCount(u.cacheCreationTokens ?? u.cache_creation_tokens ?? u.cacheCreationInputTokens ?? u.cache_creation_input_tokens);
     const cacheWriteTokens =
-      toCount(
+      UTIL.toCount(
         u.cacheWriteInputTokens ??
           u.cache_write_input_tokens ??
           u.cacheWriteTokens ??
@@ -4492,9 +4636,9 @@ const VERSION = "0.8.0";
           u.prompt_tokens_details?.cache_write_tokens,
       ) || cacheCreationTokens;
     const cachedReadTokens = cacheReadTokens || cachedTokens;
-    const explicitTotal = toCount(u.total ?? u.requestTotalTokens ?? u.totalTokens ?? u.total_tokens);
-    const contextUsed = toCount(u.contextUsed ?? u.context_used ?? u.usedTokens ?? u.used_tokens ?? u.used);
-    const contextLimit = toCount(
+    const explicitTotal = UTIL.toCount(u.total ?? u.requestTotalTokens ?? u.totalTokens ?? u.total_tokens);
+    const contextUsed = UTIL.toCount(u.contextUsed ?? u.context_used ?? u.usedTokens ?? u.used_tokens ?? u.used);
+    const contextLimit = UTIL.toCount(
       u.contextLimit ?? u.context_limit ?? u.modelContextWindow ?? u.model_context_window ?? u.contextWindow ?? u.context_window ?? u.limit,
     );
     const inputFromTotal = explicitTotal && explicitTotal >= output ? explicitTotal - output : 0;
@@ -4524,11 +4668,11 @@ const VERSION = "0.8.0";
 
   function calcCost(usage, price, options = {}) {
     if (!price) return { value: 0, priced: false };
-    const input = toCount(usage.input);
-    const output = toCount(usage.output);
-    const cached = Math.min(input, toCount(usage.cached));
+    const input = UTIL.toCount(usage.input);
+    const output = UTIL.toCount(usage.output);
+    const cached = Math.min(input, UTIL.toCount(usage.cached));
     const fresh = Math.max(0, input - cached);
-    const cacheWrite = Math.min(fresh, toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
+    const cacheWrite = Math.min(fresh, UTIL.toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
     const uncached = Math.max(0, fresh - cacheWrite);
     const cachedRate = price.cachedInput ?? price.input;
     const cacheWriteRate = price.cacheWrite ?? price.input;
@@ -4540,7 +4684,7 @@ const VERSION = "0.8.0";
   }
 
   function fastModeCostMultiplier(model) {
-    const name = normalizeText(model, 120).toLowerCase();
+    const name = UTIL.normalizeText(model, 120).toLowerCase();
     return FAST_MODE_COST_MULTIPLIERS.find((item) => item.pattern.test(name))?.multiplier || 1;
   }
 
@@ -4553,19 +4697,19 @@ const VERSION = "0.8.0";
 
   function addUsage(a, b) {
     const result = {
-      input: toCount(a.input) + toCount(b.input),
-      output: toCount(a.output) + toCount(b.output),
-      cached: toCount(a.cached) + toCount(b.cached),
-      total: toCount(a.total) + toCount(b.total),
+      input: UTIL.toCount(a.input) + UTIL.toCount(b.input),
+      output: UTIL.toCount(a.output) + UTIL.toCount(b.output),
+      cached: UTIL.toCount(a.cached) + UTIL.toCount(b.cached),
+      total: UTIL.toCount(a.total) + UTIL.toCount(b.total),
     };
-    const inputTokens = toCount(a.inputTokens) + toCount(b.inputTokens);
-    const inputTotalTokens = toCount(a.inputTotalTokens) + toCount(b.inputTotalTokens);
-    const cachedTokens = toCount(a.cachedTokens) + toCount(b.cachedTokens);
-    const cacheReadTokens = toCount(a.cacheReadTokens) + toCount(b.cacheReadTokens);
-    const cachedReadTokens = toCount(a.cachedReadTokens) + toCount(b.cachedReadTokens);
-    const cacheWriteTokens = toCount(a.cacheWriteTokens ?? a.cacheCreationTokens) + toCount(b.cacheWriteTokens ?? b.cacheCreationTokens);
-    const cacheCreationTokens = toCount(a.cacheCreationTokens) + toCount(b.cacheCreationTokens);
-    const reasoningOutputTokens = toCount(a.reasoningOutputTokens) + toCount(b.reasoningOutputTokens);
+    const inputTokens = UTIL.toCount(a.inputTokens) + UTIL.toCount(b.inputTokens);
+    const inputTotalTokens = UTIL.toCount(a.inputTotalTokens) + UTIL.toCount(b.inputTotalTokens);
+    const cachedTokens = UTIL.toCount(a.cachedTokens) + UTIL.toCount(b.cachedTokens);
+    const cacheReadTokens = UTIL.toCount(a.cacheReadTokens) + UTIL.toCount(b.cacheReadTokens);
+    const cachedReadTokens = UTIL.toCount(a.cachedReadTokens) + UTIL.toCount(b.cachedReadTokens);
+    const cacheWriteTokens = UTIL.toCount(a.cacheWriteTokens ?? a.cacheCreationTokens) + UTIL.toCount(b.cacheWriteTokens ?? b.cacheCreationTokens);
+    const cacheCreationTokens = UTIL.toCount(a.cacheCreationTokens) + UTIL.toCount(b.cacheCreationTokens);
+    const reasoningOutputTokens = UTIL.toCount(a.reasoningOutputTokens) + UTIL.toCount(b.reasoningOutputTokens);
     if (inputTokens) result.inputTokens = inputTokens;
     if (inputTotalTokens) result.inputTotalTokens = inputTotalTokens;
     if (cachedTokens) result.cachedTokens = cachedTokens;
@@ -4590,7 +4734,7 @@ const VERSION = "0.8.0";
 
   function usageHasCostData(usage) {
     const u = normalizeUsage(usage);
-    return toCount(u.total) > 0 || toCount(u.input) > 0 || toCount(u.output) > 0 || toCount(u.cached) > 0;
+    return UTIL.toCount(u.total) > 0 || UTIL.toCount(u.input) > 0 || UTIL.toCount(u.output) > 0 || UTIL.toCount(u.cached) > 0;
   }
 
   function costPricedLabel(cost, usage) {
@@ -4634,7 +4778,7 @@ const VERSION = "0.8.0";
     for (let i = state.localLedger.length - 1; i >= 0; i -= 1) {
       const turn = state.localLedger[i];
       if (turnSessionKey(turn) !== sessionKey) continue;
-      const candidate = normalizeText(turn?.model, 120);
+      const candidate = UTIL.normalizeText(turn?.model, 120);
       if (candidate && candidate !== UNKNOWN_MODEL && pricedModelUsable(candidate)) {
         model = candidate;
         break;
@@ -4750,7 +4894,7 @@ const VERSION = "0.8.0";
 
   function sidebarThreadKeyFromNode(node) {
     const target = node?.closest?.("[data-app-action-sidebar-thread-id]") || node;
-    return normalizeText(target?.getAttribute?.("data-app-action-sidebar-thread-id"), 240);
+    return UTIL.normalizeText(target?.getAttribute?.("data-app-action-sidebar-thread-id"), 240);
   }
 
   function knownLedgerSessionKeys() {
@@ -4769,7 +4913,7 @@ const VERSION = "0.8.0";
   }
 
   function resolveSessionKey(value) {
-    const key = normalizeText(value, 240);
+    const key = UTIL.normalizeText(value, 240);
     if (!key) return "";
     const alias = state.sessionAliases.get(key.replace(/^local:/, ""));
     if (alias) return alias;
@@ -4787,12 +4931,12 @@ const VERSION = "0.8.0";
   }
 
   function isClientNewThreadKey(value) {
-    return /^local:client-new-thread:|^client-new-thread:/i.test(normalizeText(value, 240));
+    return /^local:client-new-thread:|^client-new-thread:/i.test(UTIL.normalizeText(value, 240));
   }
 
   function rememberSessionAlias(sourceValue, targetValue) {
-    const sourceKey = normalizeText(sourceValue, 240);
-    const targetKey = normalizeText(targetValue, 240);
+    const sourceKey = UTIL.normalizeText(sourceValue, 240);
+    const targetKey = UTIL.normalizeText(targetValue, 240);
     if (!isClientNewThreadKey(sourceKey) || !targetKey || isClientNewThreadKey(targetKey) || sameSessionKey(sourceKey, targetKey)) return false;
     state.sessionAliases.set(sourceKey.replace(/^local:/, ""), targetKey);
     ensureLocalLedgerLoaded();
@@ -4981,7 +5125,7 @@ const VERSION = "0.8.0";
   }
 
   function localStateSessionKey(sessionKey = currentSessionKey()) {
-    const key = normalizeText(sessionKey, 240) || locationSessionKey();
+    const key = UTIL.normalizeText(sessionKey, 240) || locationSessionKey();
     return state.sessionAliases.get(key.replace(/^local:/, "")) || key;
   }
 
@@ -5021,8 +5165,8 @@ const VERSION = "0.8.0";
   }
 
   function migrateLegacyLocationSessionTurns(sessionKey = currentSessionKey()) {
-    const targetKey = normalizeText(sessionKey, 240);
-    const legacyKey = normalizeText(locationSessionKey(), 240);
+    const targetKey = UTIL.normalizeText(sessionKey, 240);
+    const legacyKey = UTIL.normalizeText(locationSessionKey(), 240);
     if (targetKey.startsWith("new:")) return 0;
     if (!targetKey || !legacyKey || targetKey === legacyKey || state.legacySessionMigrations.has(targetKey)) return 0;
     state.legacySessionMigrations.add(targetKey);
@@ -5049,12 +5193,12 @@ const VERSION = "0.8.0";
   }
 
   function turnSessionKey(turn) {
-    return normalizeText(turn?.threadKey || turn?.sessionKey || turn?.conversationKey || turn?.threadId || turn?.conversationId, 240);
+    return UTIL.normalizeText(turn?.threadKey || turn?.sessionKey || turn?.conversationKey || turn?.threadId || turn?.conversationId, 240);
   }
 
   function sameSessionKey(left, right) {
-    const a = normalizeText(left, 240);
-    const b = normalizeText(right, 240);
+    const a = UTIL.normalizeText(left, 240);
+    const b = UTIL.normalizeText(right, 240);
     if (!a || !b) return false;
     if (a === b) return true;
     return a.replace(/^local:/, "") === b.replace(/^local:/, "");
@@ -5062,7 +5206,7 @@ const VERSION = "0.8.0";
 
   function codexppHistoryTurnsFromPayload(payload, sessionKey = "") {
     const entries = Array.isArray(payload?.history) ? payload.history : [];
-    const key = normalizeText(sessionKey, 240).replace(/^local:/, "");
+    const key = UTIL.normalizeText(sessionKey, 240).replace(/^local:/, "");
     const byTurn = new Map();
     for (const entry of entries) {
       const usage = normalizeUsage(entry?.usage || {
@@ -5072,17 +5216,17 @@ const VERSION = "0.8.0";
         totalTokens: entry?.totalTokens ?? entry?.total_tokens,
       });
       if (!usage.exact) continue;
-      const conversationId = normalizeText(entry?.conversation_id ?? entry?.conversationId ?? entry?.sessionId ?? entry?.session_id ?? key, 240);
-      const turnId = normalizeText(entry?.turn_id ?? entry?.turnId ?? entry?.id, 240);
+      const conversationId = UTIL.normalizeText(entry?.conversation_id ?? entry?.conversationId ?? entry?.sessionId ?? entry?.session_id ?? key, 240);
+      const turnId = UTIL.normalizeText(entry?.turn_id ?? entry?.turnId ?? entry?.id, 240);
       if (!turnId && !conversationId) continue;
-      const observedAt = toTimestampMs(entry?.observed_at ?? entry?.observedAt) || Date.now();
+      const observedAt = UTIL.toTimestampMs(entry?.observed_at ?? entry?.observedAt) || Date.now();
       const turn = {
         turnId: turnId || `codexpp-history:${conversationId}:${usageKey(usage)}`,
         source: "codexpp-history",
         importSource: "codexpp-history",
         sessionKey: conversationId ? `local:${conversationId}` : "",
         threadKey: conversationId ? `local:${conversationId}` : "",
-        model: normalizeText(entry?.model ?? entry?.request_model ?? activeModelInfo().model, 120) || UNKNOWN_MODEL,
+        model: UTIL.normalizeText(entry?.model ?? entry?.request_model ?? activeModelInfo().model, 120) || UNKNOWN_MODEL,
         createdAt: new Date(observedAt).toISOString(),
         observedAt,
         usage,
@@ -5098,7 +5242,7 @@ const VERSION = "0.8.0";
 
   function codexppTokenKey(turn) {
     const usage = normalizeUsage(turn?.usage);
-    return `${toCount(usage.input)}:${toCount(usage.output)}:${toCount(usage.cached)}:${toCount(usage.total)}`;
+    return `${UTIL.toCount(usage.input)}:${UTIL.toCount(usage.output)}:${UTIL.toCount(usage.cached)}:${UTIL.toCount(usage.total)}`;
   }
 
   // 本地优先，codexpp 历史只补本地没有的 token 构成，避免重复计数。
@@ -5116,13 +5260,18 @@ const VERSION = "0.8.0";
   // 使用统计合并 Profile Ledger（IDB）里的回填数据：turnId 优先去重，其次按
   // response_id 重叠去重（实时行与 rollout 行的 turnId 可能不同），最后按用量签名兜底。
   // 三层都是为了同一个目标：同一份响应只计入一次。
+  // ---------------------------------------------------------------------------
+  // 模块 13：账本合并与归档
+  // 去重链：turnId → codexppTokenKey → responseId 重叠 → ±180s 逐响应窗口。
+  // legacy / Profile 回退行不得叠在逐响应事实之上。
+  // ---------------------------------------------------------------------------
   function mergeProfileLedgerTurns(turns) {
     const base = (Array.isArray(turns) ? turns : []).slice();
     const ids = new Set();
     const keys = new Set();
     const responseIds = new Set();
     const remember = (turn) => {
-      const id = normalizeText(turn?.turnId, 240);
+      const id = UTIL.normalizeText(turn?.turnId, 240);
       if (id) ids.add(id);
       const key = codexppTokenKey(turn);
       if (key) keys.add(key);
@@ -5135,14 +5284,14 @@ const VERSION = "0.8.0";
       .filter((turn) => usageTurnResponseIdList(turn).length > 0)
       .map((turn) => ({
         session: turnSessionKey(turn),
-        start: toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
-        end: toTimestampMs(turn?.finishedAt) || toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
+        start: UTIL.toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
+        end: UTIL.toTimestampMs(turn?.finishedAt) || UTIL.toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
       }))
       .filter((window) => window.session && window.start);
     const coveredByFactWindow = (turn) => {
       if (usageTurnResponseIdList(turn).length > 0) return false;
       const session = turnSessionKey(turn);
-      const start = toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt);
+      const start = UTIL.toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt);
       if (!session || !start) return false;
       return factWindows.some((window) => {
         if (!sameSessionKey(session, window.session)) return false;
@@ -5153,7 +5302,7 @@ const VERSION = "0.8.0";
     const extra = [];
     for (const turn of ensureProfileLedgerLoaded().turns || []) {
       if (!normalizeUsage(turn?.usage).exact) continue;
-      const id = normalizeText(turn?.turnId, 240);
+      const id = UTIL.normalizeText(turn?.turnId, 240);
       if (id && ids.has(id)) continue;
       const key = codexppTokenKey(turn);
       if (key && keys.has(key)) continue;
@@ -5166,7 +5315,7 @@ const VERSION = "0.8.0";
   }
 
   function currentSessionTurns(turns, key = currentSessionKey()) {
-    const sessionKey = normalizeText(key, 240);
+    const sessionKey = UTIL.normalizeText(key, 240);
     if (isTransientSessionKey(sessionKey) || !Array.isArray(turns)) return [];
     let byKey = state.currentSessionTurnsCache.get(turns);
     if (!byKey) {
@@ -5181,7 +5330,7 @@ const VERSION = "0.8.0";
 
   function loadDailyLedger() {
     const date = todayKey();
-    const saved = loadJson(DAILY_USAGE_KEY, null);
+    const saved = UTIL.loadJson(DAILY_USAGE_KEY, null);
     if (saved?.date === date && Array.isArray(saved.items)) {
       return { date, items: saved.items.slice(-500) };
     }
@@ -5219,7 +5368,7 @@ const VERSION = "0.8.0";
   }
 
   function loadLocalLedger() {
-    const saved = loadJson(LOCAL_USAGE_KEY, null);
+    const saved = UTIL.loadJson(LOCAL_USAGE_KEY, null);
     state.localLedgerLoaded = true;
     if (!Array.isArray(saved?.turns)) return;
     const valid = saved.turns.filter((item) => normalizeUsage(item?.usage).exact);
@@ -5230,10 +5379,10 @@ const VERSION = "0.8.0";
     state.localUsageArchive = compacted.archive;
     invalidateLocalUsageCache();
     state.localLast = state.localLedger[state.localLedger.length - 1] || null;
-    state.localTurnSeq = toCount(saved.seq);
+    state.localTurnSeq = UTIL.toCount(saved.seq);
     for (const [sourceKey, targetKey] of Object.entries(saved.sessionAliases || {})) {
       if (!isClientNewThreadKey(sourceKey) || !targetKey || isClientNewThreadKey(targetKey)) continue;
-      state.sessionAliases.set(sourceKey.replace(/^local:/, ""), normalizeText(targetKey, 240));
+      state.sessionAliases.set(sourceKey.replace(/^local:/, ""), UTIL.normalizeText(targetKey, 240));
     }
     if (removedEntries || isTransientSessionKey(turnSessionKey(saved.last))) saveLocalLedger();
   }
@@ -5303,7 +5452,7 @@ const VERSION = "0.8.0";
   // 在字节预算内，从最新往回装近期 turn；装不下的旧 turn 由调用方折进日归档。
   // 预算覆盖整个载荷（turns + archive + last + 别名），不只是 turns。
   function localLedgerSnapshotByBudget(turns, budget, extra = {}) {
-    const limit = Math.max(0, toCount(budget));
+    const limit = Math.max(0, UTIL.toCount(budget));
     if (!limit) return [];
     const ephemeral = turns.filter((turn) => !isFactLedgerTurn(turn));
     const permanent = turns.filter(isFactLedgerTurn);
@@ -5338,25 +5487,25 @@ const VERSION = "0.8.0";
 
   // 只读保护判定：当前会话、最近 N 小时、最近 M 轮的 turn 不先被淘汰。
   function usageFallbackProtectedTurns(turns, options = {}) {
-    const now = toCount(options.now) || Date.now();
-    const activeKey = normalizeText(options.activeSessionKey, 240);
-    const protectMs = Math.max(0, toCount(options.protectHours) || USAGE_FALLBACK_PROTECT_HOURS) * 60 * 60 * 1000;
-    const minRecent = Math.max(0, toCount(options.minRecent) || USAGE_FALLBACK_MIN_RECENT_TURNS);
+    const now = UTIL.toCount(options.now) || Date.now();
+    const activeKey = UTIL.normalizeText(options.activeSessionKey, 240);
+    const protectMs = Math.max(0, UTIL.toCount(options.protectHours) || USAGE_FALLBACK_PROTECT_HOURS) * 60 * 60 * 1000;
+    const minRecent = Math.max(0, UTIL.toCount(options.minRecent) || USAGE_FALLBACK_MIN_RECENT_TURNS);
     const cutoff = now - protectMs;
     const protectedIds = new Set();
     const items = Array.isArray(turns) ? turns : [];
     for (const turn of items) {
       const key = turnSessionKey(turn);
       if (activeKey && key && sameSessionKey(key, activeKey)) {
-        protectedIds.add(normalizeText(turn?.turnId, 240));
+        protectedIds.add(UTIL.normalizeText(turn?.turnId, 240));
         continue;
       }
       const stamp = turnTimestampMs(turn);
-      if (stamp && stamp >= cutoff) protectedIds.add(normalizeText(turn?.turnId, 240));
+      if (stamp && stamp >= cutoff) protectedIds.add(UTIL.normalizeText(turn?.turnId, 240));
     }
     // 最近 M 轮永远保护（末尾的）。
     for (let index = Math.max(0, items.length - minRecent); index < items.length; index += 1) {
-      protectedIds.add(normalizeText(items[index]?.turnId, 240));
+      protectedIds.add(UTIL.normalizeText(items[index]?.turnId, 240));
     }
     return protectedIds;
   }
@@ -5364,16 +5513,16 @@ const VERSION = "0.8.0";
   // 降级裁剪：按冷度淘汰，返回被淘汰的 turn（调用方负责折进归档）。
   // 不静默丢唯一副本：若归档后仍超预算，返回 blocked 标志让调用方告警。
   function usageFallbackEvict(turns, budget, options = {}) {
-    const limit = Math.max(0, toCount(budget));
+    const limit = Math.max(0, UTIL.toCount(budget));
     const items = Array.isArray(turns) ? turns : [];
     if (!limit) return { evicted: [], kept: items.slice(), blocked: false, protectedCount: 0 };
     const protectedIds = usageFallbackProtectedTurns(items, options);
     const snapshot = localLedgerSnapshotByBudget(items, limit, options.extra || {});
-    const keptIds = new Set(snapshot.map((turn) => normalizeText(turn?.turnId, 240)));
+    const keptIds = new Set(snapshot.map((turn) => UTIL.normalizeText(turn?.turnId, 240)));
     const evicted = [];
     let protectedCount = 0;
     for (const turn of items) {
-      const id = normalizeText(turn?.turnId, 240);
+      const id = UTIL.normalizeText(turn?.turnId, 240);
       if (keptIds.has(id)) continue;
       if (protectedIds.has(id)) {
         protectedCount += 1;
@@ -5481,8 +5630,8 @@ const VERSION = "0.8.0";
     if (Number.isFinite(explicitMs) && explicitMs >= 0) return Math.round(explicitMs);
     const explicitSec = Number(raw?.durationSec ?? raw?.duration_sec ?? raw?.elapsedSec ?? raw?.elapsed_sec);
     if (Number.isFinite(explicitSec) && explicitSec >= 0) return Math.round(explicitSec * 1000);
-    const start = toCount(startedAt);
-    const finish = toCount(finishedAt);
+    const start = UTIL.toCount(startedAt);
+    const finish = UTIL.toCount(finishedAt);
     return start && finish >= start ? finish - start : 0;
   }
 
@@ -5490,26 +5639,26 @@ const VERSION = "0.8.0";
     if (!raw || typeof raw !== "object") return null;
     const usage = normalizeUsage(raw.usage || raw);
     if (!usage.exact) return null;
-    const createdAt = normalizeText(raw.createdAt || raw.created_at || raw.date, 40);
+    const createdAt = UTIL.normalizeText(raw.createdAt || raw.created_at || raw.date, 40);
     const date = new Date(createdAt || Date.now());
-    const observedAt = toTimestampMs(raw.observedAt || raw.observed_at) || date.getTime();
-    const startedAt = toTimestampMs(raw.startedAt || raw.started_at || raw.startTime || raw.start_time || date.getTime()) || observedAt || Date.now();
-    const finishedAt = toTimestampMs(raw.finishedAt || raw.finished_at || raw.completedAt || raw.completed_at || raw.endTime || raw.end_time || observedAt) || startedAt;
+    const observedAt = UTIL.toTimestampMs(raw.observedAt || raw.observed_at) || date.getTime();
+    const startedAt = UTIL.toTimestampMs(raw.startedAt || raw.started_at || raw.startTime || raw.start_time || date.getTime()) || observedAt || Date.now();
+    const finishedAt = UTIL.toTimestampMs(raw.finishedAt || raw.finished_at || raw.completedAt || raw.completed_at || raw.endTime || raw.end_time || observedAt) || startedAt;
     const durationMs = normalizedDurationMs(raw, startedAt, finishedAt);
     const sessionKey = resolveSessionKey(raw.sessionKey || raw.session_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || raw.sessionId || raw.session_id);
     const threadKey = resolveSessionKey(raw.threadKey || raw.thread_key || raw.threadId || raw.thread_id || raw.conversationId || raw.conversation_id || sessionKey);
     if (isTransientSessionKey(sessionKey)) return null;
     const turnId =
-      normalizeText(raw.turnId || raw.turn_id || raw.request_id, 240) ||
-      `import:${isoDateUtc(date.getTime())}:${normalizeText(raw.model, 120) || UNKNOWN_MODEL}:${usageKey(usage)}:${index}`;
+      UTIL.normalizeText(raw.turnId || raw.turn_id || raw.request_id, 240) ||
+      `import:${isoDateUtc(date.getTime())}:${UTIL.normalizeText(raw.model, 120) || UNKNOWN_MODEL}:${usageKey(usage)}:${index}`;
     const costUsd = Number(raw.costUsd ?? raw.cost_usd ?? raw.totalCostUsd ?? raw.total_cost_usd);
     return {
       usage,
       turnId,
-      source: normalizeText(raw.source, 80) || "import",
+      source: UTIL.normalizeText(raw.source, 80) || "import",
       ...(sessionKey ? { sessionKey } : {}),
       ...(threadKey ? { threadKey } : {}),
-      callCount: toCount(raw.callCount ?? raw.call_count ?? raw.requestCount ?? raw.request_count) || 1,
+      callCount: UTIL.toCount(raw.callCount ?? raw.call_count ?? raw.requestCount ?? raw.request_count) || 1,
       model: usageModelLabel(raw.model || raw.request_model || raw.pricing_model),
       effort: normalizeReasoningEffort(raw.effort),
       responseIds: usageTurnResponseIdList(raw),
@@ -5523,8 +5672,8 @@ const VERSION = "0.8.0";
                 ? {
                     usage: callUsage,
                     usageKey: usageKey(callUsage),
-                    observedAt: toTimestampMs(call?.observedAt || call?.observed_at) || observedAt,
-                    source: normalizeText(call?.source, 80),
+                    observedAt: UTIL.toTimestampMs(call?.observedAt || call?.observed_at) || observedAt,
+                    source: UTIL.normalizeText(call?.source, 80),
                   }
                 : null;
             })
@@ -5532,7 +5681,7 @@ const VERSION = "0.8.0";
         : [],
       createdAt: Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString(),
       observedAt: observedAt || Date.now(),
-      ...(toCount(raw.importedAt || raw.imported_at || options.importedAt) ? { importedAt: toCount(raw.importedAt || raw.imported_at || options.importedAt) } : {}),
+      ...(UTIL.toCount(raw.importedAt || raw.imported_at || options.importedAt) ? { importedAt: UTIL.toCount(raw.importedAt || raw.imported_at || options.importedAt) } : {}),
       startedAt: new Date(startedAt).toISOString(),
       finishedAt: new Date(finishedAt).toISOString(),
       durationMs,
@@ -5544,7 +5693,7 @@ const VERSION = "0.8.0";
           : {}),
       ...(raw.cacheWriteAvailable === true || raw.cache_write_available === true ? { cacheWriteAvailable: true } : {}),
       ...(Number.isFinite(costUsd) && costUsd >= 0 ? { costUsd } : {}),
-      ...(normalizeText(raw.importSource, 80) ? { importSource: normalizeText(raw.importSource, 80) } : {}),
+      ...(UTIL.normalizeText(raw.importSource, 80) ? { importSource: UTIL.normalizeText(raw.importSource, 80) } : {}),
     };
   }
 
@@ -5557,13 +5706,13 @@ const VERSION = "0.8.0";
 
   function normalizeLocalUsageArchive(raw) {
     return raw?.version === 1 && raw.days && typeof raw.days === "object"
-      ? { version: 1, updatedAt: toCount(raw.updatedAt), days: raw.days }
+      ? { version: 1, updatedAt: UTIL.toCount(raw.updatedAt), days: raw.days }
       : { version: 1, updatedAt: 0, days: {} };
   }
 
   function localUsageArchiveTurns(archive = state.localUsageArchive, dates = null) {
     const source = normalizeLocalUsageArchive(archive);
-    const targets = dates ? new Set(Array.from(dates).map((date) => normalizeText(date, 10)).filter(Boolean)) : null;
+    const targets = dates ? new Set(Array.from(dates).map((date) => UTIL.normalizeText(date, 10)).filter(Boolean)) : null;
     const rollup = targets
       ? { ...source, days: Object.fromEntries(Object.entries(source.days).filter(([date]) => targets.has(date))) }
       : source;
@@ -5579,7 +5728,7 @@ const VERSION = "0.8.0";
   function localUsageArchiveTurnsForAnalytics(dates = null) {
     const archive = normalizeLocalUsageArchive(state.localUsageArchive);
     const wanted = dates
-      ? new Set(Array.from(dates).map((date) => normalizeText(date, 10)).filter(Boolean))
+      ? new Set(Array.from(dates).map((date) => UTIL.normalizeText(date, 10)).filter(Boolean))
       : new Set(Object.keys(archive.days || {}));
     if (!wanted.size) return [];
     const covered = new Set();
@@ -5635,10 +5784,10 @@ const VERSION = "0.8.0";
     const index = new Map();
     for (const turn of ledger?.turns || []) {
       if (replaceSource && (turn.importSource === replaceSource || turn.source === replaceSource)) continue;
-      const threadKey = normalizeText(turn.threadKey, 240);
+      const threadKey = UTIL.normalizeText(turn.threadKey, 240);
       const signature = importUsageSignature(turn.usage);
       if (!threadKey || !signature) continue;
-      const timestamp = toTimestampMs(turn.startedAt || turn.capturedAt);
+      const timestamp = UTIL.toTimestampMs(turn.startedAt || turn.capturedAt);
       if (!timestamp) continue;
       const list = index.get(threadKey);
       if (list) list.push({ timestamp, signature });
@@ -5648,12 +5797,12 @@ const VERSION = "0.8.0";
   }
 
   function importTurnMatchesLedger(index, turn, windowMs) {
-    const threadKey = normalizeText(turn.threadKey, 240);
+    const threadKey = UTIL.normalizeText(turn.threadKey, 240);
     const list = threadKey ? index.get(threadKey) : null;
     if (!list?.length) return false;
     const signature = importUsageSignature(turn.usage);
     if (!signature) return false;
-    const timestamp = toTimestampMs(turn.startedAt || turn.observedAt);
+    const timestamp = UTIL.toTimestampMs(turn.startedAt || turn.observedAt);
     if (!timestamp) return false;
     return list.some((entry) => entry.signature === signature && Math.abs(entry.timestamp - timestamp) <= windowMs);
   }
@@ -5661,12 +5810,12 @@ const VERSION = "0.8.0";
   function importLocalUsageTurns(rows, options = {}) {
     ensureLocalLedgerLoaded();
     const items = Array.isArray(rows) ? rows : [];
-    const replaceSource = normalizeText(options.replaceSource, 80);
+    const replaceSource = UTIL.normalizeText(options.replaceSource, 80);
     const idbOnly = options.idbOnly === true;
-    const importedAt = toCount(options.importedAt) || Date.now();
+    const importedAt = UTIL.toCount(options.importedAt) || Date.now();
     const ledger = ensureProfileLedgerLoaded();
     const dedupeIndex = options.dedupeAgainstLedger === true ? buildImportDedupeIndex(ledger, replaceSource) : null;
-    const dedupeWindowMs = toCount(options.dedupeWindowMs) || 90_000;
+    const dedupeWindowMs = UTIL.toCount(options.dedupeWindowMs) || 90_000;
     const addedTurns = [];
     let imported = 0;
     let skipped = 0;
@@ -5685,16 +5834,16 @@ const VERSION = "0.8.0";
       for (const rawInvocation of turn.invocations || []) {
         const invocation = normalizeProfileInvocation(rawInvocation);
         if (!invocation) continue;
-        const explicitId = profileInvocationEventId(rawInvocation) || `import:${normalizeText(rawInvocation?.key, 120) || index}`;
+        const explicitId = profileInvocationEventId(rawInvocation) || `import:${UTIL.normalizeText(rawInvocation?.key, 120) || index}`;
         const invocationId = `${turn.turnId}\u0001${explicitId}`;
         if (!ledger.invocations[invocationId]) {
           ledger.invocations[invocationId] = {
             ...invocation,
             invocationId,
             turnId: turn.turnId,
-            occurrence: toCount(rawInvocation?.occurrence) || 1,
-            observedAt: toTimestampMs(rawInvocation?.observedAt) || importedAt,
-            source: normalizeText(rawInvocation?.source, 80) || turn.source,
+            occurrence: UTIL.toCount(rawInvocation?.occurrence) || 1,
+            observedAt: UTIL.toTimestampMs(rawInvocation?.observedAt) || importedAt,
+            source: UTIL.normalizeText(rawInvocation?.source, 80) || turn.source,
           };
         }
         invocationIds.push(invocationId);
@@ -5710,8 +5859,8 @@ const VERSION = "0.8.0";
           turnId: turn.turnId,
           usageKey: canonicalUsageKey,
           usage: callUsage,
-          observedAt: toTimestampMs(call?.observedAt) || importedAt,
-          source: normalizeText(call?.source, 80) || turn.source,
+          observedAt: UTIL.toTimestampMs(call?.observedAt) || importedAt,
+          source: UTIL.normalizeText(call?.source, 80) || turn.source,
         };
       }
       const upserted = profileLedgerUpsertTurn({
@@ -5780,7 +5929,7 @@ const VERSION = "0.8.0";
     const usage = {};
     let sum = 0;
     for (const field of USAGE_SYNC_USAGE_FIELDS) {
-      const value = toCount(info[field]);
+      const value = UTIL.toCount(info[field]);
       if (value) usage[field] = value;
       sum += value;
     }
@@ -5874,7 +6023,7 @@ const VERSION = "0.8.0";
   // rate-limit 心跳会重发上一次 last_token_usage，但累计值可能变（cc-switch 同样按
   // 签名去重）：同签名只接受一次，否则同一份用量会被再记一遍。
   function usageSyncFallbackKey(turnId, usage) {
-    const signature = USAGE_SYNC_USAGE_FIELDS.map((field) => toCount(usage?.[field])).join("/");
+    const signature = USAGE_SYNC_USAGE_FIELDS.map((field) => UTIL.toCount(usage?.[field])).join("/");
     return `${turnId}\u0001${signature}`;
   }
 
@@ -5893,7 +6042,7 @@ const VERSION = "0.8.0";
   function usageSyncAddObservability(target, source) {
     if (!target || !source) return target;
     usageSyncEnsureObservability(target);
-    for (const field of USAGE_SYNC_OBSERVABILITY_FIELDS) target[field] += toCount(source[field]);
+    for (const field of USAGE_SYNC_OBSERVABILITY_FIELDS) target[field] += UTIL.toCount(source[field]);
     return target;
   }
 
@@ -5982,7 +6131,7 @@ const VERSION = "0.8.0";
           usage,
           turnCumulative: usageSyncRawUsageShape(payload.turn_token_usage),
           threadCumulative: usageSyncRawUsageShape(payload.thread_token_usage),
-          observedAtMs: toTimestampMs(obj.timestamp),
+          observedAtMs: UTIL.toTimestampMs(obj.timestamp),
         };
         fileSummary.records += 1;
         const target = record ? record.responses : thread.orphanResponses;
@@ -6030,13 +6179,13 @@ const VERSION = "0.8.0";
           const turnId = usageSyncText(payload.turn_id || payload.root_turn_id, 120) || lastTurnId;
           const record = ensureTurn(turnId);
           if (record) {
-            const durationMs = toCount(payload.duration_ms);
+            const durationMs = UTIL.toCount(payload.duration_ms);
             if (durationMs) record.durationMs = Math.max(record.durationMs, durationMs);
             const finishedAtMs = usageSyncUnixToMs(payload.completed_at);
             if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
             const startedAtMs = usageSyncUnixToMs(payload.started_at);
             if (startedAtMs) record.startedAtMs = record.startedAtMs || startedAtMs;
-            const ttft = toCount(payload.time_to_first_token_ms);
+            const ttft = UTIL.toCount(payload.time_to_first_token_ms);
             if (ttft) record.timeToFirstTokenMs = Math.max(record.timeToFirstTokenMs, ttft);
             // 失败 turn 也要保留，状态不能被当成成功。
             const errorMessage = usageSyncText(payload.error?.message, 400);
@@ -6056,7 +6205,7 @@ const VERSION = "0.8.0";
           if (record) {
             record.status = "interrupted";
             record.abortReason = usageSyncText(payload.reason, 120) || "interrupted";
-            const durationMs = toCount(payload.duration_ms);
+            const durationMs = UTIL.toCount(payload.duration_ms);
             if (durationMs) record.durationMs = Math.max(record.durationMs, durationMs);
             const finishedAtMs = usageSyncUnixToMs(payload.completed_at);
             if (finishedAtMs) record.finishedAtMs = Math.max(record.finishedAtMs, finishedAtMs);
@@ -6070,7 +6219,7 @@ const VERSION = "0.8.0";
           // 该 turn 没有任何 token_usage_record 时才允许降级使用。
           const rateLimits = payload.rate_limits;
           if (rateLimits && typeof rateLimits === "object") {
-            thread.rateLimits.push({ observedAtMs: toTimestampMs(obj.timestamp), rateLimits });
+            thread.rateLimits.push({ observedAtMs: UTIL.toTimestampMs(obj.timestamp), rateLimits });
           }
           fileSummary.heartbeats += 1;
           // 新版本 token_count 会带当前模型（cc-switch 也读这三个位置）。
@@ -6080,11 +6229,11 @@ const VERSION = "0.8.0";
           if (tokenEffort) thread.fallbackEffort = tokenEffort;
           const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
           if (!usage) continue;
-          const cumulativeTotal = toCount(payload.info?.total_token_usage?.total_tokens);
+          const cumulativeTotal = UTIL.toCount(payload.info?.total_token_usage?.total_tokens);
           const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
           const record = turnId ? ensureTurn(turnId) : null;
           if (!record) {
-            attachCall({ usage, observedAtMs: toTimestampMs(obj.timestamp) });
+            attachCall({ usage, observedAtMs: UTIL.toTimestampMs(obj.timestamp) });
             continue;
           }
           if (tokenModel) record.model = tokenModel;
@@ -6096,14 +6245,14 @@ const VERSION = "0.8.0";
             continue;
           }
           record.fallbackSeen.add(dedupeKey);
-          record.fallbackCalls.push({ usage, observedAtMs: toTimestampMs(obj.timestamp), cumulativeTotal });
+          record.fallbackCalls.push({ usage, observedAtMs: UTIL.toTimestampMs(obj.timestamp), cumulativeTotal });
           continue;
         }
         // item 耗时：工具/消息的 started_at_ms -> completed_at_ms。
         if (ptype === "item_completed") {
           const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
-          const startedAt = toCount(payload.started_at_ms);
-          const completedAt = toCount(payload.completed_at_ms);
+          const startedAt = UTIL.toCount(payload.started_at_ms);
+          const completedAt = UTIL.toCount(payload.completed_at_ms);
           if (turnId && startedAt && completedAt && completedAt >= startedAt) {
             const record = ensureTurn(turnId);
             if (record) {
@@ -6148,22 +6297,22 @@ const VERSION = "0.8.0";
     let subagentTurns = 0;
     const triggers = {};
     for (const turn of items) {
-      const duration = Math.max(0, toCount(turn?.durationMs));
+      const duration = Math.max(0, UTIL.toCount(turn?.durationMs));
       activeMs += duration;
-      itemMs += Math.max(0, toCount(turn?.itemDurationTotalMs));
-      const trigger = normalizeText(turn?.turnTrigger, 60) || "unknown";
+      itemMs += Math.max(0, UTIL.toCount(turn?.itemDurationTotalMs));
+      const trigger = UTIL.normalizeText(turn?.turnTrigger, 60) || "unknown";
       triggers[trigger] = (triggers[trigger] || 0) + 1;
       // 自动 turn：不是用户主动发起的（guardian_review / daemon_recovery / resume）。
       if (trigger === "user" || trigger === "composer" || trigger === "edit_user_message") userTurns += 1;
       else autoTurns += 1;
-      if (normalizeText(turn?.parentTurnId, 240)) subagentTurns += 1;
+      if (UTIL.normalizeText(turn?.parentTurnId, 240)) subagentTurns += 1;
       const threadKey = turnSessionKey(turn);
       if (!threadKey) continue;
       const list = byThread.get(threadKey) || [];
       list.push({
-        turnId: normalizeText(turn?.turnId, 240),
-        start: toTimestampMs(turn?.startedAt) || turnTimestampMs(turn),
-        end: toTimestampMs(turn?.finishedAt) || turnTimestampMs(turn),
+        turnId: UTIL.normalizeText(turn?.turnId, 240),
+        start: UTIL.toTimestampMs(turn?.startedAt) || turnTimestampMs(turn),
+        end: UTIL.toTimestampMs(turn?.finishedAt) || turnTimestampMs(turn),
       });
       byThread.set(threadKey, list);
     }
@@ -6201,7 +6350,6 @@ const VERSION = "0.8.0";
     };
   }
 
-  // ---------------------------------------------------------------------------
   // 跨午夜归属（验收 #14）
   //
   // 一个 turn 的用量按「每条响应自己的观测时间」落到本地自然日，不再整轮算到
@@ -6209,16 +6357,15 @@ const VERSION = "0.8.0";
   // （实时捕获行、导入的历史行、只有 token_count 的降级 turn）时整轮归到
   // turn 自己的时间戳那天 —— 宁可少拆，也不按比例臆造。
   // 拆分必须是严格的划分：各日用量之和 == 整轮用量，否则不拆。
-  // ---------------------------------------------------------------------------
 
   // 逐响应事实按 turnId 建索引：turnId -> Map(date -> { raw, calls, firstMs, lastMs })。
   // 一次遍历 facts，供 rollup / 日桶 / 区间聚合共用。
   function usageFactDayIndex() {
     const index = new Map();
     for (const record of usageFactAuthoritativeRecords()) {
-      const turnId = normalizeText(record?.turnId, 240);
+      const turnId = UTIL.normalizeText(record?.turnId, 240);
       const usage = record?.usage;
-      const at = toCount(record?.observedAtMs);
+      const at = UTIL.toCount(record?.observedAtMs);
       if (!turnId || !usage || !at) continue;
       const date = localDateKey(at);
       if (!date) continue;
@@ -6245,8 +6392,8 @@ const VERSION = "0.8.0";
     const fallbackMs = turnTimestampMs(turn);
     const fallbackDate = localDateKey(fallbackMs);
     if (!fallbackDate) return [];
-    const fallback = [{ date: fallbackDate, usage: whole, calls: toCount(turn?.callCount) || 1, firstMs: fallbackMs, lastMs: fallbackMs }];
-    const turnId = normalizeText(turn?.turnId, 240);
+    const fallback = [{ date: fallbackDate, usage: whole, calls: UTIL.toCount(turn?.callCount) || 1, firstMs: fallbackMs, lastMs: fallbackMs }];
+    const turnId = UTIL.normalizeText(turn?.turnId, 240);
     const days = turnId ? dayIndex?.get(turnId) : null;
     if (!days || !days.size) return fallback;
     const slices = [];
@@ -6254,15 +6401,15 @@ const VERSION = "0.8.0";
     for (const [date, bucket] of days) {
       const usage = normalizeUsage(bucket.raw);
       if (!usage.exact) continue;
-      sumTotal += toCount(usage.total || usage.input + usage.output);
+      sumTotal += UTIL.toCount(usage.total || usage.input + usage.output);
       slices.push({ date, usage, calls: bucket.calls, firstMs: bucket.firstMs, lastMs: bucket.lastMs });
     }
-    const wholeTotal = toCount(whole.total || whole.input + whole.output);
+    const wholeTotal = UTIL.toCount(whole.total || whole.input + whole.output);
     if (!slices.length || sumTotal !== wholeTotal) return fallback;
     slices.sort((left, right) => left.date.localeCompare(right.date));
     // 单日时用整轮 usage 覆盖，保证与账本其它口径逐字一致。
     if (slices.length === 1) {
-      return [{ date: slices[0].date, usage: whole, calls: toCount(turn?.callCount) || slices[0].calls, firstMs: slices[0].firstMs, lastMs: slices[0].lastMs }];
+      return [{ date: slices[0].date, usage: whole, calls: UTIL.toCount(turn?.callCount) || slices[0].calls, firstMs: slices[0].firstMs, lastMs: slices[0].lastMs }];
     }
     return slices;
   }
@@ -6356,7 +6503,7 @@ const VERSION = "0.8.0";
     const itemDurations = {};
     if (record.itemDurations instanceof Map) {
       for (const [itemType, value] of record.itemDurations) {
-        itemDurations[itemType] = { count: toCount(value?.count), totalMs: toCount(value?.totalMs), maxMs: toCount(value?.maxMs) };
+        itemDurations[itemType] = { count: UTIL.toCount(value?.count), totalMs: UTIL.toCount(value?.totalMs), maxMs: UTIL.toCount(value?.maxMs) };
       }
     }
     const itemDurationTotalMs = Object.values(itemDurations).reduce((sum, item) => sum + item.totalMs, 0);
@@ -6385,7 +6532,7 @@ const VERSION = "0.8.0";
       usage,
       calls: sourceCalls.map((call) => ({ usage: call.usage, observedAt: usageSyncIsoOrNull(call.observedAtMs) || undefined })),
       ...(responses.length ? { responseIds: responses.map((entry) => entry.responseId) } : {}),
-      ...(threadCumulative ? { threadCumulativeTotal: toCount(threadCumulative.total_tokens) } : {}),
+      ...(threadCumulative ? { threadCumulativeTotal: UTIL.toCount(threadCumulative.total_tokens) } : {}),
       ...(useFallback
         ? { usageSource: "token_count_fallback", fallbackResponses: sourceCalls.length }
         : { usageSource: "token_usage_record" }),
@@ -6427,7 +6574,7 @@ const VERSION = "0.8.0";
     const file = typeof fileHandle.getFile === "function" ? await fileHandle.getFile() : fileHandle;
     const bytes = new Uint8Array(await file.arrayBuffer());
     const text = usageSyncDecodeBytes(bytes);
-    return { text, size: toCount(file.size) || bytes.length, lastModified: toCount(file.lastModified) };
+    return { text, size: UTIL.toCount(file.size) || bytes.length, lastModified: UTIL.toCount(file.lastModified) };
   }
 
   async function usageSyncCollectRows(rootHandle, options = {}) {
@@ -6592,8 +6739,8 @@ const VERSION = "0.8.0";
 
   function usageSyncLastResult() {
     if (state.usageSyncResult) return state.usageSyncResult;
-    const stored = loadJson(USAGE_SYNC_LAST_RESULT_KEY, null);
-    return stored && typeof stored === "object" && toCount(stored.at) ? stored : null;
+    const stored = UTIL.loadJson(USAGE_SYNC_LAST_RESULT_KEY, null);
+    return stored && typeof stored === "object" && UTIL.toCount(stored.at) ? stored : null;
   }
 
   function saveUsageSyncLastResult(result) {
@@ -6611,11 +6758,18 @@ const VERSION = "0.8.0";
     return null;
   }
 
-  // ---------------------------------------------------------------------------
+  // 保存位置选择器（File System Access API）。Electron 渲染进程一般不暴露；
+  // 不暴露时调用方必须回退到 <a download>，不能把「选不了位置」当成导出失败。
+  function usageSaveFilePicker() {
+    if (typeof globalThis.showSaveFilePicker === "function") return globalThis.showSaveFilePicker.bind(globalThis);
+    const win = globalThis.window;
+    if (win && typeof win.showSaveFilePicker === "function") return win.showSaveFilePicker.bind(win);
+    return null;
+  }
+
   // 自动同步通道：通过 Codex 应用自带的 app-server 接口（fs/readDirectory、
   // fs/getMetadata、fs/readFile）静默读取本机 .codex 会话，全程无需选择文件夹、
   // 无弹窗；仅在通道不可用时才回退到手动选择目录。
-  // ---------------------------------------------------------------------------
 
   // App-server 通道发现：宿主注入的 host-client map 是首选契约；若宿主未暴露
   // （Codex++ 版本差异 / 注入时序），再退回 React fiber 树扫描。fiber 扫描分两步：
@@ -6623,7 +6777,6 @@ const VERSION = "0.8.0";
   // 结果缓存；客户端被 dispose 后 isAppServerSyncClient 会自动判定失效并重新发现。
   const APP_SERVER_FIBER_SCAN_LIMIT = 20000;
 
-  // ---------------------------------------------------------------------------
   // 主机能力矩阵（P2 #3）
   //
   // app-server 的方法集随 Codex++ 版本变化（`fs/*`、`command/exec`）。这里维护一份
@@ -6632,7 +6785,6 @@ const VERSION = "0.8.0";
   //   - 有副作用的方法（fs/writeFile / fs/copy / command/exec）**不做试探写入**，
   //     由真实使用结果回填（成功 = ok，unsupported/unknown method = missing）。
   // 结果按 HOST_CAPABILITY_TTL_MS 缓存到 localStorage，24h 内不重复探测。
-  // ---------------------------------------------------------------------------
 
   const HOST_CAPABILITY_KEY = "__codexLiveTokenCostHostCapabilitiesV1";
   const HOST_CAPABILITY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -6652,7 +6804,7 @@ const VERSION = "0.8.0";
 
   function hostCapabilityLoad() {
     if (state.hostCapabilities) return state.hostCapabilities;
-    const saved = loadJson(HOST_CAPABILITY_KEY, null);
+    const saved = UTIL.loadJson(HOST_CAPABILITY_KEY, null);
     const methods = {};
     const raw = saved && typeof saved === "object" && saved.methods && typeof saved.methods === "object" ? saved.methods : {};
     for (const method of HOST_CAPABILITY_METHODS) {
@@ -6660,9 +6812,9 @@ const VERSION = "0.8.0";
       if (!entry || typeof entry !== "object") continue;
       const outcome = entry.outcome === "ok" || entry.outcome === "missing" ? entry.outcome : "";
       if (!outcome) continue;
-      methods[method] = { outcome, at: toCount(entry.at) };
+      methods[method] = { outcome, at: UTIL.toCount(entry.at) };
     }
-    state.hostCapabilities = { probedAt: toCount(saved?.probedAt), methods };
+    state.hostCapabilities = { probedAt: UTIL.toCount(saved?.probedAt), methods };
     return state.hostCapabilities;
   }
 
@@ -6670,7 +6822,7 @@ const VERSION = "0.8.0";
     const matrix = state.hostCapabilities;
     if (!matrix) return false;
     try {
-      localStorage.setItem(HOST_CAPABILITY_KEY, JSON.stringify({ probedAt: toCount(matrix.probedAt), methods: matrix.methods }));
+      localStorage.setItem(HOST_CAPABILITY_KEY, JSON.stringify({ probedAt: UTIL.toCount(matrix.probedAt), methods: matrix.methods }));
       return true;
     } catch {
       // 配额写满时能力矩阵只是诊断信息，静默降级。
@@ -6687,7 +6839,7 @@ const VERSION = "0.8.0";
   }
 
   function hostCapabilityRecord(method, outcome) {
-    const name = normalizeText(method, 80);
+    const name = UTIL.normalizeText(method, 80);
     // 只记 ok / missing 两种确定结论：其它错误可能是路径不存在等偶发原因，不污染矩阵。
     if (!name || (outcome !== "ok" && outcome !== "missing")) return;
     if (!HOST_CAPABILITY_METHODS.includes(name)) return;
@@ -6704,7 +6856,7 @@ const VERSION = "0.8.0";
   // 真实的「方法存在但操作失败」（目录已存在、路径非空…）也应该算 ok：
   // 否则 fs/createDirectory 只在目录不存在的那一次能记上，之后永远是「未观测」。
   function hostCapabilityRecordExisting(method, error) {
-    const name = normalizeText(method, 80);
+    const name = UTIL.normalizeText(method, 80);
     if (!name || !HOST_CAPABILITY_METHODS.includes(name)) return;
     if (hostCapabilityMissingError(error)) return;
     hostCapabilityRecord(name, "ok");
@@ -6728,9 +6880,9 @@ const VERSION = "0.8.0";
     if (!isAppServerSyncClient(client)) return hostCapabilityLoad();
     const matrix = hostCapabilityLoad();
     const now = Date.now();
-    const ttl = Math.max(0, toCount(options.ttlMs) || HOST_CAPABILITY_TTL_MS);
+    const ttl = Math.max(0, UTIL.toCount(options.ttlMs) || HOST_CAPABILITY_TTL_MS);
     if (!options.force && matrix.probedAt && now - matrix.probedAt < ttl) return matrix;
-    const probePath = normalizeText(options.path, 600);
+    const probePath = UTIL.normalizeText(options.path, 600);
     if (!probePath) return matrix;
     for (const method of HOST_PROBE_READONLY_METHODS) {
       try {
@@ -6757,7 +6909,7 @@ const VERSION = "0.8.0";
       else if (outcome !== "ok") unknown.push(method);
     }
     return {
-      probedAt: toCount(matrix.probedAt),
+      probedAt: UTIL.toCount(matrix.probedAt),
       methods: { ...matrix.methods },
       missing,
       unknown,
@@ -6770,7 +6922,7 @@ const VERSION = "0.8.0";
   // 「未观测」必须点名：只说「2 个方法」用户永远不知道是哪两个。
   // 3 个以内全列；更多时列前两个 + 计数，避免状态行被撑爆。
   function hostCapabilityUnknownLabel(methods) {
-    const names = (Array.isArray(methods) ? methods : []).map((method) => normalizeText(method, 60)).filter(Boolean);
+    const names = (Array.isArray(methods) ? methods : []).map((method) => UTIL.normalizeText(method, 60)).filter(Boolean);
     if (!names.length) return "";
     if (names.length <= 3) return names.join(" / ");
     return `${names.length} 个方法（${names.slice(0, 2).join(" / ")} 等）`;
@@ -6792,7 +6944,7 @@ const VERSION = "0.8.0";
       return (
         typeof value.sendRequest === "function" &&
         value.disposed !== true &&
-        (typeof value.sendAppServerExtensionRequest === "function" || normalizeText(value.hostId, 40) === "local")
+        (typeof value.sendAppServerExtensionRequest === "function" || UTIL.normalizeText(value.hostId, 40) === "local")
       );
     } catch {
       return false;
@@ -6937,25 +7089,23 @@ const VERSION = "0.8.0";
   }
 
   function usageSyncJoinPath(dir, name) {
-    const base = normalizeText(dir, 600).replace(/[\\/]+$/, "");
-    const child = normalizeText(name, 260).replace(/^[\\/]+/, "");
+    const base = UTIL.normalizeText(dir, 600).replace(/[\\/]+$/, "");
+    const child = UTIL.normalizeText(name, 260).replace(/^[\\/]+/, "");
     return base && child ? `${base}\\${child}` : base || child;
   }
 
-  // ---------------------------------------------------------------------------
   // 脚本自更新：启动时静默检测 GitHub 上的新版本；仅在检测到新版本后，于设置页
   // 标题旁显示「一键更新」入口。页面 fetch 被 CSP 拦截，因此下载走 app-server
   // command/exec 执行本机 curl，安装走 fs/writeFile（跨平台统一，无需 move/cmd），
   // 写回校验通过后覆盖本地脚本文件并就地重载（destroy + eval）立即生效。
-  // ---------------------------------------------------------------------------
 
   function updateParseVersion(text) {
     const match = /^\/\/\s*@version[ \t]+(\S+)[ \t]*$/m.exec(String(text || ""));
-    return normalizeText(match?.[1], 40);
+    return UTIL.normalizeText(match?.[1], 40);
   }
 
   function updateVersionParts(value) {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(normalizeText(value, 60));
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(UTIL.normalizeText(value, 60));
     if (!match) return null;
     return {
       numbers: [Number(match[1]), Number(match[2]), Number(match[3])],
@@ -6999,8 +7149,8 @@ const VERSION = "0.8.0";
   }
 
   function updateCommandPathJoin(dir, name) {
-    const base = normalizeText(dir, 600).replace(/[\\/]+$/, "");
-    const child = normalizeText(name, 260).replace(/^[\\/]+/, "");
+    const base = UTIL.normalizeText(dir, 600).replace(/[\\/]+$/, "");
+    const child = UTIL.normalizeText(name, 260).replace(/^[\\/]+/, "");
     if (!base) return child;
     if (!child) return base;
     const separator = /^[A-Za-z]:/.test(base) || base.includes("\\") ? "\\" : "/";
@@ -7087,7 +7237,7 @@ const VERSION = "0.8.0";
 
   function updateErrorMessage(error) {
     const raw = error && typeof error === "object" && "message" in error ? error.message : error;
-    return normalizeText(String(raw ?? ""), 300) || "未知错误";
+    return UTIL.normalizeText(String(raw ?? ""), 300) || "未知错误";
   }
 
   async function updateResolveTarget() {
@@ -7096,12 +7246,12 @@ const VERSION = "0.8.0";
     }
     const key = codexPlusScriptKey();
     const result = await window.codexPlus.call("/user-scripts/list", {});
-    const userDir = normalizeText(result?.user_dir, 600);
+    const userDir = UTIL.normalizeText(result?.user_dir, 600);
     if (!userDir) throw new Error("无法解析用户脚本目录");
     const scripts = Array.isArray(result?.scripts) ? result.scripts : [];
-    const entry = scripts.find((item) => normalizeText(item?.key, 200) === key)
-      || scripts.find((item) => normalizeText(item?.name, 260).endsWith("market-codex-live-token-cost.js"));
-    const name = normalizeText(entry?.name, 260) || "market-codex-live-token-cost.js";
+    const entry = scripts.find((item) => UTIL.normalizeText(item?.key, 200) === key)
+      || scripts.find((item) => UTIL.normalizeText(item?.name, 260).endsWith("market-codex-live-token-cost.js"));
+    const name = UTIL.normalizeText(entry?.name, 260) || "market-codex-live-token-cost.js";
     const targetPath = updateCommandPathJoin(userDir, name);
     return { userDir, name, targetPath, downloadPath: `${targetPath}.download` };
   }
@@ -7157,7 +7307,7 @@ const VERSION = "0.8.0";
     }
     const exitCode = Number(result?.exitCode);
     if (!result || !Number.isFinite(exitCode) || exitCode !== 0) {
-      const detail = normalizeText(result?.stderr, 200) || normalizeText(result?.stdout, 200) || "命令执行失败";
+      const detail = UTIL.normalizeText(result?.stderr, 200) || UTIL.normalizeText(result?.stdout, 200) || "命令执行失败";
       throw new Error(`命令失败（退出码 ${Number.isFinite(exitCode) ? exitCode : "?"}）：${detail}`);
     }
     return result;
@@ -7470,7 +7620,7 @@ const VERSION = "0.8.0";
   }
 
   function usageSyncRootFromRolloutPath(value) {
-    const text = normalizeText(value, 600).replace(/^\\\\\?\\/, "");
+    const text = UTIL.normalizeText(value, 600).replace(/^\\\\\?\\/, "");
     const match = text.match(/^(.*[\\/]\.codex)[\\/](?:sessions|archived_sessions)[\\/]/i);
     return match ? match[1] : "";
   }
@@ -7546,7 +7696,7 @@ const VERSION = "0.8.0";
       for (const entry of entries) {
         visited += 1;
         if (visited > USAGE_SYNC_AUTO_MAX_ENTRIES) return;
-        const name = normalizeText(entry?.fileName, 260);
+        const name = UTIL.normalizeText(entry?.fileName, 260);
         if (!name) continue;
         const child = usageSyncJoinPath(dir, name);
         if (entry.isDirectory) {
@@ -7698,7 +7848,7 @@ const VERSION = "0.8.0";
     for (const row of rows) {
       calls += row.callCount || 0;
       tokens += row.usage?.total_tokens || 0;
-      const day = localDateKey(toTimestampMs(row.startedAt));
+      const day = localDateKey(UTIL.toTimestampMs(row.startedAt));
       if (day) days.add(day);
     }
     const sortedDays = Array.from(days).sort();
@@ -7723,7 +7873,7 @@ const VERSION = "0.8.0";
 
   async function usageSyncCollectRowsViaAppServer(client, options = {}) {
     if (!isAppServerSyncClient(client)) throw new Error("自动同步通道不可用");
-    const root = normalizeText(options.root, 600);
+    const root = UTIL.normalizeText(options.root, 600);
     if (!root) throw new Error("未定位到本机 .codex 目录");
     // 能力矩阵：同步路径上顺带探测只读方法（24h 缓存，无副作用）。
     void hostProbeCapabilities(client, { path: root }).catch?.(() => {});
@@ -7743,7 +7893,7 @@ const VERSION = "0.8.0";
       if (typeof options.onProgress === "function") options.onProgress({ index: index + 1, total: files.length, path: item.path });
       try {
         const meta = await hostRequest(client, "fs/getMetadata", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
-        const lastModified = toCount(meta?.modifiedAtMs) || toCount(meta?.modified_at_ms);
+        const lastModified = UTIL.toCount(meta?.modifiedAtMs) || UTIL.toCount(meta?.modified_at_ms);
         const previous = stampIndex ? stampIndex[item.path] : null;
         if (previous && lastModified && previous.lastModified === lastModified) {
           skippedFiles += 1;
@@ -7805,27 +7955,31 @@ const VERSION = "0.8.0";
       dedupeAgainstLedger: true,
     });
     // 逐响应事实入库：按 response_id 幂等，这是本地唯一的用量事实源。
+    // 必须 await：写入失败时若照样报「写入 N 轮」，用户看到的就是假的成功
+    // （事实只在内存里，刷新即消失）。持久化失败在状态行与结果里都要留痕。
     const facts = Array.isArray(collected.facts) ? collected.facts : [];
     let factsWritten = 0;
+    let factsPersisted = true;
     if (facts.length) {
       for (const fact of facts) usageFactUpsert(fact);
-      factsWritten = facts.length;
-      void usageFactPersistResponses(facts);
+      factsPersisted = (await usageFactPersistResponses(facts)) !== false;
+      if (factsPersisted) factsWritten = facts.length;
     }
-    // rate_limits 单独入库，不参与用量求和。
+    // rate_limits 单独入库，不参与用量求和。同样要等：失败时不能让下一次同步
+    // 以为已经存过了。
     const rateLimits = Array.isArray(collected.rateLimits) ? collected.rateLimits : [];
     for (const item of rateLimits) {
       const key = `${item.threadId || ""}:${item.observedAtMs || 0}`;
-      void usageFactPersistRateLimit({ key, threadId: item.threadId || "", observedAtMs: item.observedAtMs || 0, rateLimits: item.rateLimits });
+      await usageFactPersistRateLimit({ key, threadId: item.threadId || "", observedAtMs: item.observedAtMs || 0, rateLimits: item.rateLimits });
     }
     if (facts.length) usageFactReconcileReport();
     // 降级 turn 记入覆盖率统计：有 record 的响应 /（有 record + 降级）响应。
     for (const row of collected.rows || []) {
       if (row.usageSource !== "token_count_fallback") continue;
-      const turnId = normalizeText(row.turnId, 240);
+      const turnId = UTIL.normalizeText(row.turnId, 240);
       if (!turnId) continue;
-      state.usageFactFallbackTurns.set(turnId, toCount(row.fallbackResponses) || toCount(row.callCount));
-      state.usageFactFallbackThreads.set(turnId, normalizeText(row.threadKey, 240).replace(/^local:/, ""));
+      state.usageFactFallbackTurns.set(turnId, UTIL.toCount(row.fallbackResponses) || UTIL.toCount(row.callCount));
+      state.usageFactFallbackThreads.set(turnId, UTIL.normalizeText(row.threadKey, 240).replace(/^local:/, ""));
     }
     await usageSyncStoreFileStamps(collected.nextStamps);
     const observability = usageSyncEnsureObservability({ ...(collected.observability || {}) });
@@ -7843,17 +7997,20 @@ const VERSION = "0.8.0";
       observability,
       coverage: reconcile.coverage,
       delta: reconcile.delta,
+      factsPersisted,
       at: Date.now(),
     };
     const range = collected.firstDay ? ` · 覆盖 ${collected.firstDay} ~ ${collected.lastDay}` : "";
     const failures = collected.readErrors.length ? ` · ${collected.readErrors.length} 个文件读取失败` : "";
+    // 事实没写进 IndexedDB 时必须显式说明：否则用户以为已经存下来了。
+    const persistFailure = factsPersisted ? "" : " · 事实入库失败（仅内存，刷新后丢失）";
     // 可观测性（P2 #5）：解析行数 / 重复数 / 覆盖率 / 差异一次报清。
     const parseInfo = observability.lines
       ? ` · 解析 ${observability.lines} 行（响应 ${observability.records} · 心跳 ${observability.heartbeats} · 重复 ${observability.duplicateRecords + observability.duplicateHeartbeats}）`
       : "";
     const reconcileInfo = reconcile.threads ? ` · 覆盖率 ${reconcile.coverage}%${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""}` : "";
     const prefix = auto ? "自动同步完成" : "同步完成";
-    state.usageSyncStatus = `${prefix}：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${parseInfo}${reconcileInfo}${failures}`;
+    state.usageSyncStatus = `${prefix}：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${parseInfo}${reconcileInfo}${failures}${persistFailure}`;
     saveUsageSyncLastResult(state.usageSyncResult);
   }
 
@@ -7912,7 +8069,7 @@ const VERSION = "0.8.0";
       const stamps = options.stamps && typeof options.stamps === "object" ? options.stamps : await usageSyncLoadFileStamps();
       const requestedClient = options.dirHandle ? null : options.client || appServerSyncClient();
       const autoClient = isAppServerSyncClient(requestedClient) ? requestedClient : null;
-      const autoRoot = autoClient ? normalizeText(options.root, 600) || (await usageSyncResolveCodexRoot(autoClient)) : "";
+      const autoRoot = autoClient ? UTIL.normalizeText(options.root, 600) || (await usageSyncResolveCodexRoot(autoClient)) : "";
       if (autoClient && autoRoot) {
         const collected = await usageSyncCollectRowsViaAppServer(autoClient, {
           root: autoRoot,
@@ -7978,7 +8135,7 @@ const VERSION = "0.8.0";
     const key = metricUsageKey(metric);
     const now = Date.now();
     const ledger = loadDailyLedger();
-    const turnId = normalizeText(metric?.turnId, 120);
+    const turnId = UTIL.normalizeText(metric?.turnId, 120);
     const model = modelName();
     if (turnId) {
       const index = ledger.items.findIndex((item) => item.turnId === turnId);
@@ -7996,7 +8153,7 @@ const VERSION = "0.8.0";
         return;
       }
     }
-    if (ledger.items.some((item) => item.key === key && now - toCount(item.observedAt) < 10000)) return;
+    if (ledger.items.some((item) => item.key === key && now - UTIL.toCount(item.observedAt) < 10000)) return;
     ledger.items.push({
       key,
       turnId,
@@ -8010,7 +8167,7 @@ const VERSION = "0.8.0";
 
   function todayCost(dailyUsage = null) {
     const localBucket = (dailyUsage || localDailyUsage()).get(todayKey());
-    if (toCount(localBucket?.tokens) > 0) return { value: Number(localBucket.cost) || 0, priced: localBucket?.priced !== false };
+    if (UTIL.toCount(localBucket?.tokens) > 0) return { value: Number(localBucket.cost) || 0, priced: localBucket?.priced !== false };
     const ledger = loadDailyLedger();
     return ledger.items.reduce(
       (sum, item) => {
@@ -8023,6 +8180,10 @@ const VERSION = "0.8.0";
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 14：会话标识与运行时绑定
+  // 从 URL / 载荷里抽取 session 标识，并把它绑到 runtime thread，避免跨会话串数据。
+  // ---------------------------------------------------------------------------
   function isCodexApiUrl(url) {
     const text = String(url || "");
     return /\/(responses|chat\/completions|conversation|thread|api)\b/i.test(text) || /codex/i.test(text);
@@ -8060,6 +8221,10 @@ const VERSION = "0.8.0";
     return /(?:^|\/)accounts\/check$/i.test(path);
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 15：会话识别 + profile 请求伪装
+  // 从 composer DOM / rollout 目录识别当前会话键；profile 查询复用宿主通道。
+  // ---------------------------------------------------------------------------
   function requestUrl(input) {
     if (typeof input === "string") return input;
     return input?.url || String(input || "");
@@ -8070,22 +8235,22 @@ const VERSION = "0.8.0";
   }
 
   function extractSessionKeyFromUrl(value) {
-    const text = normalizeText(String(value || ""), 1000);
+    const text = UTIL.normalizeText(String(value || ""), 1000);
     if (!text) return "";
     try {
       const url = new URL(text, "app://-/");
       for (const key of ["threadId", "thread_id", "conversationId", "conversation_id", "sessionId", "session_id", "chatId", "chat_id"]) {
-        const candidate = normalizeText(url.searchParams.get(key), 240);
+        const candidate = UTIL.normalizeText(url.searchParams.get(key), 240);
         if (candidate) return candidate;
       }
       const path = decodeURIComponent(url.pathname || "");
       const pathMatch = path.match(/\/(?:c|chat|chats|conversation|conversations|thread|threads|session|sessions)\/([^/?#]+)/i);
-      if (pathMatch?.[1]) return normalizeText(pathMatch[1], 240);
+      if (pathMatch?.[1]) return UTIL.normalizeText(pathMatch[1], 240);
     } catch {
       // Fall through to regex parsing below.
     }
     const regexMatch = text.match(/[?&](?:threadId|thread_id|conversationId|conversation_id|sessionId|session_id|chatId|chat_id)=([^&#]+)/i);
-    if (regexMatch?.[1]) return normalizeText(decodeURIComponent(regexMatch[1]), 240);
+    if (regexMatch?.[1]) return UTIL.normalizeText(decodeURIComponent(regexMatch[1]), 240);
     return "";
   }
 
@@ -8096,7 +8261,7 @@ const VERSION = "0.8.0";
   function mergeSessionIdentity(left = {}, right = {}) {
     const merged = emptySessionIdentity();
     for (const field of ["threadKey", "conversationKey", "runtimeSessionKey", "turnId", "requestId", "streamId"]) {
-      merged[field] = normalizeText(left[field] || right[field], 240);
+      merged[field] = UTIL.normalizeText(left[field] || right[field], 240);
     }
     return merged;
   }
@@ -8106,7 +8271,7 @@ const VERSION = "0.8.0";
     if (!text) return emptySessionIdentity();
     const identity = emptySessionIdentity();
     const assignQueryKey = (name, candidate) => {
-      const key = normalizeText(candidate, 240);
+      const key = UTIL.normalizeText(candidate, 240);
       if (!key) return;
       if (/thread/i.test(name)) identity.threadKey ||= key;
       else if (/conversation|chat/i.test(name)) identity.conversationKey ||= key;
@@ -8121,7 +8286,7 @@ const VERSION = "0.8.0";
       const pathMatch = path.match(/\/(thread|threads|conversation|conversations|chat|chats|session|sessions)\/([^/?#]+)/i);
       if (pathMatch?.[2]) {
         const kind = pathMatch[1].toLowerCase();
-        const key = normalizeText(pathMatch[2], 240);
+        const key = UTIL.normalizeText(pathMatch[2], 240);
         if (/^thread/.test(kind)) identity.threadKey ||= key;
         else if (/^conversation|^chat/.test(kind)) identity.conversationKey ||= key;
         else identity.runtimeSessionKey ||= key;
@@ -8154,21 +8319,21 @@ const VERSION = "0.8.0";
     seen.add(value);
 
     let identity = {
-      threadKey: normalizeText(
+      threadKey: UTIL.normalizeText(
         value.threadId ?? value.thread_id ?? value.currentThreadId ?? value.current_thread_id ?? value.thread?.id ?? value.thread?.threadId ?? value.thread?.thread_id ?? value.turn?.threadId ?? value.turn?.thread_id,
         240,
       ),
-      conversationKey: normalizeText(
+      conversationKey: UTIL.normalizeText(
         value.conversationId ?? value.conversation_id ?? value.currentConversationId ?? value.current_conversation_id ?? value.chatId ?? value.chat_id ?? value.conversation?.id ?? value.turn?.conversationId ?? value.turn?.conversation_id,
         240,
       ),
-      runtimeSessionKey: normalizeText(
+      runtimeSessionKey: UTIL.normalizeText(
         value.sessionId ?? value.session_id ?? value.runtimeSessionId ?? value.runtime_session_id ?? value.session?.id ?? value.runtimeSession?.id ?? value.runtime_session?.id,
         240,
       ),
-      turnId: normalizeText(value.turnId ?? value.turn_id ?? value.turn?.id, 240),
-      requestId: normalizeText(value.requestId ?? value.request_id ?? value.request?.requestId ?? value.request?.request_id ?? value.request?.id, 240),
-      streamId: normalizeText(value.streamId ?? value.stream_id ?? value.stream?.id ?? value.response?.streamId ?? value.response?.stream_id, 240),
+      turnId: UTIL.normalizeText(value.turnId ?? value.turn_id ?? value.turn?.id, 240),
+      requestId: UTIL.normalizeText(value.requestId ?? value.request_id ?? value.request?.requestId ?? value.request?.request_id ?? value.request?.id, 240),
+      streamId: UTIL.normalizeText(value.streamId ?? value.stream_id ?? value.stream?.id ?? value.response?.streamId ?? value.response?.stream_id, 240),
     };
     for (const key of [
       "url",
@@ -8205,7 +8370,7 @@ const VERSION = "0.8.0";
   }
 
   function sessionIdentityCorrelationFields(identity) {
-    return ["turnId", "requestId", "streamId"].filter((field) => Boolean(normalizeText(identity?.[field], 240)));
+    return ["turnId", "requestId", "streamId"].filter((field) => Boolean(UTIL.normalizeText(identity?.[field], 240)));
   }
 
   function pruneRuntimeSessionBindings(now = Date.now()) {
@@ -8216,16 +8381,16 @@ const VERSION = "0.8.0";
 
   function runtimeSessionBindingKey(identity) {
     return JSON.stringify([
-      normalizeText(identity?.runtimeSessionKey, 240),
-      normalizeText(identity?.turnId, 240),
-      normalizeText(identity?.requestId, 240),
-      normalizeText(identity?.streamId, 240),
+      UTIL.normalizeText(identity?.runtimeSessionKey, 240),
+      UTIL.normalizeText(identity?.turnId, 240),
+      UTIL.normalizeText(identity?.requestId, 240),
+      UTIL.normalizeText(identity?.streamId, 240),
     ]);
   }
 
   function bindRuntimeSessionToThread(identity, threadKey, now = Date.now()) {
-    const runtimeSessionKey = normalizeText(identity?.runtimeSessionKey, 240);
-    const resolvedThreadKey = normalizeText(threadKey, 240);
+    const runtimeSessionKey = UTIL.normalizeText(identity?.runtimeSessionKey, 240);
+    const resolvedThreadKey = UTIL.normalizeText(threadKey, 240);
     if (!runtimeSessionKey || !resolvedThreadKey || !sessionIdentityCorrelationFields(identity).length) return false;
     pruneRuntimeSessionBindings(now);
     const key = runtimeSessionBindingKey(identity);
@@ -8244,9 +8409,9 @@ const VERSION = "0.8.0";
     state.runtimeSessionBindings.set(key, {
       runtimeSessionKey,
       threadKey: resolvedThreadKey,
-      turnId: normalizeText(identity.turnId, 240),
-      requestId: normalizeText(identity.requestId, 240),
-      streamId: normalizeText(identity.streamId, 240),
+      turnId: UTIL.normalizeText(identity.turnId, 240),
+      requestId: UTIL.normalizeText(identity.requestId, 240),
+      streamId: UTIL.normalizeText(identity.streamId, 240),
       ambiguous: false,
       observedAt: now,
       expiresAt: now + RUNTIME_SESSION_BINDING_TTL_MS,
@@ -8255,17 +8420,17 @@ const VERSION = "0.8.0";
   }
 
   function resolveRuntimeSessionBinding(identity, now = Date.now()) {
-    const runtimeSessionKey = normalizeText(identity?.runtimeSessionKey, 240);
+    const runtimeSessionKey = UTIL.normalizeText(identity?.runtimeSessionKey, 240);
     const correlationFields = sessionIdentityCorrelationFields(identity);
     if (!runtimeSessionKey || !correlationFields.length) return "";
     pruneRuntimeSessionBindings(now);
     const matches = [];
     for (const binding of state.runtimeSessionBindings.values()) {
-      if (binding?.ambiguous || normalizeText(binding?.runtimeSessionKey, 240) !== runtimeSessionKey) continue;
-      if (!correlationFields.every((field) => normalizeText(binding?.[field], 240) === normalizeText(identity?.[field], 240))) continue;
+      if (binding?.ambiguous || UTIL.normalizeText(binding?.runtimeSessionKey, 240) !== runtimeSessionKey) continue;
+      if (!correlationFields.every((field) => UTIL.normalizeText(binding?.[field], 240) === UTIL.normalizeText(identity?.[field], 240))) continue;
       matches.push(binding);
     }
-    const threadKeys = [...new Set(matches.map((binding) => normalizeText(binding.threadKey, 240)).filter(Boolean))];
+    const threadKeys = [...new Set(matches.map((binding) => UTIL.normalizeText(binding.threadKey, 240)).filter(Boolean))];
     return threadKeys.length === 1 ? threadKeys[0] : "";
   }
 
@@ -8304,7 +8469,7 @@ const VERSION = "0.8.0";
     if (/body|websocket/i.test(text)) return false;
     if (/^(fetch|xhr)$/i.test(text)) return true;
     if (/message/i.test(text)) {
-      const status = toCount(payload?.status);
+      const status = UTIL.toCount(payload?.status);
       return payload?.type === "fetch-response" && (!status || (status >= 200 && status < 300));
     }
     return true;
@@ -8345,7 +8510,7 @@ const VERSION = "0.8.0";
     seen.add(payload);
     if (payload.type === "task_complete" || payload.event === "task_complete") return true;
     if (payload.method === "turn/completed") {
-      const status = normalizeText(payload.params?.turn?.status || payload.params?.status, 40);
+      const status = UTIL.normalizeText(payload.params?.turn?.status || payload.params?.status, 40);
       if (!status || status === "completed") return true;
     }
     for (const key of ["payload", "data", "body", "message", "result", "params", "bodyJsonString"]) {
@@ -8355,7 +8520,7 @@ const VERSION = "0.8.0";
   }
 
   function normalizeOfficialRuntimeStatus(value) {
-    const raw = normalizeText(value?.type ?? value?.status ?? value?.state ?? value, 80).toLowerCase().replace(/[\s-]+/g, "_");
+    const raw = UTIL.normalizeText(value?.type ?? value?.status ?? value?.state ?? value, 80).toLowerCase().replace(/[\s-]+/g, "_");
     if (!raw) return "";
     if (["active", "running", "in_progress", "inprogress", "resuming", "working"].includes(raw)) return "running";
     if (["idle", "complete", "completed", "failed", "interrupted", "stopped", "cancelled", "canceled", "aborted", "error"].includes(raw)) return "idle";
@@ -8381,12 +8546,12 @@ const VERSION = "0.8.0";
       }
       return undefined;
     };
-    const startedAtMs = firstTimestampMs(
+    const startedAtMs = UTIL.firstTimestampMs(
       pick("turnStartedAtMs", "turn_started_at_ms"),
       pick("startedAtMs", "started_at_ms", "startedAt", "started_at", "startTime", "start_time", "createdAt", "created_at"),
     );
-    const workStartedAtMs = firstTimestampMs(pick("firstTurnWorkItemStartedAtMs", "first_turn_work_item_started_at_ms", "workedStartedAtMs", "worked_started_at_ms"));
-    let completedAtMs = firstTimestampMs(
+    const workStartedAtMs = UTIL.firstTimestampMs(pick("firstTurnWorkItemStartedAtMs", "first_turn_work_item_started_at_ms", "workedStartedAtMs", "worked_started_at_ms"));
+    let completedAtMs = UTIL.firstTimestampMs(
       pick("completedAtMs", "completed_at_ms", "finishedAtMs", "finished_at_ms", "completedAt", "completed_at", "finishedAt", "finished_at", "endTime", "end_time"),
       pick("finalAssistantStartedAtMs", "final_assistant_started_at_ms"),
     );
@@ -8431,13 +8596,13 @@ const VERSION = "0.8.0";
     if (typeof payload !== "object" || seen.has(payload)) return null;
     seen.add(payload);
 
-    const method = normalizeText(payload.method, 160);
-    const type = normalizeText(payload.type, 160);
-    const event = normalizeText(payload.event, 160);
-    const descriptor = normalizeText(method || event || type, 160).toLowerCase().replace(/[\s-]+/g, "_");
+    const method = UTIL.normalizeText(payload.method, 160);
+    const type = UTIL.normalizeText(payload.type, 160);
+    const event = UTIL.normalizeText(payload.event, 160);
+    const descriptor = UTIL.normalizeText(method || event || type, 160).toLowerCase().replace(/[\s-]+/g, "_");
     const identity = extractSessionIdentity(payload);
     const sessionKey = resolveSessionIdentity(identity).sessionKey;
-    const turnId = normalizeText(identity.turnId, 120);
+    const turnId = UTIL.normalizeText(identity.turnId, 120);
     const timing = officialRuntimeTimingFromPayload(payload);
 
     if (method === "turn/started" || descriptor === "turn_started" || descriptor === "codex/event/task_started") {
@@ -8451,7 +8616,7 @@ const VERSION = "0.8.0";
       type === "task_complete" ||
       event === "task_complete"
     ) {
-      const status = normalizeText(payload.params?.turn?.status || payload.params?.status || payload.turn?.status || payload.status || "completed", 80);
+      const status = UTIL.normalizeText(payload.params?.turn?.status || payload.params?.status || payload.turn?.status || payload.status || "completed", 80);
       return { sessionKey, turnId, running: false, status: status || "completed", reason: method || event || type, ...timing };
     }
     if (method === "thread/status/changed") {
@@ -8471,10 +8636,10 @@ const VERSION = "0.8.0";
 
   function applyOfficialTurnTiming(turn, details = {}) {
     if (!turn || typeof turn !== "object") return turn;
-    const turnId = normalizeText(details.turnId, 120);
+    const turnId = UTIL.normalizeText(details.turnId, 120);
     if (turnId) turn.id = turnId;
     const timing = officialRuntimeTimingFromPayload(details);
-    const startedAt = toTimestampMs(timing.startedAtMs || details.startedAtMs || details.startedAt);
+    const startedAt = UTIL.toTimestampMs(timing.startedAtMs || details.startedAtMs || details.startedAt);
     if (startedAt) turn.startedAt = startedAt;
     const previous = turn.officialTiming && typeof turn.officialTiming === "object" ? turn.officialTiming : {};
     turn.officialTiming = {
@@ -8495,7 +8660,7 @@ const VERSION = "0.8.0";
       if (!item?.running) continue;
       const officialRunning = Array.from(state.officialThreadRuntimeStates.entries()).some(([candidateKey, entry]) => entry?.running && sameSessionKey(candidateKey, key));
       if (officialRunning) continue;
-      if (!item.startedAt || now - toCount(item.startedAt) > OFFICIAL_RUNTIME_STATE_TTL_MS) {
+      if (!item.startedAt || now - UTIL.toCount(item.startedAt) > OFFICIAL_RUNTIME_STATE_TTL_MS) {
         state.turnShimmerSessions.set(key, { ...item, running: false, outputStartedAt: now });
       }
     }
@@ -8514,8 +8679,8 @@ const VERSION = "0.8.0";
   function turnCompletionMatchesCurrent(sessionKey, turnId, options = {}) {
     const current = localCurrentTurn(sessionKey);
     if (!current) return true;
-    const expectedTurnId = normalizeText(current.id, 120);
-    const completedTurnId = normalizeText(turnId, 120);
+    const expectedTurnId = UTIL.normalizeText(current.id, 120);
+    const completedTurnId = UTIL.normalizeText(turnId, 120);
     if (!completedTurnId && options.allowTurnless) return true;
     return Boolean(completedTurnId && expectedTurnId && completedTurnId === expectedTurnId);
   }
@@ -8527,14 +8692,14 @@ const VERSION = "0.8.0";
     const key = localStateSessionKey(resolvedSessionKey);
     if (!key) return false;
     const previous = state.officialThreadRuntimeStates.get(key);
-    const turnId = normalizeText(details.turnId, 120);
+    const turnId = UTIL.normalizeText(details.turnId, 120);
     if (!running) {
       const allowTurnlessCompletion = details.reason === "thread/status/changed" && !previous?.turnId;
       if (previous?.turnId && turnId && previous.turnId !== turnId) return false;
       if (!turnCompletionMatchesCurrent(key, turnId, { allowTurnless: allowTurnlessCompletion })) return false;
     }
-    const status = normalizeText(details.status, 80) || (running ? "running" : "idle");
-    const reason = normalizeText(details.reason, 120);
+    const status = UTIL.normalizeText(details.status, 80) || (running ? "running" : "idle");
+    const reason = UTIL.normalizeText(details.reason, 120);
     const changed = !previous || previous.running !== Boolean(running) || previous.turnId !== turnId || previous.status !== status;
     const timing = officialRuntimeTimingFromPayload(details);
     state.officialThreadRuntimeStates.set(key, { running: Boolean(running), turnId, status, reason, observedAt: Date.now(), ...timing });
@@ -8598,7 +8763,7 @@ const VERSION = "0.8.0";
     let stateForKey = state.officialThreadRuntimeStates.get(key) || null;
     for (const [runtimeKey, item] of state.officialThreadRuntimeStates.entries()) {
       if (!sameSessionKey(runtimeKey, key)) continue;
-      if (!stateForKey || toCount(item?.observedAt) >= toCount(stateForKey?.observedAt)) stateForKey = item;
+      if (!stateForKey || UTIL.toCount(item?.observedAt) >= UTIL.toCount(stateForKey?.observedAt)) stateForKey = item;
     }
     return Boolean(stateForKey?.running);
   }
@@ -8619,7 +8784,7 @@ const VERSION = "0.8.0";
   }
 
   function sessionlessTaskCompleteSessionKey(turnId) {
-    const completedTurnId = normalizeText(turnId, 120);
+    const completedTurnId = UTIL.normalizeText(turnId, 120);
     if (!completedTurnId) return "";
     const currentTurns = [];
     const seenTurns = new Set();
@@ -8630,7 +8795,7 @@ const VERSION = "0.8.0";
     }
     if (currentTurns.length !== 1) return "";
     const candidate = currentTurns[0];
-    return normalizeText(candidate.turn.id, 120) === completedTurnId ? candidate.key : "";
+    return UTIL.normalizeText(candidate.turn.id, 120) === completedTurnId ? candidate.key : "";
   }
 
   function sessionlessUsageRuntimeSessionKey(payload) {
@@ -8741,7 +8906,7 @@ const VERSION = "0.8.0";
     if (typeof value !== "object" || seen.has(value)) return false;
     seen.add(value);
 
-    const descriptor = normalizeText(
+    const descriptor = UTIL.normalizeText(
       [
         value.type,
         value.event,
@@ -8763,7 +8928,7 @@ const VERSION = "0.8.0";
 
     if ((assistant || resultCarrier) && !blocked) {
       for (const key of directTextKeys) {
-        if (typeof value[key] === "string" && normalizeText(value[key], 2000)) return true;
+        if (typeof value[key] === "string" && UTIL.normalizeText(value[key], 2000)) return true;
       }
     }
 
@@ -8799,8 +8964,8 @@ const VERSION = "0.8.0";
     if (Array.isArray(value)) return value.some((item) => isComposerDraftPayload(item, depth + 1, seen));
     if (typeof value !== "object" || seen.has(value)) return false;
     seen.add(value);
-    const type = normalizeText(value.type, 120);
-    const key = normalizeText(value.key, 160);
+    const type = UTIL.normalizeText(value.type, 120);
+    const key = UTIL.normalizeText(value.key, 160);
     if (type === "persisted-atom-updated" && /^composer-prompt-drafts-v\d+$/i.test(key)) return true;
     return ["payload", "message", "data", "body"].some((field) => isComposerDraftPayload(value[field], depth + 1, seen));
   }
@@ -8826,7 +8991,7 @@ const VERSION = "0.8.0";
       value.path,
       value.endpoint,
     ]
-      .map((item) => normalizeText(item, 160).toLowerCase())
+      .map((item) => UTIL.normalizeText(item, 160).toLowerCase())
       .filter(Boolean)
       .join(" ");
     if (/(composer-prompt-drafts|draft|title|summary|summariz|profile|sentry|telemetry)/i.test(descriptor)) return true;
@@ -8854,7 +9019,7 @@ const VERSION = "0.8.0";
     if (typeof value !== "object" || seen.has(value)) return false;
     seen.add(value);
 
-    const type = normalizeText(value.type ?? value.event ?? value.action ?? value.method, 160).toLowerCase().replace(/[\s-]+/g, "_");
+    const type = UTIL.normalizeText(value.type ?? value.event ?? value.action ?? value.method, 160).toLowerCase().replace(/[\s-]+/g, "_");
     if (/(^|_)(user_message|submit_message|send_message|create_turn|start_turn|turn_start|conversation_turn|codex_turn)(_|$)/i.test(type)) return true;
     if (hasUserTurnContent(value) && (extractSessionInfo(value) || extractModelInfo(value).model || extractFastMode(value) !== null)) return true;
 
@@ -8886,7 +9051,7 @@ const VERSION = "0.8.0";
       if (info.model || info.effort) return info;
     }
 
-    const model = normalizeText(
+    const model = UTIL.normalizeText(
       value.model ??
         value.modelId ??
         value.model_id ??
@@ -8901,7 +9066,7 @@ const VERSION = "0.8.0";
         value.request?.params?.model ??
         value.body?.model,
     );
-    const effort = normalizeText(
+    const effort = UTIL.normalizeText(
       value.reasoning_effort ??
         value.reasoningEffort ??
         value.effort ??
@@ -8928,27 +9093,27 @@ const VERSION = "0.8.0";
 
   function todayUsage(dailyUsage = null) {
     const localBucket = (dailyUsage || localDailyUsage()).get(todayKey());
-    if (toCount(localBucket?.tokens) > 0) {
+    if (UTIL.toCount(localBucket?.tokens) > 0) {
       const merged = mergeCodexppHistoryTurns(
         [{
           turnId: `today-local:${todayKey()}`,
           model: UNKNOWN_MODEL,
           createdAt: new Date().toISOString(),
           observedAt: Date.now(),
-          usage: { input: toCount(localBucket.input), output: toCount(localBucket.output), cached: toCount(localBucket.cached), total: toCount(localBucket.tokens), exact: true },
-          callCount: toCount(localBucket.requests) || 1,
+          usage: { input: UTIL.toCount(localBucket.input), output: UTIL.toCount(localBucket.output), cached: UTIL.toCount(localBucket.cached), total: UTIL.toCount(localBucket.tokens), exact: true },
+          callCount: UTIL.toCount(localBucket.requests) || 1,
         }],
       );
       const total = merged.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn.usage)), { input: 0, output: 0, cached: 0, total: 0, exact: true });
-      return { input: toCount(total.input), output: toCount(total.output), cached: toCount(total.cached), total: toCount(total.total), exact: true };
+      return { input: UTIL.toCount(total.input), output: UTIL.toCount(total.output), cached: UTIL.toCount(total.cached), total: UTIL.toCount(total.total), exact: true };
     }
     const ledger = loadDailyLedger();
     const merged = mergeCodexppHistoryTurns(
       ledger.items.map((item, index) => ({
         turnId: item.turnId || `today-ledger:${index}`,
         model: item.model,
-        createdAt: new Date(toCount(item.observedAt) || Date.now()).toISOString(),
-        observedAt: toCount(item.observedAt) || Date.now(),
+        createdAt: new Date(UTIL.toCount(item.observedAt) || Date.now()).toISOString(),
+        observedAt: UTIL.toCount(item.observedAt) || Date.now(),
         usage: normalizeUsage(item.usage),
         callCount: 1,
       })),
@@ -8956,8 +9121,12 @@ const VERSION = "0.8.0";
     return merged.reduce((sum, turn) => addUsage(sum, normalizeUsage(turn.usage)), { input: 0, output: 0, cached: 0, total: 0, exact: true });
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 16：运行时观测（模型信息 / shimmer / 调用统计）
+  // 模型信息观测、输出速率、shimmer 动画、profile 调用统计都在这一段。
+  // ---------------------------------------------------------------------------
   function normalizeReasoningEffort(value) {
-    const text = normalizeText(String(value ?? ""), 60).toLowerCase().replace(/[\s-]+/g, "_");
+    const text = UTIL.normalizeText(String(value ?? ""), 60).toLowerCase().replace(/[\s-]+/g, "_");
     if (!text) return "";
     if (text === "extra_high" || text === "extra" || text === "very_high") return "xhigh";
     if (text === "maximum") return "max";
@@ -8989,7 +9158,7 @@ const VERSION = "0.8.0";
       if (!Object.hasOwn(value, key)) continue;
       const raw = value[key];
       if (raw == null || raw === "") return false;
-      const text = normalizeText(String(raw), 80).toLowerCase().replace(/[\s-]+/g, "_");
+      const text = UTIL.normalizeText(String(raw), 80).toLowerCase().replace(/[\s-]+/g, "_");
       if (text === "fast" || text === "fast_mode" || text === "priority") return true;
       if (["standard", "normal", "regular", "default"].includes(text)) return false;
     }
@@ -9002,20 +9171,20 @@ const VERSION = "0.8.0";
 
   function countsTowardFastModeUsage(turn) {
     const usage = normalizeUsage(turn?.usage);
-    return turn?.source === "codex-live-token-cost" && usage.exact && toCount(usage.total) > 0;
+    return turn?.source === "codex-live-token-cost" && usage.exact && UTIL.toCount(usage.total) > 0;
   }
 
   function normalizeProfileInvocation(value) {
     if (!value || typeof value !== "object") return null;
-    const type = normalizeText(String(value.type ?? value.kind ?? ""), 30).toLowerCase();
+    const type = UTIL.normalizeText(String(value.type ?? value.kind ?? ""), 30).toLowerCase();
     const notificationItem =
       type === "mcp-notification" && value.method === "item/completed" && value.params?.item?.type === "mcpToolCall" ? value.params.item : null;
-    const mcpServer = normalizeText(notificationItem?.server || (type === "mcp_tool_call_end" ? value.invocation?.server : ""), 120).replace(/^\$+/, "");
+    const mcpServer = UTIL.normalizeText(notificationItem?.server || (type === "mcp_tool_call_end" ? value.invocation?.server : ""), 120).replace(/^\$+/, "");
     if (mcpServer) return { type: "plugin", plugin_id: mcpServer, plugin_name: mcpServer };
-    const pluginName = normalizeText(value.plugin_name ?? value.pluginName ?? (type === "plugin" ? value.name : ""), 80).replace(/^\$+/, "");
-    const skillName = normalizeText(value.skill_name ?? value.skillName ?? (type === "skill" ? value.name : ""), 80);
-    const pluginId = normalizeText(value.plugin_id ?? value.pluginId, 120).replace(/^\$+/, "");
-    const skillId = normalizeText(value.skill_id ?? value.skillId, 120);
+    const pluginName = UTIL.normalizeText(value.plugin_name ?? value.pluginName ?? (type === "plugin" ? value.name : ""), 80).replace(/^\$+/, "");
+    const skillName = UTIL.normalizeText(value.skill_name ?? value.skillName ?? (type === "skill" ? value.name : ""), 80);
+    const pluginId = UTIL.normalizeText(value.plugin_id ?? value.pluginId, 120).replace(/^\$+/, "");
+    const skillId = UTIL.normalizeText(value.skill_id ?? value.skillId, 120);
     if (pluginName || pluginId) {
       return { type: "plugin", ...(pluginId ? { plugin_id: pluginId } : {}), ...(pluginName ? { plugin_name: pluginName } : {}) };
     }
@@ -9026,7 +9195,7 @@ const VERSION = "0.8.0";
   }
 
   function profileInvocationEventId(value) {
-    return normalizeText(
+    return UTIL.normalizeText(
       value?.invocationId ||
         value?.invocation_id ||
         value?.callId ||
@@ -9058,11 +9227,11 @@ const VERSION = "0.8.0";
     if (!notificationItem && !legacyToolCall) return [];
     const rawInput = notificationItem?.command ?? legacyToolCall.input;
     const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput || {});
-    const callId = normalizeText(notificationItem?.id, 180) || profileInvocationEventId(value);
+    const callId = UTIL.normalizeText(notificationItem?.id, 180) || profileInvocationEventId(value);
     const names = new Set();
     const pattern = /[\\/]skills[\\/]+(?:[^\\/"'\r\n]+[\\/]+)*([^\\/"'\r\n]+)[\\/]+SKILL\.md/gi;
     for (const match of input.matchAll(pattern)) {
-      const name = normalizeText(match[1], 120);
+      const name = UTIL.normalizeText(match[1], 120);
       if (name) names.add(name);
     }
     return Array.from(names, (name) => ({
@@ -9107,12 +9276,12 @@ const VERSION = "0.8.0";
     for (const turn of Array.isArray(turns) ? turns : []) {
       const effort = normalizeReasoningEffort(turn?.effort);
       if (effort) {
-        activity.effortCounts[effort] = toCount(activity.effortCounts[effort]) + 1;
+        activity.effortCounts[effort] = UTIL.toCount(activity.effortCounts[effort]) + 1;
       }
       const usage = normalizeUsage(turn?.usage);
-      if (turn?.source === "codex-live-token-cost" && usage.exact && toCount(usage.total) > 0) {
-        activity.totalTokens += toCount(usage.total);
-        if (turn.fastMode === true) activity.fastModeTokens += toCount(usage.total);
+      if (turn?.source === "codex-live-token-cost" && usage.exact && UTIL.toCount(usage.total) > 0) {
+        activity.totalTokens += UTIL.toCount(usage.total);
+        if (turn.fastMode === true) activity.fastModeTokens += UTIL.toCount(usage.total);
       }
       const durationMs = normalizedDurationMs(turn);
       activity.longestRunningDurationMs = Math.max(activity.longestRunningDurationMs, durationMs);
@@ -9189,8 +9358,8 @@ const VERSION = "0.8.0";
   function syncActiveTurnShimmerState() {
     const item = turnShimmerState(currentSessionKey());
     state.turnShimmerRunning = Boolean(item.running);
-    state.turnShimmerStartedAt = toCount(item.startedAt);
-    state.turnShimmerOutputStartedAt = toCount(item.outputStartedAt);
+    state.turnShimmerStartedAt = UTIL.toCount(item.startedAt);
+    state.turnShimmerOutputStartedAt = UTIL.toCount(item.outputStartedAt);
     return item;
   }
 
@@ -9238,6 +9407,10 @@ const VERSION = "0.8.0";
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 17：composer 运行态与本地采集
+  // 从 DOM 读运行态，落成交付给 turn 的 begin/finish 事件。
+  // ---------------------------------------------------------------------------
   function composerActionButtons() {
     return Array.from(document.querySelectorAll?.("button.size-token-button-composer") || []);
   }
@@ -9278,7 +9451,7 @@ const VERSION = "0.8.0";
     if (!button) {
       // 页面隐藏或按钮暂时 0×0 时仍用 aria-label 判断发送/停止，保证残留浮光能自愈。
       const labels = composerActionButtons()
-        .map((node) => normalizeText(node.getAttribute?.("aria-label") || node.getAttribute?.("title") || "", 80));
+        .map((node) => UTIL.normalizeText(node.getAttribute?.("aria-label") || node.getAttribute?.("title") || "", 80));
       if (labels.some((label) => /^(停止|停止生成|停止任务|中止|取消|stop|stop generating|cancel|interrupt)$/i.test(label))) return remember(true);
       if (labels.some((label) => /^(发送|发送消息|send|send message|submit)$/i.test(label))) return remember(false);
       return remember(null);
@@ -9291,7 +9464,7 @@ const VERSION = "0.8.0";
       }
       fiber = fiber.return;
     }
-    const label = normalizeText(button.getAttribute?.("aria-label") || button.getAttribute?.("title") || "", 80);
+    const label = UTIL.normalizeText(button.getAttribute?.("aria-label") || button.getAttribute?.("title") || "", 80);
     if (/^(停止|停止生成|停止任务|中止|取消|stop|stop generating|cancel|interrupt)$/i.test(label)) return remember(true);
     if (/^(发送|发送消息|send|send message|submit)$/i.test(label)) return remember(false);
     if (button.getAttribute?.("aria-busy") === "true") return remember(true);
@@ -9304,10 +9477,10 @@ const VERSION = "0.8.0";
     const key = localStateSessionKey(sessionKey);
     let age = Infinity;
     const shimmer = state.turnShimmerSessions.get(key);
-    if (shimmer?.running) age = Math.min(age, Math.max(0, Date.now() - toCount(shimmer.startedAt)));
+    if (shimmer?.running) age = Math.min(age, Math.max(0, Date.now() - UTIL.toCount(shimmer.startedAt)));
     for (const [candidateKey, item] of state.officialThreadRuntimeStates.entries()) {
       if (!item?.running || !sameSessionKey(candidateKey, key)) continue;
-      age = Math.min(age, Math.max(0, Date.now() - toCount(item.observedAt)));
+      age = Math.min(age, Math.max(0, Date.now() - UTIL.toCount(item.observedAt)));
     }
     if (state.shimmerRunning && state.shimmerRunStartedAt) {
       age = Math.min(age, Math.max(0, Date.now() - state.shimmerRunStartedAt));
@@ -9374,15 +9547,15 @@ const VERSION = "0.8.0";
     const last = state.localLast;
     if (!last || last.source !== "codex-live-token-cost" || last.persistReason !== "live") return false;
     if (!sameSessionKey(turnSessionKey(last), key)) return false;
-    const observedAt = firstTimestampMs(last.observedAt, last.finishedAt, last.createdAt);
-    if (!observedAt || Math.abs(toTimestampMs(now) - observedAt) > LOCAL_LIVE_TURN_RESTORE_MAX_AGE_MS) return false;
+    const observedAt = UTIL.firstTimestampMs(last.observedAt, last.finishedAt, last.createdAt);
+    if (!observedAt || Math.abs(UTIL.toTimestampMs(now) - observedAt) > LOCAL_LIVE_TURN_RESTORE_MAX_AGE_MS) return false;
     const usage = normalizeUsage(last.usage);
     if (!usage.exact) return false;
     setLocalCurrentTurn({
-      id: normalizeText(last.turnId, 120) || `${Date.now()}-${++state.localTurnSeq}`,
+      id: UTIL.normalizeText(last.turnId, 120) || `${Date.now()}-${++state.localTurnSeq}`,
       sessionKey: key,
-      startedAt: toCount(Date.parse(last.startedAt || last.createdAt)) || Date.now(),
-      calls: [{ usage, source: "restored-live", observedAt: toCount(last.observedAt) || Date.now() }],
+      startedAt: UTIL.toCount(Date.parse(last.startedAt || last.createdAt)) || Date.now(),
+      calls: [{ usage, source: "restored-live", observedAt: UTIL.toCount(last.observedAt) || Date.now() }],
       context: {
         effort: normalizeReasoningEffort(last.effort),
         fastMode: typeof last.fastMode === "boolean" ? last.fastMode : null,
@@ -9399,7 +9572,7 @@ const VERSION = "0.8.0";
     const sessionKey = localStateSessionKey(options.sessionKey || currentSessionKey());
     clearLocalTurnTimer(sessionKey);
     if (!localCurrentTurn(sessionKey)) return;
-    const reason = normalizeText(options.reason || "complete", 40) || "complete";
+    const reason = UTIL.normalizeText(options.reason || "complete", 40) || "complete";
     void delay;
     persistLocalCurrentTurn(reason, sessionKey, { durationStatus: "completed" });
     setLocalCurrentTurn(null, sessionKey);
@@ -9427,20 +9600,20 @@ const VERSION = "0.8.0";
     const current = localCurrentTurn(sessionKey);
     if (current) {
       if (options.threadAttributionStatus === "reliable" && options.profileThreadKey) {
-        current.profileThreadKey = normalizeText(options.profileThreadKey, 240);
+        current.profileThreadKey = UTIL.normalizeText(options.profileThreadKey, 240);
         current.profileThreadAttributionStatus = "reliable";
       }
       if (!forceNewIfUsed || !current.calls?.length) return current;
       persistLocalCurrentTurn("interrupted", sessionKey);
       setLocalCurrentTurn(null, sessionKey);
     }
-    const profileThreadKey = options.threadAttributionStatus === "reliable" ? normalizeText(options.profileThreadKey || sessionKey, 240) : "";
+    const profileThreadKey = options.threadAttributionStatus === "reliable" ? UTIL.normalizeText(options.profileThreadKey || sessionKey, 240) : "";
     const turn = {
-      id: normalizeText(options.turnId, 120) || `${Date.now()}-${++state.localTurnSeq}`,
+      id: UTIL.normalizeText(options.turnId, 120) || `${Date.now()}-${++state.localTurnSeq}`,
       sessionKey,
       profileThreadKey,
       profileThreadAttributionStatus: profileThreadKey ? "reliable" : "unknown",
-      startedAt: toTimestampMs(options.startedAtMs ?? options.startedAt) || Date.now(),
+      startedAt: UTIL.toTimestampMs(options.startedAtMs ?? options.startedAt) || Date.now(),
       calls: [],
       context: { effort: "", fastMode: null, invocations: [] },
     };
@@ -9498,8 +9671,8 @@ const VERSION = "0.8.0";
     const aggregate = aggregateTurnUsage(turn);
     if (!normalizeUsage(aggregate).exact) return null;
     const officialTiming = turn.officialTiming && typeof turn.officialTiming === "object" ? turn.officialTiming : {};
-    const startedAt = toTimestampMs(officialTiming.startedAtMs || turn.startedAt) || now;
-    const finishedAt = toTimestampMs(officialTiming.completedAtMs || officialTiming.finishedAtMs) || now;
+    const startedAt = UTIL.toTimestampMs(officialTiming.startedAtMs || turn.startedAt) || now;
+    const finishedAt = UTIL.toTimestampMs(officialTiming.completedAtMs || officialTiming.finishedAtMs) || now;
     const explicitDurationMs = normalizedDurationMs(officialTiming, startedAt, finishedAt);
     const durationMs = explicitDurationMs || Math.max(0, finishedAt - startedAt);
     return {
@@ -9512,7 +9685,7 @@ const VERSION = "0.8.0";
       usageSource: "live_notification",
       callCount: turn.calls.length,
       // 逐响应 id 让实时行也能和 rollout / 导入行按响应对齐去重。
-      responseIds: Array.from(new Set(turn.calls.map((call) => normalizeText(call.responseId, 200)).filter(Boolean))),
+      responseIds: Array.from(new Set(turn.calls.map((call) => UTIL.normalizeText(call.responseId, 200)).filter(Boolean))),
       model: modelName(),
       effort: normalizeReasoningEffort(turn.context?.effort || activeModelInfo().effort),
       fastMode: typeof turn.context?.fastMode === "boolean" ? turn.context.fastMode : null,
@@ -9528,9 +9701,9 @@ const VERSION = "0.8.0";
 
   function outputTokenRate(turn, running, now = Date.now()) {
     if (!running || !turn) return { active: false, visible: false, value: 0 };
-    const output = toCount(turn.usage ? normalizeUsage(turn.usage).output : aggregateTurnUsage(turn).output);
+    const output = UTIL.toCount(turn.usage ? normalizeUsage(turn.usage).output : aggregateTurnUsage(turn).output);
     const outputStartedAt = Number(turn.outputStartedAt);
-    const elapsedMs = Math.max(0, toTimestampMs(now) - outputStartedAt);
+    const elapsedMs = Math.max(0, UTIL.toTimestampMs(now) - outputStartedAt);
     if (!output || !Number.isFinite(outputStartedAt) || outputStartedAt <= 0) return { active: false, visible: false, value: 0 };
     if (!elapsedMs) return { active: true, visible: false, value: 0 };
     return { active: true, visible: true, value: Math.max(1, Math.round((output * 1000) / elapsedMs)) };
@@ -9540,7 +9713,7 @@ const VERSION = "0.8.0";
     if (running || !turn) return { visible: false, value: 0 };
     const usage = normalizeUsage(turn.usage);
     if (!usage.exact) return { visible: false, value: 0 };
-    const durationMs = normalizedDurationMs(turn, toTimestampMs(turn.startedAt), toTimestampMs(turn.finishedAt));
+    const durationMs = normalizedDurationMs(turn, UTIL.toTimestampMs(turn.startedAt), UTIL.toTimestampMs(turn.finishedAt));
     if (!durationMs) return { visible: true, value: 0 };
     return { visible: true, value: Math.max(0, (usage.output * 1000) / durationMs) };
   }
@@ -9554,7 +9727,7 @@ const VERSION = "0.8.0";
     const key = localStateSessionKey(sessionKey);
     const current = localCurrentTurn(key);
     const metric = localTurnMetric(current);
-    const profileThreadKey = normalizeText(current.profileThreadKey, 240);
+    const profileThreadKey = UTIL.normalizeText(current.profileThreadKey, 240);
     const profileThreadAttributionStatus = current.profileThreadAttributionStatus === "reliable" && profileThreadKey ? "reliable" : "unknown";
     profileLedgerObserveLocalTurn(current, current.context, {
       reason,
@@ -9593,7 +9766,7 @@ const VERSION = "0.8.0";
   }
 
   function usageLiveAcceptTotal(threadId, turnId, totalTokens) {
-    const total = toCount(totalTokens);
+    const total = UTIL.toCount(totalTokens);
     if (!total) return true;
     const key = usageLiveTotalKey(threadId, turnId);
     const previous = state.usageLiveTotals.get(key) || 0;
@@ -9636,10 +9809,10 @@ const VERSION = "0.8.0";
     if (typeof payload !== "object" || seen.has(payload)) return 0;
     seen.add(payload);
     const direct =
-      toCount(payload.total_token_usage?.total_tokens) ||
-      toCount(payload.tokenUsage?.total?.total_tokens) ||
-      toCount(payload.token_usage?.total?.total_tokens) ||
-      toCount(payload.total?.total_tokens);
+      UTIL.toCount(payload.total_token_usage?.total_tokens) ||
+      UTIL.toCount(payload.tokenUsage?.total?.total_tokens) ||
+      UTIL.toCount(payload.token_usage?.total?.total_tokens) ||
+      UTIL.toCount(payload.total?.total_tokens);
     if (direct) return direct;
     for (const key of ["info", "tokenUsage", "token_usage", "params", "payload", "data", "body", "bodyJsonString"]) {
       if (key in payload) {
@@ -9694,13 +9867,13 @@ const VERSION = "0.8.0";
     const key = usageKey(usage);
     const persist = options.persist ?? shouldPersistUsagePayload(null, source);
     const responseId = usageFactKey(options.responseId || options.response_id);
-    const threadId = normalizeText(options.threadId || options.thread_id || options.profileThreadKey, 240);
-    const turnId = normalizeText(options.turnId || options.turn_id || turn.id, 240);
+    const threadId = UTIL.normalizeText(options.threadId || options.thread_id || options.profileThreadKey, 240);
+    const turnId = UTIL.normalizeText(options.turnId || options.turn_id || turn.id, 240);
 
     // 幂等键：response_id 优先；没有 response_id 时用 (threadId, turnId, totalTokens) 单调递增。
     if (responseId) {
       if (!usageLiveAcceptResponse(responseId)) return false;
-    } else if (!usageLiveAcceptTotal(threadId, turnId, toCount(options.cumulativeTotal))) {
+    } else if (!usageLiveAcceptTotal(threadId, turnId, UTIL.toCount(options.cumulativeTotal))) {
       return false;
     }
     // TTL 只做 UI 防抖：同 key 的高频重复不重复渲染，但不再决定是否入账。
@@ -9729,7 +9902,7 @@ const VERSION = "0.8.0";
     } else {
       turn.calls.push({ usage, source, observedAt: now, ...(responseId ? { responseId } : {}) });
     }
-    if (!(Number(turn.outputStartedAt) > 0) && toCount(aggregateTurnUsage(turn).output)) turn.outputStartedAt = now;
+    if (!(Number(turn.outputStartedAt) > 0) && UTIL.toCount(aggregateTurnUsage(turn).output)) turn.outputStartedAt = now;
     const metric = localTurnMetric(turn, now);
     if (!metric) return false;
     // 逐响应事实入库：有 response_id 才是事实。
@@ -9741,10 +9914,10 @@ const VERSION = "0.8.0";
         model: metric.model,
         effort: metric.effort,
         usage: {
-          input_tokens: toCount(usage.input),
-          cached_input_tokens: toCount(usage.cached),
-          output_tokens: toCount(usage.output),
-          total_tokens: toCount(usage.total),
+          input_tokens: UTIL.toCount(usage.input),
+          cached_input_tokens: UTIL.toCount(usage.cached),
+          output_tokens: UTIL.toCount(usage.output),
+          total_tokens: UTIL.toCount(usage.total),
         },
         observedAtMs: now,
         source: "live_notification",
@@ -9785,7 +9958,7 @@ const VERSION = "0.8.0";
     const taskCompletePayload = isTaskCompletePayload(payload);
     const fastMode = extractFastMode(payload);
     const invocations = collectProfileInvocations(payload);
-    const invocationEventId = profileInvocationEventId(payload) || normalizeText(identity.requestId || identity.streamId, 180);
+    const invocationEventId = profileInvocationEventId(payload) || UTIL.normalizeText(identity.requestId || identity.streamId, 180);
     const explicitContext = normalizeProfileContext({
       effort: info.effort,
       fastMode,
@@ -9873,8 +10046,8 @@ const VERSION = "0.8.0";
   function localUsageExport() {
     const current = localCurrentTurn(currentSessionKey());
     const officialTiming = current?.officialTiming && typeof current.officialTiming === "object" ? current.officialTiming : {};
-    const currentStartedAt = toTimestampMs(officialTiming.startedAtMs || current?.startedAt);
-    const currentFinishedAt = toTimestampMs(officialTiming.completedAtMs || officialTiming.finishedAtMs) || Date.now();
+    const currentStartedAt = UTIL.toTimestampMs(officialTiming.startedAtMs || current?.startedAt);
+    const currentFinishedAt = UTIL.toTimestampMs(officialTiming.completedAtMs || officialTiming.finishedAtMs) || Date.now();
     const currentDurationMs = normalizedDurationMs(officialTiming, currentStartedAt, currentFinishedAt) || Math.max(0, currentFinishedAt - currentStartedAt);
     return {
       // 不要在热路径复制整份账本：currentSessionTurns 以数组引用做 WeakMap 缓存，
@@ -9909,8 +10082,8 @@ const VERSION = "0.8.0";
       const usage = normalizeUsage(turn?.usage);
       const current = counts.get(key) || { sessionKey: key, turns: 0, total: 0, cached: 0 };
       current.turns += 1;
-      current.total += toCount(usage.total);
-      current.cached += toCount(usage.cached);
+      current.total += UTIL.toCount(usage.total);
+      current.cached += UTIL.toCount(usage.cached);
       counts.set(key, current);
     }
     return {
@@ -9935,6 +10108,11 @@ const VERSION = "0.8.0";
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 18：使用统计聚合
+  // aggregateUsageAnalytics → buildAnalyticsRollup → saveAnalyticsRollup（localStorage 日聚合）。
+  // 跨午夜按每条响应 observedAtMs 落自然日，且各日之和必须严格等于整轮总量才拆。
+  // ---------------------------------------------------------------------------
   function readTokenUsage() {
     return localUsageExport();
   }
@@ -9985,11 +10163,11 @@ const VERSION = "0.8.0";
   }
 
   function analyticsRangeForPreset(preset = "today", now = Date.now(), custom = {}) {
-    const endMs = toTimestampMs(now) || Date.now();
+    const endMs = UTIL.toTimestampMs(now) || Date.now();
     const dayStart = startOfLocalDay(endMs);
     if (preset === "custom") {
-      const rawStart = toTimestampMs(custom.startMs ?? custom.start);
-      const rawEnd = toTimestampMs(custom.endMs ?? custom.end);
+      const rawStart = UTIL.toTimestampMs(custom.startMs ?? custom.start);
+      const rawEnd = UTIL.toTimestampMs(custom.endMs ?? custom.end);
       const startMs = rawStart ? startOfLocalDay(rawStart) : dayStart;
       const customEnd = rawEnd ? endOfLocalDay(rawEnd) : endOfLocalDay(endMs);
       return { preset, startMs: Math.min(startMs, customEnd), endMs: Math.min(Math.max(startMs, customEnd), endMs) };
@@ -10001,8 +10179,8 @@ const VERSION = "0.8.0";
   }
 
   function analyticsComparisonRange(range, preset = range?.preset || "custom") {
-    const startMs = toTimestampMs(range?.startMs);
-    const endMs = toTimestampMs(range?.endMs);
+    const startMs = UTIL.toTimestampMs(range?.startMs);
+    const endMs = UTIL.toTimestampMs(range?.endMs);
     if (!startMs || !endMs || endMs < startMs) return { startMs: 0, endMs: 0 };
     if (preset === "today") {
       const previousStart = new Date(startMs);
@@ -10056,15 +10234,15 @@ const VERSION = "0.8.0";
     if (!usage.exact) return { value: 0, priced: true };
     const storedCost = storedTurnCost(turn);
     if (storedCost != null) {
-      const sliceTotal = toCount(usage.total || usage.input + usage.output);
+      const sliceTotal = UTIL.toCount(usage.total || usage.input + usage.output);
       return { value: wholeTotal ? (storedCost * sliceTotal) / wholeTotal : 0, priced: true };
     }
     return costForModelUsage(usage, turn?.model || model, { fastMode: turn?.fastMode === true });
   }
 
   function aggregateUsageAnalytics(turns, range = {}) {
-    const startMs = toTimestampMs(range.startMs) || 0;
-    const endMs = toTimestampMs(range.endMs) || Number.MAX_SAFE_INTEGER;
+    const startMs = UTIL.toTimestampMs(range.startMs) || 0;
+    const endMs = UTIL.toTimestampMs(range.endMs) || Number.MAX_SAFE_INTEGER;
     const totals = emptyUsageAnalytics();
     const models = new Map();
     // 覆盖天数：区间内真正有数据的本地自然日，用来判断「上期样本是否够比」。
@@ -10074,19 +10252,19 @@ const VERSION = "0.8.0";
     for (const turn of Array.isArray(turns) ? turns : []) {
       const wholeUsage = normalizeUsage(turn?.usage);
       if (!wholeUsage.exact) continue;
-      const wholeTotal = toCount(wholeUsage.total || wholeUsage.input + wholeUsage.output);
+      const wholeTotal = UTIL.toCount(wholeUsage.total || wholeUsage.input + wholeUsage.output);
       const slices = usageDaySlicesFromIndex(dayIndex, turn);
       if (!slices.length) continue;
-      const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
-      const tokenOnly = (normalizeText(turn?.source, 80) === "codexpp-history" || normalizeText(turn?.importSource, 80) === "codexpp-history");
+      const model = UTIL.normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
+      const tokenOnly = (UTIL.normalizeText(turn?.source, 80) === "codexpp-history" || UTIL.normalizeText(turn?.importSource, 80) === "codexpp-history");
       for (const slice of slices) {
         // 区间命中用分片自己的观测时间跨度判断；跨午夜的 turn 只计入落在区间内的那一天。
         if (!slice.lastMs || slice.lastMs < startMs || slice.firstMs > endMs) continue;
         const usage = normalizeUsage(slice.usage);
         if (!usage.exact) continue;
         activeDays.add(localDateKey(slice.firstMs || slice.lastMs));
-        const cacheRead = Math.min(toCount(usage.input), toCount(usage.cached));
-        const cacheWrite = Math.min(Math.max(0, toCount(usage.input) - cacheRead), toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
+        const cacheRead = Math.min(UTIL.toCount(usage.input), UTIL.toCount(usage.cached));
+        const cacheWrite = Math.min(Math.max(0, UTIL.toCount(usage.input) - cacheRead), UTIL.toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
         const cost = usageSliceCost(turn, slice, model, wholeTotal);
         const item =
           models.get(model) ||
@@ -10099,20 +10277,20 @@ const VERSION = "0.8.0";
           };
         item.usage = addUsage(item.usage, usage);
         if (!tokenOnly) {
-          item.calls += toCount(slice.calls) || 1;
+          item.calls += UTIL.toCount(slice.calls) || 1;
           item.cost += cost.value;
           item.priced = item.priced && cost.priced;
         }
         models.set(model, item);
-        totals.totalTokens += toCount(usage.total || usage.input + usage.output);
-        totals.input += toCount(usage.input);
-        totals.output += toCount(usage.output);
+        totals.totalTokens += UTIL.toCount(usage.total || usage.input + usage.output);
+        totals.input += UTIL.toCount(usage.input);
+        totals.output += UTIL.toCount(usage.output);
         totals.cacheRead += cacheRead;
         totals.cacheWrite += cacheWrite;
         totals.cacheWriteAvailable = totals.cacheWriteAvailable || turn?.cacheWriteAvailable === true || cacheWrite > 0;
-        totals.regularInput += Math.max(0, toCount(usage.input) - cacheRead - cacheWrite);
+        totals.regularInput += Math.max(0, UTIL.toCount(usage.input) - cacheRead - cacheWrite);
         if (!tokenOnly) {
-          totals.calls += toCount(slice.calls) || 1;
+          totals.calls += UTIL.toCount(slice.calls) || 1;
           totals.cost += cost.value;
           totals.priced = totals.priced && cost.priced;
         }
@@ -10123,8 +10301,8 @@ const VERSION = "0.8.0";
     totals.models = Array.from(models.values())
       .map((item) => ({
         ...item,
-        tokens: toCount(item.usage.total || item.usage.input + item.usage.output),
-        share: totals.totalTokens ? (toCount(item.usage.total || item.usage.input + item.usage.output) / totals.totalTokens) * 100 : 0,
+        tokens: UTIL.toCount(item.usage.total || item.usage.input + item.usage.output),
+        share: totals.totalTokens ? (UTIL.toCount(item.usage.total || item.usage.input + item.usage.output) / totals.totalTokens) * 100 : 0,
       }))
       .sort((left, right) => right.cost - left.cost || right.tokens - left.tokens || left.model.localeCompare(right.model));
     return totals;
@@ -10137,12 +10315,12 @@ const VERSION = "0.8.0";
     for (const turn of analyticsVisibleTurns(turns)) {
       const usage = normalizeUsage(turn?.usage);
       if (!usage.exact) continue;
-      const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
+      const model = UTIL.normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
       const slices = usageDaySlicesFromIndex(dayIndex, turn);
       if (!slices.length) continue;
       const storedCost = storedTurnCost(turn);
       // 存储费用按各日 token 占比分摊（拆分 turn 一定是逐响应事实行，正常不含存储费用）。
-      const wholeTotal = toCount(usage.total || usage.input + usage.output);
+      const wholeTotal = UTIL.toCount(usage.total || usage.input + usage.output);
       for (const slice of slices) {
         const date = slice.date;
         if (!date) continue;
@@ -10154,9 +10332,9 @@ const VERSION = "0.8.0";
           storedCostCount: 0,
         });
         item.usage = addUsage(item.usage, slice.usage);
-        item.calls += toCount(slice.calls) || 1;
+        item.calls += UTIL.toCount(slice.calls) || 1;
         if (storedCost != null) {
-          const sliceTotal = toCount(slice.usage.total || slice.usage.input + slice.usage.output);
+          const sliceTotal = UTIL.toCount(slice.usage.total || slice.usage.input + slice.usage.output);
           item.storedCostUsd += wholeTotal ? (storedCost * sliceTotal) / wholeTotal : storedCost / slices.length;
           item.storedCostCount += 1;
         }
@@ -10181,7 +10359,7 @@ const VERSION = "0.8.0";
   function loadAnalyticsRollup() {
     if (state.analyticsRollupLoaded) return state.analyticsRollup || { version: 1, updatedAt: Date.now(), days: {} };
     state.analyticsRollupLoaded = true;
-    const saved = loadJson(ANALYTICS_ROLLUP_KEY, null);
+    const saved = UTIL.loadJson(ANALYTICS_ROLLUP_KEY, null);
     state.analyticsRollup = saved?.version === 1 && saved.days && typeof saved.days === "object" ? pruneAnalyticsRollup(saved) : null;
     if (!state.analyticsRollup) {
       ensureLocalLedgerLoaded();
@@ -10221,7 +10399,7 @@ const VERSION = "0.8.0";
 
   function refreshAnalyticsRollupDates(dates) {
     if (!state.analyticsRollupLoaded) return false;
-    const targets = new Set((Array.isArray(dates) ? dates : [dates]).map((date) => normalizeText(date, 10)).filter(Boolean));
+    const targets = new Set((Array.isArray(dates) ? dates : [dates]).map((date) => UTIL.normalizeText(date, 10)).filter(Boolean));
     if (!targets.size) return false;
     const next = loadAnalyticsRollup();
     const dayIndex = usageFactDayIndex();
@@ -10246,9 +10424,9 @@ const VERSION = "0.8.0";
           source: "analytics-rollup",
           createdAt: `${date}T12:00:00`,
           model,
-          callCount: toCount(item?.calls) || 1,
+          callCount: UTIL.toCount(item?.calls) || 1,
           usage: normalizeUsage(item?.usage),
-          ...(toCount(item?.storedCostCount) && Number(item?.storedCostUsd) > 0 ? { costUsd: Number(item.storedCostUsd) } : {}),
+          ...(UTIL.toCount(item?.storedCostCount) && Number(item?.storedCostUsd) > 0 ? { costUsd: Number(item.storedCostUsd) } : {}),
         });
       }
     }
@@ -10256,7 +10434,7 @@ const VERSION = "0.8.0";
   }
 
   function parseLocalDateInput(value) {
-    const match = normalizeText(value, 20).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const match = UTIL.normalizeText(value, 20).match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!match) return 0;
     const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
     return Number.isFinite(date.getTime()) ? date.getTime() : 0;
@@ -10269,8 +10447,8 @@ const VERSION = "0.8.0";
     if (!Number.isFinite(value) || !Number.isFinite(before)) return "暂无对比";
     // 上期覆盖不足：30 天前的窗口只剩两天归档时，百分比会是 +25604% 这种噪声。
     // 只有多日区间才判覆盖度（今日区间上期本来就是 0 天或 1 天）。
-    const expectedDays = toCount(options.expectedDays);
-    const coveredDays = toCount(options.coveredDays);
+    const expectedDays = UTIL.toCount(options.expectedDays);
+    const coveredDays = UTIL.toCount(options.coveredDays);
     if (expectedDays >= 3 && coveredDays < Math.ceil(expectedDays / 2)) {
       if (!before) return "暂无对比";
       return `上期仅 ${coveredDays} 天有数据`;
@@ -10284,8 +10462,8 @@ const VERSION = "0.8.0";
   }
 
   function analyticsChartBuckets(turns, range, metric = "tokens") {
-    const startMs = toTimestampMs(range?.startMs);
-    const endMs = toTimestampMs(range?.endMs);
+    const startMs = UTIL.toTimestampMs(range?.startMs);
+    const endMs = UTIL.toTimestampMs(range?.endMs);
     if (!startMs || !endMs || endMs < startMs) return [];
     const daySpan = Math.max(1, Math.ceil((endOfLocalDay(endMs) - startOfLocalDay(startMs) + 1) / 86_400_000));
     const mode = daySpan === 1 ? "hour" : daySpan <= 90 ? "day" : "week";
@@ -10319,7 +10497,7 @@ const VERSION = "0.8.0";
       if (!usage.exact) continue;
       const slices = usageDaySlicesFromIndex(dayIndex, turn);
       if (!slices.length) continue;
-      const wholeTotal = toCount(usage.total || usage.input + usage.output);
+      const wholeTotal = UTIL.toCount(usage.total || usage.input + usage.output);
       for (const slice of slices) {
         // 跨午夜的 turn 按各分片自己的时间落桶；单日 turn 保持原有口径（用 turn 时间戳），
         // 避免把既有图表的小时分布整体改掉。
@@ -10338,7 +10516,7 @@ const VERSION = "0.8.0";
           bucket.value += slices.length > 1 ? usageSliceCost(turn, slice, turn?.model, wholeTotal).value : turnCost(turn, turn?.model).value;
         } else {
           const sliceUsage = slices.length > 1 ? normalizeUsage(slice.usage) : usage;
-          bucket.value += toCount(sliceUsage.total || sliceUsage.input + sliceUsage.output);
+          bucket.value += UTIL.toCount(sliceUsage.total || sliceUsage.input + sliceUsage.output);
         }
       }
     }
@@ -10393,7 +10571,7 @@ const VERSION = "0.8.0";
 
   function usageAnalyticsHtml(options = {}) {
     ensureLocalLedgerLoaded();
-    const now = toTimestampMs(options.now) || Date.now();
+    const now = UTIL.toTimestampMs(options.now) || Date.now();
     const preset = ["today", "7d", "30d", "custom"].includes(options.preset) ? options.preset : state.analyticsPreset;
     const customStart = options.customStart || state.analyticsCustomStart;
     const customEnd = options.customEnd || state.analyticsCustomEnd;
@@ -10413,7 +10591,7 @@ const VERSION = "0.8.0";
     const model = options.model ?? state.analyticsModel;
     // hideUnknown 既可来自 state（用户点「隐藏未知」），也可由测试显式传入。
     const hideUnknown = typeof options.hideUnknown === "boolean" ? options.hideUnknown : state.analyticsHideUnknown;
-    const filtered = model ? turns.filter((turn) => normalizeText(turn?.model, 120) === model) : turns;
+    const filtered = model ? turns.filter((turn) => UTIL.normalizeText(turn?.model, 120) === model) : turns;
     const current = aggregateUsageAnalytics(filtered, range);
     const previous = aggregateUsageAnalytics(filtered, previousRange);
     const metric = options.metric === "cost" || state.analyticsMetric === "cost" ? "cost" : "tokens";
@@ -10527,6 +10705,10 @@ const VERSION = "0.8.0";
     `;
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 19：会话汇总与快照
+  // liveSnapshot() 是渲染唯一入口；localDailyUsage() 带 revision 缓存。
+  // ---------------------------------------------------------------------------
   function turnListCost(turns, fallbackUsage, fallbackModel = modelName()) {
     const items = Array.isArray(turns) ? turns : [];
     if (!items.length) return costForModelUsage(fallbackUsage, fallbackModel);
@@ -10612,7 +10794,7 @@ const VERSION = "0.8.0";
   function rememberNewConversationClick(event) {
     if (event?.type !== "click") return false;
     const target = event.target?.closest?.("button,a,[role='button'],[aria-label],[title]") || event.target;
-    const label = normalizeText(`${target?.getAttribute?.("aria-label") || ""} ${target?.getAttribute?.("title") || ""} ${target?.textContent || target?.innerText || ""}`, 160);
+    const label = UTIL.normalizeText(`${target?.getAttribute?.("aria-label") || ""} ${target?.getAttribute?.("title") || ""} ${target?.textContent || target?.innerText || ""}`, 160);
     if (!/(new\s*(chat|conversation|thread|task)|新建|新对话|新会话|新任务|新的对话|新的会话)/i.test(label)) return false;
     state.lastClickedSidebarThreadKey = "";
     state.lastClickedSidebarThreadAt = 0;
@@ -10701,11 +10883,11 @@ const VERSION = "0.8.0";
     const hasStoredCost = storedCost != null;
     const resolvedCost = options.costUsd != null ? Number(options.costUsd) || 0 : hasStoredCost ? storedCost : cost.value;
     const priced = options.costUsd != null ? true : hasStoredCost || cost.priced;
-    bucket.tokens += toCount(usage.total || usage.input + usage.output);
-    bucket.input += toCount(usage.input);
-    bucket.output += toCount(usage.output);
-    bucket.cached += toCount(usage.cached);
-    bucket.requests += options.calls != null ? toCount(options.calls) || 1 : toCount(turn.callCount) || 1;
+    bucket.tokens += UTIL.toCount(usage.total || usage.input + usage.output);
+    bucket.input += UTIL.toCount(usage.input);
+    bucket.output += UTIL.toCount(usage.output);
+    bucket.cached += UTIL.toCount(usage.cached);
+    bucket.requests += options.calls != null ? UTIL.toCount(options.calls) || 1 : UTIL.toCount(turn.callCount) || 1;
     bucket.cost += resolvedCost;
     bucket.priced = bucket.priced !== false && priced;
     return bucket;
@@ -10715,13 +10897,13 @@ const VERSION = "0.8.0";
   function addTurnSliceToDailyBucket(bucket, turn, slice, totalTokens) {
     const storedCost = storedTurnCost(turn);
     if (storedCost == null) return addTurnToDailyBucket(bucket, turn, slice.usage, { calls: slice.calls });
-    const sliceTotal = toCount(slice.usage.total || slice.usage.input + slice.usage.output);
+    const sliceTotal = UTIL.toCount(slice.usage.total || slice.usage.input + slice.usage.output);
     const share = totalTokens ? (storedCost * sliceTotal) / totalTokens : 0;
     return addTurnToDailyBucket(bucket, turn, slice.usage, { calls: slice.calls, costUsd: share });
   }
 
   function turnTimestampMs(turn) {
-    const direct = toCount(turn?.observedAt || turn?.startedAt || turn?.finishedAt || turn?.createdAt);
+    const direct = UTIL.toCount(turn?.observedAt || turn?.startedAt || turn?.finishedAt || turn?.createdAt);
     if (direct) return direct;
     const parsed = Date.parse(turn?.observedAt || turn?.startedAt || turn?.finishedAt || turn?.createdAt || "");
     return Number.isFinite(parsed) ? parsed : 0;
@@ -10733,7 +10915,7 @@ const VERSION = "0.8.0";
     const byTurn = new Map();
     const ordered = [];
     for (const turn of Array.isArray(turns) ? turns : []) {
-      const turnId = normalizeText(turn?.turnId || turn?.id, 120);
+      const turnId = UTIL.normalizeText(turn?.turnId || turn?.id, 120);
       if (!turnId) {
         ordered.push(turn);
         continue;
@@ -10773,9 +10955,9 @@ const VERSION = "0.8.0";
       for (const turn of usageUniqueTurnsForTotals([...localUsageArchiveTurns(), ...state.localLedger])) {
         const usage = normalizeUsage(turn?.usage);
         if (!usage.exact) continue;
-        const turnId = normalizeText(turn?.turnId || turn?.id, 120);
+        const turnId = UTIL.normalizeText(turn?.turnId || turn?.id, 120);
         if (turnId) ledgerTurnIds.add(turnId);
-        const wholeTotal = toCount(usage.total || usage.input + usage.output);
+        const wholeTotal = UTIL.toCount(usage.total || usage.input + usage.output);
         for (const slice of usageDaySlicesFromIndex(dayIndex, turn)) {
           const date = slice.date;
           if (!date) continue;
@@ -10809,6 +10991,10 @@ const VERSION = "0.8.0";
     state.sessionUsageKeyCache = new WeakMap();
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 20：profile 请求补丁
+  // patchProfileRequestClient / installProfileAuthContextPatch / installProfileMessageIntercept。
+  // ---------------------------------------------------------------------------
   function localProfileThreadCount() {
     ensureProfileLedgerLoaded();
     return new Set(state.profileLedger?.rollup?.threadKeys || []).size;
@@ -10816,14 +11002,14 @@ const VERSION = "0.8.0";
 
   function localProfilePrefs() {
     if (state.profilePrefs) return state.profilePrefs;
-    const saved = loadJson(PROFILE_PREFS_KEY, {});
-    const overrides = loadJson(PROFILE_OVERRIDES_KEY, {});
+    const saved = UTIL.loadJson(PROFILE_PREFS_KEY, {});
+    const overrides = UTIL.loadJson(PROFILE_OVERRIDES_KEY, {});
     const overrideEmail = validProfileEmail(overrides.email);
-    if (overrideEmail && !validProfileEmail(loadJson(PROFILE_DEFAULTS_KEY, {}).email)) saveProfileDefaultEmail(overrideEmail);
+    if (overrideEmail && !validProfileEmail(UTIL.loadJson(PROFILE_DEFAULTS_KEY, {}).email)) saveProfileDefaultEmail(overrideEmail);
     const defaultEmail = profileDefaultEmail();
     const username = profileUsernameAllowed(saved.username) ? stripProfileUsername(saved.username) : "codex-local-usage";
     const plan = normalizeProfilePlan(saved.planType ?? saved.plan, saved.planLabel);
-    const rawImageUrl = normalizeText(saved.imageUrl, PROFILE_IMAGE_MAX_LENGTH);
+    const rawImageUrl = UTIL.normalizeText(saved.imageUrl, PROFILE_IMAGE_MAX_LENGTH);
     const imageUrl = normalizeProfileImageUrl(rawImageUrl);
     const savedEmail = validProfileEmail(saved.email);
     if (savedEmail && savedEmail !== LOCAL_PROFILE_EMAIL && defaultEmail === LOCAL_PROFILE_EMAIL) saveProfileDefaultEmail(savedEmail);
@@ -10836,7 +11022,7 @@ const VERSION = "0.8.0";
       }
     }
     state.profilePrefs = {
-      displayName: normalizeText(saved.displayName, 64) || "Local Usage",
+      displayName: UTIL.normalizeText(saved.displayName, 64) || "Local Usage",
       username,
       email,
       accountStructure: normalizeProfileAccountStructure(saved.accountStructure ?? saved.structure),
@@ -10858,7 +11044,7 @@ const VERSION = "0.8.0";
   function saveLocalProfilePrefs(prefs, options = {}) {
     const plan = normalizeProfilePlan(prefs?.planType ?? prefs?.plan, prefs?.planLabel);
     const next = {
-      displayName: normalizeText(prefs?.displayName, 64) || "Local Usage",
+      displayName: UTIL.normalizeText(prefs?.displayName, 64) || "Local Usage",
       username: profileUsernameAllowed(prefs?.username) ? stripProfileUsername(prefs.username) : "codex-local-usage",
       email: normalizeProfileEmail(prefs?.email, profileDefaultEmail()),
       accountStructure: normalizeProfileAccountStructure(prefs?.accountStructure ?? prefs?.structure),
@@ -10914,14 +11100,14 @@ const VERSION = "0.8.0";
   }
 
   function normalizeProfilePatchPayload(rawPatch) {
-    const raw = typeof rawPatch === "string" ? loadJsonFromString(rawPatch, {}) : rawPatch || {};
+    const raw = typeof rawPatch === "string" ? UTIL.loadJsonFromString(rawPatch, {}) : rawPatch || {};
     let patch = raw;
-    if (typeof patch.bodyJsonString === "string") patch = loadJsonFromString(patch.bodyJsonString, {});
+    if (typeof patch.bodyJsonString === "string") patch = UTIL.loadJsonFromString(patch.bodyJsonString, {});
     if (patch && typeof patch === "object" && Object.prototype.hasOwnProperty.call(patch, "body")) {
-      patch = typeof patch.body === "string" ? loadJsonFromString(patch.body, {}) : patch.body || {};
+      patch = typeof patch.body === "string" ? UTIL.loadJsonFromString(patch.body, {}) : patch.body || {};
     }
     if (patch && typeof patch === "object" && Object.prototype.hasOwnProperty.call(patch, "requestBody")) {
-      patch = typeof patch.requestBody === "string" ? loadJsonFromString(patch.requestBody, {}) : patch.requestBody || {};
+      patch = typeof patch.requestBody === "string" ? UTIL.loadJsonFromString(patch.requestBody, {}) : patch.requestBody || {};
     }
     if (patch?.profile && typeof patch.profile === "object") patch = patch.profile;
     return patch && typeof patch === "object" ? patch : {};
@@ -10932,7 +11118,7 @@ const VERSION = "0.8.0";
     const prefs = { ...localProfilePrefs() };
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     if (has("display_name") || has("displayName") || has("name")) {
-      prefs.displayName = normalizeText(patch.display_name ?? patch.displayName ?? patch.name, 64) || "Local Usage";
+      prefs.displayName = UTIL.normalizeText(patch.display_name ?? patch.displayName ?? patch.name, 64) || "Local Usage";
     }
     if (has("username") || has("handle")) {
       const username = stripProfileUsername(patch.username ?? patch.handle);
@@ -11078,12 +11264,12 @@ const VERSION = "0.8.0";
   }
 
   function profileMenuItemLabel(menuItem) {
-    return normalizeText(String(menuItem?.innerText || menuItem?.textContent || "").split("\n")[0], 32);
+    return UTIL.normalizeText(String(menuItem?.innerText || menuItem?.textContent || "").split("\n")[0], 32);
   }
 
   function findOfficialProfileSettingsControl(doc = document) {
     return Array.from(doc.querySelectorAll?.("button,a,[role='tab']") || []).find((node) => {
-      const label = normalizeText(node?.innerText || node?.textContent || node?.getAttribute?.("aria-label"), 32);
+      const label = UTIL.normalizeText(node?.innerText || node?.textContent || node?.getAttribute?.("aria-label"), 32);
       if (label !== "个人资料" && label.toLowerCase() !== "profile") return false;
       const rect = node.getBoundingClientRect?.() || { width: 0, height: 0 };
       return rect.width !== 0 && rect.height !== 0;
@@ -11195,7 +11381,7 @@ const VERSION = "0.8.0";
       const knownLabels = new Set(PROFILE_PLAN_OPTIONS.flatMap((option) => [option.value, option.label]));
       const candidates = Array.from(menu.querySelectorAll?.("*") || []).filter((node) => {
         if (node.children?.length || node.closest?.("[data-cltc-profile-menu-identity]")) return false;
-        const text = normalizeText(node.textContent, 64);
+        const text = UTIL.normalizeText(node.textContent, 64);
         return knownLabels.has(text) || /^(free|go|plus|pro(?:\s+\d+x)?|business|enterprise|edu|staff|founder)$/i.test(text);
       });
       const node = officialNode || candidates[0];
@@ -11411,7 +11597,7 @@ const VERSION = "0.8.0";
         top_invocations: activity.topInvocations,
         top_plugins: activity.topPlugins,
         most_used_plugin: topPlugin ? topPlugin.plugin_name || topPlugin.plugin_id || null : null,
-        most_used_plugin_usage_count: toCount(topPlugin?.usage_count),
+        most_used_plugin_usage_count: UTIL.toCount(topPlugin?.usage_count),
         most_used_reasoning_effort: activity.reasoningEffort || activeModelInfo().effort || null,
         most_used_reasoning_effort_percentage: activity.reasoningEffortPercent,
         unique_skills_used: activity.uniqueSkillsUsed,
@@ -11428,8 +11614,8 @@ const VERSION = "0.8.0";
     const local = localProfileResponse();
     const profile = local.profile || {};
     const stats = local.stats || {};
-    const displayName = normalizeText(profile.display_name, 240) || prefs.displayName || prefs.username || "Local Usage";
-    const username = normalizeText(profile.username, 240) || prefs.username || "local";
+    const displayName = UTIL.normalizeText(profile.display_name, 240) || prefs.displayName || prefs.username || "Local Usage";
+    const username = UTIL.normalizeText(profile.username, 240) || prefs.username || "local";
     const dailyBuckets = Array.isArray(stats.daily_usage_buckets) ? stats.daily_usage_buckets : [];
     const topPlugins = Array.isArray(stats.top_plugins) ? stats.top_plugins : [];
     const agentic = {
@@ -11482,13 +11668,13 @@ const VERSION = "0.8.0";
           plugin_id: plugin.plugin_id ?? "",
           plugin_name: plugin.plugin_name ?? plugin.plugin_id ?? "",
           logo_url: plugin.logo_url ?? null,
-          usage_count: toCount(plugin.usage_count),
+          usage_count: UTIL.toCount(plugin.usage_count),
         })),
         activity_graph: {
           daily_usage_buckets: dailyBuckets.map((day) => ({
             start_date: day.start_date,
-            tokens: toCount(day.tokens),
-            chat_turns: toCount(day.chat_turns),
+            tokens: UTIL.toCount(day.tokens),
+            chat_turns: UTIL.toCount(day.chat_turns),
           })),
         },
       },
@@ -11525,12 +11711,12 @@ const VERSION = "0.8.0";
         stats.daily_usage_buckets == null
           ? null
           : stats.daily_usage_buckets.map((day) => ({ credits: day.tokens, date: day.start_date })),
-      displayName: normalizeText(profile.display_name, 240) || null,
+      displayName: UTIL.normalizeText(profile.display_name, 240) || null,
       hasStatsError: Boolean(value?.metadata?.stats_error?.trim?.()),
       imageUrl: normalizeProfileImageUrl(profile.profile_picture_url),
-      planType: normalizeText(profile.plan_type, 64) || null,
-      plan_type: normalizeText(profile.plan_type, 64) || null,
-      planLabel: normalizeText(profile.plan_label, 64) || null,
+      planType: UTIL.normalizeText(profile.plan_type, 64) || null,
+      plan_type: UTIL.normalizeText(profile.plan_type, 64) || null,
+      planLabel: UTIL.normalizeText(profile.plan_label, 64) || null,
       summary: {
         currentStreakDays: stats.current_streak_days ?? null,
         longestStreakDays: stats.longest_streak_days ?? null,
@@ -11538,7 +11724,7 @@ const VERSION = "0.8.0";
         peakTokens: stats.peak_daily_tokens ?? null,
         totalTextTokens: stats.lifetime_tokens ?? null,
       },
-      username: normalizeText(profile.username, 240) || null,
+      username: UTIL.normalizeText(profile.username, 240) || null,
     };
   }
 
@@ -12329,6 +12515,10 @@ const VERSION = "0.8.0";
     return enabled;
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 21：设置页与嵌入式页面
+  // 设置面板只以嵌入式页面存在（旧 modal 路径不再创建）。
+  // ---------------------------------------------------------------------------
   function findComposerBox(force = false) {
     const now = Date.now();
     if (
@@ -12511,6 +12701,10 @@ const VERSION = "0.8.0";
     if (node.getAttribute?.(name) !== value) node.setAttribute(name, value);
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 22：样式表（巨型 CSS 模板）
+  // 全部 .cltc-* 样式；ensureStyle() 注入 <style>，是本文件唯一的样式来源。
+  // ---------------------------------------------------------------------------
   function ensureStyle() {
     // 本文件是唯一 CSS 事实源，除 Flatpickr 主题外不得在别处注入样式。
     if (document.getElementById(STYLE_ID)) return;
@@ -14899,8 +15093,12 @@ const VERSION = "0.8.0";
     document.head?.appendChild(style);
   }
 
+  // ---------------------------------------------------------------------------
+  // 模块 23：UI 渲染与设置面板
+  // ensureRoot / render / 各类 *Html() / handleSettingsClick 按钮分发都在这一段。
+  // ---------------------------------------------------------------------------
   function codexPlusScriptKey() {
-    return normalizeText(window.codexPlus?.script?.key, 120) || "user:market-codex-live-token-cost.js";
+    return UTIL.normalizeText(window.codexPlus?.script?.key, 120) || "user:market-codex-live-token-cost.js";
   }
 
   function ensureRoot() {
@@ -14953,7 +15151,7 @@ const VERSION = "0.8.0";
   function applyPriceFilter(rootOverride) {
     const root = rootOverride || settingsEditorRoot();
     if (!root?.querySelectorAll) return;
-    const query = normalizeText(state.priceSearch, 120).toLowerCase();
+    const query = UTIL.normalizeText(state.priceSearch, 120).toLowerCase();
     const filter = state.priceFilter || "all";
     const overrides = priceOverrides();
     let visible = 0;
@@ -15041,7 +15239,7 @@ const VERSION = "0.8.0";
   function capturePriceDraft(root) {
     const read = (field) => String(root?.querySelector?.(`[data-price-field='${field}']`)?.value ?? "");
     const draft = {
-      model: normalizeText(read("model"), 120),
+      model: UTIL.normalizeText(read("model"), 120),
       input: read("input"),
       cachedInput: read("cachedInput"),
       cacheWrite: read("cacheWrite"),
@@ -15185,11 +15383,26 @@ const VERSION = "0.8.0";
       return;
     }
     if (event.target.closest?.("[data-action='export-usage']")) {
-      // 导出是纯前端动作：成功/失败都必须落到状态行，否则浏览器拦下载时用户毫无察觉。
-      const exported = usageFactDownloadExport("json");
-      state.usageLedgerError = exported ? "" : "导出失败：浏览器未允许创建下载文件";
-      state.usageLedgerStatus = exported ? `已导出 ${fmtCount(usageFactAuthoritativeTotals().count)} 条响应（JSON）` : "";
-      renderSettingsOverlay(liveSnapshot(), { animate: true });
+      // 导出会先弹保存位置选择器：必须 await 结果再写状态行，否则用户取消也会显示「已导出」。
+      void usageFactDownloadExport("json").then((result) => {
+        if (result.canceled) {
+          state.usageLedgerError = "";
+          state.usageLedgerStatus = "已取消导出";
+        } else if (!result.ok) {
+          state.usageLedgerError = `导出失败：${String(result.reason || "无法写入文件").slice(0, 160)}`;
+          state.usageLedgerStatus = "";
+        } else {
+          const where =
+            result.method === "picker"
+              ? `已保存 ${result.name}`
+              : result.method === "directory"
+                ? `已保存到 ${result.dir || "所选文件夹"} / ${result.name}`
+                : `已导出 ${fmtCount(result.count)} 条响应（JSON，位置由宿主决定）`;
+          state.usageLedgerError = "";
+          state.usageLedgerStatus = where;
+        }
+        renderSettingsOverlay(liveSnapshot(), { animate: true });
+      });
       return;
     }
     if (event.target.closest?.("[data-action='import-usage']")) {
@@ -15215,8 +15428,8 @@ const VERSION = "0.8.0";
   function rootPriceModel() {
     const root = settingsEditorRoot();
     return (
-      normalizeText(root?.querySelector("[data-price-field='model']")?.value) ||
-      normalizeText(root?.querySelector("[data-price-model]")?.getAttribute("data-price-model"))
+      UTIL.normalizeText(root?.querySelector("[data-price-field='model']")?.value) ||
+      UTIL.normalizeText(root?.querySelector("[data-price-model]")?.getAttribute("data-price-model"))
     );
   }
 
@@ -15247,7 +15460,7 @@ const VERSION = "0.8.0";
   }
 
   function deletePriceForModel(model) {
-    const name = normalizeText(model);
+    const name = UTIL.normalizeText(model);
     if (!name) return false;
     const overrides = { ...priceOverrides() };
     delete overrides[name];
@@ -15344,7 +15557,7 @@ const VERSION = "0.8.0";
 
   function setProfileSaveStatus(message, tone) {
     if (state.profileSaveStatusTimer) window.clearTimeout(state.profileSaveStatusTimer);
-    state.profileSaveStatus = normalizeText(message, 160);
+    state.profileSaveStatus = UTIL.normalizeText(message, 160);
     state.profileSaveStatusTone = tone === "error" ? "error" : "success";
     state.profileSaveStatusTimer = window.setTimeout(() => {
       state.profileSaveStatusTimer = 0;
@@ -15524,7 +15737,7 @@ const VERSION = "0.8.0";
     const optionHtml = PROFILE_PLAN_OPTIONS.map(
       (option) => `<option value="${escapeHtml(option.value)}"${option.value === selectedValue ? " selected" : ""}>${escapeHtml(option.label)}</option>`,
     ).join("");
-    const initial = (normalizeText(prefs.displayName, 64) || "L").slice(0, 1).toUpperCase();
+    const initial = (UTIL.normalizeText(prefs.displayName, 64) || "L").slice(0, 1).toUpperCase();
     const avatarHtml = prefs.imageUrl
       ? `<img class="cltc-profile-avatar" src="${escapeHtml(prefs.imageUrl)}" alt="">`
       : `<span class="cltc-profile-avatar" aria-hidden="true">${escapeHtml(initial)}</span>`;
@@ -15582,8 +15795,8 @@ const VERSION = "0.8.0";
     if (!state.priceEditorOpen) return "";
     const overrides = priceOverrides();
     const draft = state.priceDraft;
-    const model = normalizeText(draft?.model, 120) || normalizeText(state.priceEditorModel) || snap.model;
-    const draftPrice = draft && normalizeText(draft.model, 120) === model ? draft : null;
+    const model = UTIL.normalizeText(draft?.model, 120) || UTIL.normalizeText(state.priceEditorModel) || snap.model;
+    const draftPrice = draft && UTIL.normalizeText(draft.model, 120) === model ? draft : null;
     const models = priceListModels(model);
     const resolvedPrice = priceFor(model);
     const price = draftPrice || resolvedPrice || { input: "", cachedInput: "", output: "" };
@@ -16045,10 +16258,10 @@ const VERSION = "0.8.0";
       return true;
     } catch (error) {
       const trigger = settingsEditorRoot()?.querySelector?.("[data-action='open-analytics-calendar']");
-      const message = normalizeText(error?.message || error, 160) || "日期选择器不可用";
+      const message = UTIL.normalizeText(error?.message || error, 160) || "日期选择器不可用";
       if (trigger) {
         trigger.textContent = message;
-        trigger.dataset.error = normalizeText(error?.stack || message, 1000);
+        trigger.dataset.error = UTIL.normalizeText(error?.stack || message, 1000);
       }
       return false;
     }
@@ -16281,7 +16494,7 @@ const VERSION = "0.8.0";
   }
 
   function rollComparableValue(text) {
-    const value = normalizeText(text, 80).replace(/,/g, "");
+    const value = UTIL.normalizeText(text, 80).replace(/,/g, "");
     const match = value.match(/-?\d+(?:\.\d+)?/);
     if (!match) return null;
     const unit = value.slice(match.index + match[0].length).trim().toUpperCase();
@@ -16300,7 +16513,7 @@ const VERSION = "0.8.0";
   }
 
   function digitChars(text) {
-    return Array.from(normalizeText(text, 80));
+    return Array.from(UTIL.normalizeText(text, 80));
   }
 
   function previousDigitByPosition(previous, digitPositionFromRight) {
@@ -16379,8 +16592,8 @@ const VERSION = "0.8.0";
   }
 
   function updateRollingValueSlot(slot, key, value) {
-    const cacheKey = normalizeText(key, 80);
-    const text = normalizeText(value, 80);
+    const cacheKey = UTIL.normalizeText(key, 80);
+    const text = UTIL.normalizeText(value, 80);
     if (slot.__cltcValueText === text) return;
     const previous = state.hubValueCache.get(cacheKey);
     const animate = Boolean(previous && previous !== text);
@@ -16630,7 +16843,7 @@ const VERSION = "0.8.0";
     updateValueSlot(root, "current-average-output-rate", fmtAverageOutputTokenRate(snap.averageRate.value));
     updateValueSlot(root, "session-total", fmtCount(snap.session.total));
     updateValueSlot(root, "session-cached", fmtCount(snap.session.cached));
-    updateValueSlot(root, "session-cache-percent", fmtPercent(snap.session.cached, snap.session.input));
+    updateValueSlot(root, "session-cache-percent", UTIL.fmtPercent(snap.session.cached, snap.session.input));
     updateValueSlot(root, "session-cost", fmtMoney(snap.sessionCost.value));
     updateValueSlot(root, "day-cost", fmtMoney(snap.dayCost.value));
     updateTextSlot(root, "session-priced-label", sessionPricedLabel);
@@ -16853,7 +17066,7 @@ const VERSION = "0.8.0";
 
   function refreshProfileData(options = {}) {
     if (state.profileDataRefreshPromise) return state.profileDataRefreshPromise;
-    const attemptedAt = toCount(state.profileDataRefreshAttemptAt);
+    const attemptedAt = UTIL.toCount(state.profileDataRefreshAttemptAt);
     if (!options.force && attemptedAt && Date.now() - attemptedAt < PROFILE_DATA_REFRESH_MIN_INTERVAL_MS) {
       return Promise.resolve({ ok: false, skipped: true });
     }
@@ -16875,7 +17088,7 @@ const VERSION = "0.8.0";
   async function fetchCodexppHistory(options = {}) {
     if (state.codexppHistoryFetching) return state.codexppHistoryAt > 0;
     if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) return false;
-    const sessionId = normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
+    const sessionId = UTIL.normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
     if (!sessionId) return false;
     state.codexppHistoryFetching = true;
     try {
@@ -16897,7 +17110,7 @@ const VERSION = "0.8.0";
   }
 
   function refreshCodexppHistory(options = {}) {
-    const sessionId = normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
+    const sessionId = UTIL.normalizeText(options.sessionId || currentSessionKey(), 240).replace(/^local:/, "");
     if (!sessionId) return false;
     const cacheTtl = 5 * 60 * 1000;
     if (state.codexppHistoryAt && Date.now() - state.codexppHistoryAt < cacheTtl && state.codexppHistorySessionId === sessionId) return false;
@@ -16969,6 +17182,10 @@ const VERSION = "0.8.0";
 
   // 未处理的 Promise 拒绝兜底：脚本里大量 `void xxx()` 形式的后台任务，
   // 没有这个监听时它们会静默消失，界面上什么都不会变。
+  // ---------------------------------------------------------------------------
+  // 模块 24：启动与销毁
+  // start / scheduleStart / destroy；所有资源经 disposers 拆除。
+  // ---------------------------------------------------------------------------
   function handleUnhandledRejection(event) {
     const reason = event?.reason;
     state.unhandledRejectionCount += 1;
@@ -17241,7 +17458,7 @@ const VERSION = "0.8.0";
       hasAssistantResultOutputStarted,
       fmtCount,
       fmtMoney,
-      fmtPercent,
+      fmtPercent: UTIL.fmtPercent,
       rollComparableValue,
       rollTrend,
       parseModelEffortText,
@@ -17439,6 +17656,9 @@ const VERSION = "0.8.0";
       usageSyncCollectRows: (dirHandle, options) => usageSyncCollectRows(dirHandle, options || {}),
       usageSyncDecodeBytes: (bytes) => usageSyncDecodeBytes(bytes),
       usageSyncCollectRowsViaAppServer: (client, options) => usageSyncCollectRowsViaAppServer(client, options || {}),
+      // 同步的真实入口是 runUsageSync → collect → applyCollected；
+      // 「事实入库失败」的反馈只能从这一层验证。
+      usageSyncApplyCollected: (collected, options) => usageSyncApplyCollected(collected, options || {}),
       usageSyncResolveCodexRoot: (client) => usageSyncResolveCodexRoot(client),
       usageSyncResolveClient: () => appServerSyncClient(),
       usageSyncResetClient: () => {

@@ -266,6 +266,34 @@ assert.equal(code.includes("function syncSidebarProfileIdentity"), true);
 assert.equal(code.includes("void installProfileAuthContextPatch();"), true);
 assert.equal(code.includes("profileAuthValuePatches"), false);
 assert.equal(code.includes("Flatpickr 4.6.13 + zh locale"), true);
+
+// ---- 模块化（B 档）：顶部模块地图 + 24 个模块横幅 + UTIL 命名空间 ----
+// userscript 必须保持单文件（不能拆物理文件、不能引入构建），所以「模块化」体现为
+// 可检索的横幅、与横幅一一对应的地图，以及把无状态叶子工具收进一个命名空间对象。
+const moduleMapEntries = Array.from(code.matchAll(/^ {2}\/\/ {3}(\d\d) \S/gm)).map((match) => match[1]);
+assert.equal(moduleMapEntries.length, 24);
+assert.equal(moduleMapEntries[0], "01");
+assert.equal(moduleMapEntries[23], "24");
+const moduleBanners = Array.from(code.matchAll(/^ {2}\/\/ 模块 (\d\d)：/gm)).map((match) => match[1]);
+// 地图与实际横幅必须逐项对齐：加了横幅却忘了改地图，或编号写错，都会在这里失败。
+assert.deepEqual(moduleBanners, moduleMapEntries);
+assert.deepEqual([...moduleBanners].sort(), moduleBanners);
+assert.equal(code.includes("模块地图（按文件出现顺序"), true);
+assert.equal(code.includes("跨模块调用一律写模块名（UTIL.xxx）"), true);
+// 只有一根分隔线时才是干净的横幅；两行连续分隔线是横幅被重复插入的痕迹。
+assert.doesNotMatch(code, /\n {2}\/\/ -{20,}\n {2}\/\/ -{20,}\n/);
+// UTIL：8 个无状态叶子工具（零测试文本引用、无顶层 const 初始化调用 → 无 TDZ 风险）。
+assert.match(code, /\n {2}const UTIL = \{\n/);
+const utilMethods = ["toCount", "toTimestampMs", "firstTimestampMs", "fmtDuration", "fmtPercent", "loadJson", "loadJsonFromString", "normalizeText"];
+for (const name of utilMethods) {
+  assert.equal(code.includes(`  function ${name}(`), false);
+  assert.match(code, new RegExp(`\\n {4}${name}\\(`));
+}
+assert.equal(code.includes("UTIL.normalizeText("), true);
+// 被测试源码文本钉住的格式化函数必须保留裸名调用形式，不能收进 UTIL。
+for (const name of ["fmtCount", "fmtMoney", "escapeHtml", "localDateKey"]) {
+  assert.equal(code.includes(`  function ${name}(`), true);
+}
 assert.equal(code.includes("data-analytics-start"), false);
 assert.equal(code.includes("data-analytics-end"), false);
 assert.equal(code.includes("数据来源"), false);

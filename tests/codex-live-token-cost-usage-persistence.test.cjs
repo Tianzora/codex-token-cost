@@ -1067,6 +1067,7 @@ function createFakeAppServer(files = {}) {
     downloads.length = 0;
     mark = createdNodes.length;
     clickButton("export-usage");
+    await settle();
     assert.equal(downloads.length, 1, "the export button downloads the ledger");
     assert.equal(downloads[0].blob.type, "application/json", "a JSON export is not labelled as NDJSON");
     const anchor = createdSince(mark).find((node) => node.tagName === "A");
@@ -1075,7 +1076,11 @@ function createFakeAppServer(files = {}) {
     assert.equal(anchor.clicked, 1, "the download anchor is clicked exactly once");
     states = api.usageFactState();
     assert.equal(states.ledgerError, "", "a successful export leaves no error behind");
-    assert.equal(states.ledgerStatus, "已导出 1 条响应（JSON）", "the export reports how many responses it wrote");
+    assert.match(
+      states.ledgerStatus,
+      /^已导出 1 条响应（JSON，位置由宿主决定）$/,
+      "when no save picker exists the status line says the host decides the location",
+    );
     assert.ok(
       api.generalSettingsHtml().includes('data-field="usage-ledger-action"'),
       "the ledger status line is rendered in the settings panel",
@@ -1084,7 +1089,9 @@ function createFakeAppServer(files = {}) {
     // NDJSON 走同一封装：MIME 与扩展名必须跟着格式走。
     downloads.length = 0;
     mark = createdNodes.length;
-    assert.equal(api.usageFactDownloadExport("ndjson"), true, "the NDJSON export still works");
+    const ndjsonExport = await api.usageFactDownloadExport("ndjson");
+    assert.equal(ndjsonExport.ok, true, "the NDJSON export still works");
+    assert.equal(ndjsonExport.method, "download", "without pickers the export falls back to a download");
     assert.equal(downloads[0].blob.type, "application/x-ndjson", "an NDJSON export is labelled as NDJSON");
     assert.match(createdSince(mark).find((node) => node.tagName === "A").download, /\.ndjson$/, "the NDJSON export keeps the .ndjson extension");
 
@@ -1097,12 +1104,126 @@ function createFakeAppServer(files = {}) {
     };
     try {
       clickButton("export-usage");
+      await settle();
     } finally {
       context.Blob = RealBlob;
     }
     states = api.usageFactState();
     assert.equal(states.ledgerStatus, "", "a blocked export must not claim success");
     assert.match(states.ledgerError, /导出失败/, "a blocked export is surfaced on the status line");
+
+    // --- 导出：宿主提供保存位置选择器时必须真的走选择器 ----------------------
+    // 这是「导出时能选位置」的核心：没有 picker 才回退下载，有 picker 就不能偷偷下载。
+    {
+      const written = [];
+      const makeHandle = (name) => ({
+        name,
+        async createWritable() {
+          return {
+            async write(text) {
+              written.push(text);
+            },
+            async close() {},
+          };
+        },
+      });
+      const pickerCalls = [];
+      const withPicker = async (picker, dirPicker, run) => {
+        const prevSave = context.showSaveFilePicker;
+        const prevDir = context.showDirectoryPicker;
+        context.showSaveFilePicker = picker;
+        if (dirPicker === null) delete context.showDirectoryPicker;
+        else context.showDirectoryPicker = dirPicker;
+        try {
+          await run();
+        } finally {
+          if (prevSave === undefined) delete context.showSaveFilePicker;
+          else context.showSaveFilePicker = prevSave;
+          if (prevDir === undefined) delete context.showDirectoryPicker;
+          else context.showDirectoryPicker = prevDir;
+        }
+      };
+
+      // 选到具体文件：写入所选句柄，不产生下载。
+      downloads.length = 0;
+      await withPicker(
+        async (options) => {
+          pickerCalls.push(options);
+          return makeHandle(options.suggestedName);
+        },
+        null,
+        async () => {
+          clickButton("export-usage");
+          await settle();
+        },
+      );
+      states = api.usageFactState();
+      assert.equal(states.ledgerError, "", "saving through the picker is a success");
+      assert.equal(downloads.length, 0, "the picker path must not fall back to a download");
+      assert.equal(written.length, 1, "the picker path writes exactly one file");
+      assert.match(pickerCalls[0].suggestedName, /^codex-usage-ledger-\d{4}-\d{2}-\d{2}\.json$/, "the picker suggests the ledger file name");
+      assert.equal(pickerCalls[0].types[0].accept["application/json"][0], ".json", "the picker filters to the JSON extension");
+      assert.match(states.ledgerStatus, /^已保存 codex-usage-ledger-/, "the status line names the saved file");
+
+      // 用户取消：必须报「已取消」，不能报成功也不能报失败。
+      await withPicker(
+        async () => {
+          const error = new Error("canceled");
+          error.name = "AbortError";
+          throw error;
+        },
+        null,
+        async () => {
+          clickButton("export-usage");
+          await settle();
+        },
+      );
+      states = api.usageFactState();
+      assert.equal(states.ledgerStatus, "已取消导出", "cancelling the picker is reported as canceled");
+      assert.equal(states.ledgerError, "", "cancelling the picker is not an error");
+
+      // 选择器存在但写入失败：必须报错，不能回落成下载（用户会以为存到了所选位置）。
+      downloads.length = 0;
+      await withPicker(
+        async () => ({
+          name: "blocked.json",
+          async createWritable() {
+            throw new Error("disk is read-only");
+          },
+        }),
+        null,
+        async () => {
+          clickButton("export-usage");
+          await settle();
+        },
+      );
+      states = api.usageFactState();
+      assert.equal(downloads.length, 0, "a failed picker write must not silently download instead");
+      assert.match(states.ledgerError, /导出失败：disk is read-only/, "a failed picker write is surfaced");
+
+      // 只给选目录：写进所选文件夹，状态行点名文件夹。
+      delete context.showSaveFilePicker;
+      downloads.length = 0;
+      written.length = 0;
+      const dirHandle = {
+        name: "my-exports",
+        async getFileHandle(name, options) {
+          assert.equal(options.create, true, "the directory path creates the file when missing");
+          return makeHandle(name);
+        },
+      };
+      context.showDirectoryPicker = async () => dirHandle;
+      try {
+        clickButton("export-usage");
+        await settle();
+      } finally {
+        delete context.showDirectoryPicker;
+      }
+      states = api.usageFactState();
+      assert.equal(downloads.length, 0, "the directory path writes through the handle instead of downloading");
+      assert.equal(written.length, 1, "the directory path writes the ledger");
+      assert.match(states.ledgerStatus, /^已保存到 my-exports \/ codex-usage-ledger-/, "the status line names the chosen folder");
+    }
 
     // --- 重建：重算 turn 投影并报告结果 --------------------------------------
     api.usageFactReset();
@@ -1244,6 +1365,58 @@ function createFakeAppServer(files = {}) {
     states = api.usageFactState();
     assert.equal(states.unhandledRejectionCount, rejectionsBefore + 1, "an unhandled rejection is counted");
     assert.match(states.lastUnhandledRejection, /boom/, "the last rejection message is kept for diagnostics");
+
+    // --- 同步入库：事实写失败时必须等它、并且不能伪报「写入 N 轮」 ----------
+    // 旧写法 void usageFactPersistResponses(facts)：IndexedDB 挂掉时状态行照样报
+    // 写入成功，而事实只在内存里，刷新即丢。
+    const makeCollected = (tag, count) => ({
+      scannedFiles: 1,
+      skippedFiles: 0,
+      readErrors: [],
+      nextStamps: { [`sessions/2026/10/22/${tag}.jsonl`]: { lastModified: currentNow, size: 1 } },
+      firstDay: "2026-10-22",
+      lastDay: "2026-10-22",
+      observability: { lines: count, records: count, heartbeats: 0, duplicateRecords: 0, duplicateHeartbeats: 0 },
+      rateLimits: [],
+      facts: Array.from({ length: count }, (_, index) => ({
+        responseId: `resp_sync_${tag}_${index}`,
+        threadId: `01thread-sync-${tag}`,
+        turnId: `turn-sync-${tag}`,
+        usage: { input_tokens: 100 + index, output_tokens: 10, total_tokens: 110 + index },
+        observedAtMs: currentNow + index,
+        source: "rollout_record",
+      })),
+      rows: [
+        {
+          turnId: `turn-sync-${tag}`,
+          threadId: `01thread-sync-${tag}`,
+          usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+          startedAt: "2026-10-22T00:00:00.000Z",
+          finishedAt: "2026-10-22T00:01:00.000Z",
+        },
+      ],
+    });
+
+    // 成功路径：入库结果如实记进 usageSyncResult。
+    await api.usageSyncApplyCollected(makeCollected("ok", 2));
+    let syncState = api.usageSyncState();
+    assert.equal(syncState.result.factsPersisted, true, "a successful fact write is reported on the sync result");
+    assert.equal(syncState.result.facts, 2, "the fact count comes from the successful write");
+    assert.equal(String(syncState.status).includes("事实入库失败"), false, "a healthy sync says nothing about failures");
+
+    // 失败路径：写入报 false → 计数归零、状态行必须点明只存在内存里。
+    fake.state.failNextPut = { store: RESPONSES_STORE, error: new Error("simulated quota") };
+    await api.usageSyncApplyCollected(makeCollected("fail", 2));
+    fake.state.failNextPut = null;
+    syncState = api.usageSyncState();
+    assert.equal(syncState.result.factsPersisted, false, "a failed fact write is reported on the sync result");
+    assert.equal(syncState.result.facts, 0, "a failed write must not be counted as written");
+    assert.match(String(syncState.status), /事实入库失败（仅内存，刷新后丢失）/, "the status line explains the facts were not persisted");
+    assert.equal(
+      fake.dumpStore(PROFILE_DB_NAME, RESPONSES_STORE).some((row) => row.responseId === "resp_sync_fail_0"),
+      false,
+      "the failed write really did not reach IndexedDB",
+    );
   }
 
   console.log("usage persistence P0 tests passed");
