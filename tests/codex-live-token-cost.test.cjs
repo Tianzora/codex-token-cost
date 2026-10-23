@@ -5391,12 +5391,29 @@ const profileLifecycleTest = Promise.resolve()
     const priceReadCalls = [];
     const priceRemoveCalls = [];
     const priceWriteCalls = [];
-    const priceHostState = { upstream: upstreamPriceFixture, cacheFile: null, failCommand: false };
+    const priceHostState = { upstream: upstreamPriceFixture, cacheFile: null, failCommand: false, credentialError: false, failNode: false };
     const priceHostClient = {
       hostId: "local",
       sendRequest(route, payload) {
         if (route === "command/exec") {
           priceCommandCalls.push(payload.command);
+          assert.equal(payload.cwd, "C:\\Users\\tester\\user_scripts");
+          assert.deepEqual(JSON.parse(JSON.stringify(payload.sandboxPolicy)), {
+            type: "workspaceWrite",
+            writableRoots: ["C:\\Users\\tester\\user_scripts"],
+            networkAccess: true,
+            excludeTmpdirEnvVar: true,
+            excludeSlashTmp: true,
+          });
+          assert.equal(payload.timeoutMs > 10000, true);
+          if (payload.command[0] === "node") {
+            return Promise.resolve(priceHostState.failNode
+              ? { exitCode: 1, stdout: "", stderr: "HTTP 503" }
+              : { exitCode: 0, stdout: "", stderr: "" });
+          }
+          if (priceHostState.credentialError) {
+            return Promise.resolve({ exitCode: 35, stdout: "", stderr: "curl: (35) schannel: SEC_E_NO_CREDENTIALS" });
+          }
           if (priceHostState.failCommand) {
             return Promise.resolve({ exitCode: 22, stdout: "", stderr: "curl: (22) The requested URL returned error: 404" });
           }
@@ -5537,6 +5554,8 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(api.priceSyncStatus().tone, "warn");
     assert.equal(api.priceSyncStatus().retry, true);
     assert.equal(api.priceSyncStatus().text.includes("同步失败"), true);
+    assert.equal(priceCommandCalls.at(-1)[0], "curl");
+    assert.equal(priceRemoveCalls.at(-1), priceTempPath);
 
     // 窗口外返回无效上游表（条目数不足）：同样拒绝，价格不变。
     priceHostState.failCommand = false;
@@ -5546,6 +5565,62 @@ const profileLifecycleTest = Promise.resolve()
     assert.equal(await api.refreshDefaultPrices(), false);
     assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
     assert.equal(api.priceSyncStatus().tone, "warn");
+
+    // Schannel 特定凭证错误才启用 Node；备用失败不能覆盖缓存或留下下载文件。
+    priceHostState.upstream = syncedUpstream;
+    priceHostState.credentialError = true;
+    priceHostState.failNode = true;
+    assert.equal(await api.refreshDefaultPrices(), false);
+    assert.deepEqual(JSON.parse(storage.get("__codexLiveTokenCostRemotePricesV2")), cachedSnapshot);
+    assert.match(api.priceSyncStatus().text, /curl TLS 凭证失败.*Node 备用下载失败.*HTTP 503/);
+    assert.equal(priceRemoveCalls.at(-1), priceTempPath);
+    const nodeDownload = priceCommandCalls.at(-1);
+    assert.equal(priceCommandCalls.at(-2)[0], "curl");
+    assert.equal(nodeDownload[0], "node");
+    assert.equal(nodeDownload[4], priceTempPath);
+    assert.equal(nodeDownload[5], "");
+    assert.equal(nodeDownload[2].includes("if(!r.ok)throw Error"), true);
+    assert.equal(nodeDownload[2].includes("AbortSignal.timeout"), true);
+    assert.equal(nodeDownload[2].includes("rejectUnauthorized"), false);
+    // 真正执行备用程序，验证 UTF-8 路径、Range、HTTP 失败与超时，不访问外网。
+    const downloadDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "cltc-price-test-"));
+    const downloadFile = path.join(downloadDir, "价格 '测试'.json");
+    let receivedRange = "";
+    const downloadServer = require("node:http").createServer((req, res) => {
+      receivedRange = req.headers.range || "";
+      if (req.url === "/slow") return;
+      res.statusCode = req.url === "/fail" ? 503 : 200;
+      res.end(JSON.stringify({ model: "测试模型" }));
+    });
+    await new Promise((resolve) => downloadServer.listen(0, "127.0.0.1", resolve));
+    const runNodeDownload = (route, range = "", timeout = 60000) => new Promise((resolve) => {
+      require("node:child_process").execFile(process.execPath, [
+        "-e", nodeDownload[2].replace("60000", String(timeout)),
+        `http://127.0.0.1:${downloadServer.address().port}${route}`, downloadFile, range,
+      ], { timeout: 10000, windowsHide: true }, (error, stdout, stderr) => resolve({ code: error?.code || 0, stderr }));
+    });
+    try {
+      assert.equal((await runNodeDownload("/ok", "0-8191")).code, 0);
+      assert.equal(receivedRange, "bytes=0-8191");
+      assert.deepEqual(JSON.parse(fs.readFileSync(downloadFile, "utf8")), { model: "测试模型" });
+      fs.unlinkSync(downloadFile);
+      const failedDownload = await runNodeDownload("/fail");
+      assert.equal(failedDownload.code, 1);
+      assert.match(failedDownload.stderr, /HTTP 503/);
+      assert.equal(fs.existsSync(downloadFile), false);
+      assert.equal((await runNodeDownload("/slow", "", 100)).code, 1);
+      assert.equal(fs.existsSync(downloadFile), false);
+    } finally {
+      downloadServer.closeAllConnections();
+      await new Promise((resolve) => downloadServer.close(resolve));
+      if (fs.existsSync(downloadFile)) fs.unlinkSync(downloadFile);
+      fs.rmdirSync(downloadDir);
+    }
+    priceHostState.failNode = false;
+    assert.equal(await api.refreshDefaultPrices(), true);
+    assert.equal(api.priceSyncStatus().tone, "ok");
+    assert.equal(api.priceFor("gpt-5.6-sol").input, 4.5);
+    priceHostState.credentialError = false;
 
     // 恢复默认：清空自定义价并重新同步上游。
     priceHostState.upstream = syncedUpstream;
