@@ -2837,7 +2837,7 @@ const VERSION = "0.8.0";
     );
   }
 
-  // 上游同步走 native 通道：command/exec 里的 curl 下载到临时文件，再 fs/readFile
+  // 上游同步走 native 通道：curl 下载到临时文件（Windows TLS 凭证失败时用 Node），再 fs/readFile
   // 取回 base64（command/exec 的 stdout 会在 1 MiB 处截断，无法整表回传）。页面
   // fetch 到 github 会被 CSP connect-src 拦截，因此这条通道是生产唯一可行路径。
   // 启动时先读本地文件缓存，命中且未过期就直接复用，失败也不会丢已有定价。
@@ -2898,9 +2898,9 @@ const VERSION = "0.8.0";
         if (!client) throw new Error("未找到本地文件通道");
         if (!target) throw new Error("Codex++ 通道不可用");
         const tempPath = `${target.targetPath}.prices.json`;
-        await updateRunCommand(client, priceSyncDownloadCommand(priceSyncUrl(), tempPath));
         let text = "";
         try {
+          await updateRunCommand(client, priceSyncDownloadCommand(priceSyncUrl(), tempPath), target.userDir);
           text = updateDecodeBase64Text(await priceSyncReadBase64(client, tempPath));
         } finally {
           await updateRemoveFile(client, tempPath);
@@ -7046,7 +7046,38 @@ const VERSION = "0.8.0";
     return { priority: "background", source: "codex-token-cost-update" };
   }
 
-  async function updateRunCommand(client, command) {
+  async function updateRunCommand(client, command, userDir) {
+    // 三个调用方都只下载到已解析的用户脚本目录；不修改全局沙箱或代理配置。
+    const params = {
+      command,
+      cwd: userDir,
+      timeoutMs: UPDATE_COMMAND_TIMEOUT_MS,
+      sandboxPolicy: {
+        type: "workspaceWrite",
+        writableRoots: [userDir],
+        networkAccess: true,
+        excludeTmpdirEnvVar: true,
+        excludeSlashTmp: true,
+      },
+    };
+    const execute = async () => {
+      const response = await hostRequest(client, "command/exec", params, updateClientOptions());
+      if (Number(response?.exitCode) !== 35 || !String(response?.stderr || "").includes("SEC_E_NO_CREDENTIALS")) return response;
+      // Windows 受限令牌无法取得 Schannel 凭证时，使用 Node 的 TLS，仍保留证书校验。
+      const rangeIndex = command.indexOf("-r");
+      const fallback = await hostRequest(client, "command/exec", {
+        ...params,
+        command: [
+          "node", "-e",
+          "const fs=require('node:fs/promises');const [url,path,range]=process.argv.slice(1);fetch(url,{headers:range?{Range:'bytes='+range}:{},signal:AbortSignal.timeout(60000)}).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);await fs.writeFile(path,Buffer.from(await r.arrayBuffer()))}).catch(e=>{console.error(e.cause?.message||e.message);process.exitCode=1})",
+          command.at(-1), command[command.indexOf("-o") + 1], rangeIndex >= 0 ? command[rangeIndex + 1] : "",
+        ],
+      }, updateClientOptions());
+      if (Number(fallback?.exitCode) !== 0) {
+        throw new Error(`curl TLS 凭证失败；Node 备用下载失败：${fallback?.stderr || fallback?.stdout || "请确认已安装 Node.js 22+"}`);
+      }
+      return fallback;
+    };
     let timer = 0;
     const timeout = new Promise((resolve, reject) => {
       timer = window.setTimeout(() => reject(new Error("命令执行超时")), UPDATE_COMMAND_TIMEOUT_MS);
@@ -7054,7 +7085,7 @@ const VERSION = "0.8.0";
     let result = null;
     try {
       result = await Promise.race([
-        hostRequest(client, "command/exec", { command }, updateClientOptions()),
+        execute(),
         timeout,
       ]);
     } finally {
@@ -7138,7 +7169,7 @@ const VERSION = "0.8.0";
       const target = await updateResolveTarget();
       const client = appServerSyncClient();
       if (!client) throw new Error("未找到本地文件通道");
-      await updateRunCommand(client, updateCheckCommand(updateCacheBustUrl(), target.downloadPath));
+      await updateRunCommand(client, updateCheckCommand(updateCacheBustUrl(), target.downloadPath), target.userDir);
       if (state.destroyed) return false;
       const text = await updateReadBase64(client, target.downloadPath).then(updateDecodeBase64Text);
       if (state.destroyed) return false;
@@ -7185,7 +7216,7 @@ const VERSION = "0.8.0";
       const target = await updateResolveTarget();
       const client = appServerSyncClient();
       if (!client) throw new Error("未找到本地文件通道");
-      await updateRunCommand(client, updateDownloadCommand(updateCacheBustUrl(), target.downloadPath));
+      await updateRunCommand(client, updateDownloadCommand(updateCacheBustUrl(), target.downloadPath), target.userDir);
       if (state.destroyed) return false;
       const dataBase64 = await updateReadBase64(client, target.downloadPath);
       const text = updateDecodeBase64Text(dataBase64);

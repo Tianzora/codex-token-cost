@@ -119,7 +119,7 @@ tests/
 - Codex 桌面端
 - Codex++
 - Windows 或 macOS
-- Node.js 22（仅运行测试与回填脚本需要）
+- Node.js 22+（运行测试与回填脚本需要；Windows 沙箱出现 Schannel 凭证错误时，也用于备用下载）
 
 ## 兼容性验证
 
