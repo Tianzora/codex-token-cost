@@ -451,6 +451,11 @@ const VERSION = "0.8.0";
     usageHostBackupAt: 0,
     usageHostBackupStatus: "",
     usageHostBackupError: "",
+    // 本地账本按钮（导出/导入/重建）的一次性反馈：只影响状态行，不参与统计。
+    usageLedgerStatus: "",
+    usageLedgerError: "",
+    unhandledRejectionCount: 0,
+    lastUnhandledRejection: "",
     // 实时路径的单调基线：(threadId, turnId) -> 已入账的累计 total。
     usageLiveTotals: new Map(),
     usageLiveEpochs: 0,
@@ -1537,6 +1542,8 @@ const VERSION = "0.8.0";
         });
         state.usageFactDegraded = false;
         state.usageFactDegradedReason = "";
+        // 有新事实落盘后排一次主机备份（8s 防抖）：不这么做，主机冷备就只能靠手动点按钮。
+        usageFactScheduleHostBackup();
         return true;
       } catch (error) {
         state.usageFactDegraded = true;
@@ -1768,8 +1775,6 @@ const VERSION = "0.8.0";
     // 迁移已验证：旧快照进入 30 天只读保留期。
     usageFactPreserveLegacySnapshot();
     return { migrated: migrated.length, verified: true, count: after.count, total: after.total, diff };
-    await usageFactPersistMeta(USAGE_FACT_MIGRATION_KEY, usageFactMetaValue(USAGE_FACT_MIGRATION_KEY));
-    return { migrated: migrated.length, verified: true, count: after.count, total: after.total };
   }
 
   // ---------------------------------------------------------------------------
@@ -1820,7 +1825,9 @@ const VERSION = "0.8.0";
   }
 
   function usageFactBackupPayload() {
-    const records = Array.from(state.usageFacts.values());
+    // 备份与面板口径必须一致：用权威记录（剔除被取代的 legacy 聚合），
+    // 否则冷备里的条数/总量会大于界面显示，回灌后凭空多出数据。
+    const records = usageFactAuthoritativeRecords();
     const byDay = new Map();
     for (const record of records) {
       const day = localDateKey(record.observedAtMs || Date.now()) || "unknown";
@@ -1829,7 +1836,7 @@ const VERSION = "0.8.0";
       byDay.set(day, list);
     }
     const days = Array.from(byDay.keys()).sort();
-    return { records, byDay, days, totals: usageFactTotals() };
+    return { records, byDay, days, totals: usageFactAuthoritativeTotals() };
   }
 
   async function usageFactHostWriteFile(client, path, text) {
@@ -1878,14 +1885,17 @@ const VERSION = "0.8.0";
   }
 
   async function usageFactBackupToHost(options = {}) {
+    // 自动备份（防抖）失败时保持安静：不能因为一次没有本地通道就把状态行改成告警，
+    // 否则用户每次同步都会看到一条与操作无关的失败提示。
+    const quiet = options.quiet === true;
     const client = options.client || appServerSyncClient();
     if (!isAppServerSyncClient(client)) {
-      state.usageHostBackupStatus = "主机备份暂不可用（未找到 Codex 本地通道）";
+      if (!quiet) state.usageHostBackupStatus = "主机备份暂不可用（未找到 Codex 本地通道）";
       return { ok: false, reason: "no-client" };
     }
     const root = normalizeText(options.root, 600) || (await usageFactBackupRoot(client));
     if (!root) {
-      state.usageHostBackupStatus = "主机备份暂不可用（未定位到本机 .codex 目录）";
+      if (!quiet) state.usageHostBackupStatus = "主机备份暂不可用（未定位到本机 .codex 目录）";
       return { ok: false, reason: "no-root" };
     }
     const dir = usageFactBackupDir(root);
@@ -1958,10 +1968,13 @@ const VERSION = "0.8.0";
 
   function usageFactScheduleHostBackup() {
     if (state.usageHostBackupTimer) return;
+    // 测试环境不排自动备份：每次持久化都挂一个 8s 定时器会让回归里到处是悬挂 timer。
+    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     state.usageHostBackupTimer = trackTimer(
       window.setTimeout(() => {
         state.usageHostBackupTimer = 0;
-        void usageFactBackupToHost();
+        // quiet：自动备份失败只影响冷备新鲜度，不改动用户主动触发的状态行。
+        void usageFactBackupToHost({ quiet: true });
       }, USAGE_HOST_BACKUP_DEBOUNCE_MS),
     );
   }
@@ -2015,8 +2028,9 @@ const VERSION = "0.8.0";
 
   // 导出：JSON / NDJSON，带 schemaVersion、responseId、checksum。
   function usageFactExport(format = "json") {
-    const records = Array.from(state.usageFacts.values());
-    const totals = usageFactTotals();
+    // 与面板/备份同口径，避免导出条数与界面显示不一致。
+    const records = usageFactAuthoritativeRecords();
+    const totals = usageFactAuthoritativeTotals();
     if (format === "ndjson") {
       const lines = records.map((record) => JSON.stringify({ schemaVersion: USAGE_EXPORT_SCHEMA_VERSION, responseId: record.responseId, ...record }));
       const text = lines.join("\n") + (lines.length ? "\n" : "");
@@ -2068,9 +2082,10 @@ const VERSION = "0.8.0";
       state.usageFacts.set(record.responseId, record);
       imported += 1;
     }
-    if (imported) void usageFactPersistResponses(records);
     usageFactReconcileReport();
-    return { imported, skipped: records.length - imported, total: records.length };
+    // 持久化必须可被调用方等待：写入 IndexedDB 失败时要能反馈，不能静默吞掉。
+    const persist = imported ? usageFactPersistResponses(records) : Promise.resolve(true);
+    return { imported, skipped: records.length - imported, total: records.length, persist };
   }
 
   // 导出下载：JSON / NDJSON，带 schemaVersion 与 checksum。
@@ -2083,23 +2098,41 @@ const VERSION = "0.8.0";
         input.type = "file";
         input.accept = ".json,.ndjson,application/json,application/x-ndjson,text/plain";
         input.style.display = "none";
+        // 用户取消文件选择框时不会有 change 事件：必须监听 cancel，
+        // 否则 Promise 永远挂起，设置面板也拿不到任何反馈。
+        const finish = (result) => {
+          input.remove?.();
+          resolve(result);
+        };
+        input.addEventListener("cancel", () => finish({ imported: 0, skipped: 0, canceled: true }));
         input.addEventListener("change", () => {
           const file = input.files && input.files[0];
-          input.remove?.();
           if (!file) {
-            resolve({ imported: 0, skipped: 0, canceled: true });
+            finish({ imported: 0, skipped: 0, canceled: true });
             return;
           }
           const reader = new FileReader();
-          reader.onload = () => {
+          reader.onload = async () => {
             const result = usageFactImport(String(reader.result || ""));
+            // 无论写入成败都必须走到 finish：这里再抛一次，Promise 又会永久挂起。
+            let persisted = true;
+            try {
+              persisted = (await result.persist) !== false;
+            } catch {
+              persisted = false;
+            }
             usageFactHydrateLedger();
             rebuildAnalyticsRollup();
             scheduleRender();
-            state.usageHostBackupStatus = `已导入 ${result.imported} 条响应（跳过 ${result.skipped} 条重复）`;
-            resolve(result);
+            const failed = result.error || persisted === false;
+            // 导入是本地账本动作：反馈落到与导出/重建同一条状态行，主机备份行留给备份。
+            state.usageLedgerError = failed ? "导入后写入本地库失败：数据仅存在于本次会话内存中" : "";
+            state.usageLedgerStatus = failed
+              ? `导入 ${result.imported} 条响应（跳过 ${result.skipped} 条重复），但写入本地库失败`
+              : `已导入 ${result.imported} 条响应（跳过 ${result.skipped} 条重复）`;
+            finish({ ...result, persist: undefined, persisted });
           };
-          reader.onerror = () => resolve({ imported: 0, skipped: 0, error: "read-failed" });
+          reader.onerror = () => finish({ imported: 0, skipped: 0, error: "read-failed" });
           reader.readAsText(file);
         });
         (document.body || document.documentElement)?.appendChild?.(input);
@@ -2113,7 +2146,7 @@ const VERSION = "0.8.0";
   function usageFactDownloadExport(format = "json") {
     const payload = usageFactExport(format);
     try {
-      const blob = new Blob([payload.text], { type: "application/x-ndjson" });
+      const blob = new Blob([payload.text], { type: format === "ndjson" ? "application/x-ndjson" : "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -2324,11 +2357,24 @@ const VERSION = "0.8.0";
     return replaced;
   }
 
+  // 「重建统计」：把逐响应事实重新投影成 turn 行，再重算派生视图与对账。
+  // 只重算 rollup 而不重算 localLedger 是名不符实的（旧实现），必须走 hydrate。
   function usageFactRebuild() {
-    const totals = usageFactTotals();
+    const before = usageFactAuthoritativeTotals();
+    const replaced = usageFactHydrateLedger();
     usageFactReconcileReport();
-    rebuildAnalyticsRollup();
-    return { count: totals.count, total: totals.total, reconcile: usageFactReconcileSummary() };
+    const rolled = rebuildAnalyticsRollup();
+    const after = usageFactAuthoritativeTotals();
+    const reconcile = usageFactReconcileSummary();
+    return {
+      count: after.count,
+      total: after.total,
+      before,
+      after,
+      replaced,
+      rolled,
+      reconcile,
+    };
   }
 
   function profileRollupDay(rollup, date) {
@@ -15139,7 +15185,11 @@ const VERSION = "0.8.0";
       return;
     }
     if (event.target.closest?.("[data-action='export-usage']")) {
-      void usageFactDownloadExport("json");
+      // 导出是纯前端动作：成功/失败都必须落到状态行，否则浏览器拦下载时用户毫无察觉。
+      const exported = usageFactDownloadExport("json");
+      state.usageLedgerError = exported ? "" : "导出失败：浏览器未允许创建下载文件";
+      state.usageLedgerStatus = exported ? `已导出 ${fmtCount(usageFactAuthoritativeTotals().count)} 条响应（JSON）` : "";
+      renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
     }
     if (event.target.closest?.("[data-action='import-usage']")) {
@@ -15147,7 +15197,12 @@ const VERSION = "0.8.0";
       return;
     }
     if (event.target.closest?.("[data-action='rebuild-usage']")) {
-      usageFactRebuild();
+      // 重建会重算 turn 投影与派生视图，把「重算了多少行」写回状态行，点击才有可见结果。
+      const rebuilt = usageFactRebuild();
+      state.usageLedgerError = rebuilt.rolled ? "" : "重建失败：派生统计写入本地存储失败";
+      state.usageLedgerStatus = rebuilt.rolled
+        ? `已重建统计：重算 ${fmtCount(rebuilt.replaced)} 行 turn 投影 · 当前 ${fmtCount(rebuilt.after.count)} 条响应 · ${fmtCount(rebuilt.after.total)} tokens`
+        : "";
       renderSettingsOverlay(liveSnapshot(), { animate: true });
       return;
     }
@@ -15414,6 +15469,12 @@ const VERSION = "0.8.0";
     const backupHtml = state.usageHostBackupStatus
       ? `<p class="cltc-sync-status" data-field="usage-host-backup" data-tone="${state.usageHostBackupError ? "warn" : "success"}" role="status">${escapeHtml(state.usageHostBackupStatus)}</p>`
       : "";
+    // 账本按钮（导出/重建）的一次性结果：导出没有下载反馈、重建没有可见结果时，
+    // 用户只能靠这一行判断点击是否生效。
+    const ledgerHtml =
+      state.usageLedgerStatus || state.usageLedgerError
+        ? `<p class="cltc-sync-status" data-field="usage-ledger-action" data-tone="${state.usageLedgerError ? "warn" : "success"}" role="status">${escapeHtml(state.usageLedgerError || state.usageLedgerStatus)}</p>`
+        : "";
     return `
       <div class="cltc-group">
         <div class="cltc-group-head">
@@ -15446,6 +15507,7 @@ const VERSION = "0.8.0";
               </span>
             </div>
             ${backupHtml}
+            ${ledgerHtml}
           </div>
         </div>
       </div>
@@ -16905,6 +16967,19 @@ const VERSION = "0.8.0";
     if (state.shimmerRunning) pulseCadencedShimmer();
   }
 
+  // 未处理的 Promise 拒绝兜底：脚本里大量 `void xxx()` 形式的后台任务，
+  // 没有这个监听时它们会静默消失，界面上什么都不会变。
+  function handleUnhandledRejection(event) {
+    const reason = event?.reason;
+    state.unhandledRejectionCount += 1;
+    state.lastUnhandledRejection = String((reason && (reason.message || reason)) || "unknown").slice(0, 300);
+    try {
+      console.warn("[Codex Token Cost] unhandled rejection:", reason);
+    } catch {
+      // 控制台不可用时忽略。
+    }
+  }
+
   function start() {
     if (state.started || state.destroyed) return;
     state.started = true;
@@ -16920,6 +16995,7 @@ const VERSION = "0.8.0";
     trackListener(document, "click", handleDocumentClick, true);
     trackListener(document, "pointerdown", handleDocumentPointerDown, true);
     trackListener(document, "visibilitychange", handleVisibilityChange, false);
+    trackListener(window, "unhandledrejection", handleUnhandledRejection, false);
     installOfficialModelObserver();
     installTaskRunningObserver();
     scheduleProfileQueryClientDiscovery();
@@ -17271,6 +17347,9 @@ const VERSION = "0.8.0";
       saveProfilePrefsFromEditor,
       profileSaveToastHtml,
       generalSettingsHtml,
+      // 设置页点击分发：四个账本按钮的行为只能从分发层验证，单独测函数测不到接线错误。
+      handleSettingsClick: (event) => handleSettingsClick(event),
+      handleUnhandledRejection: (event) => handleUnhandledRejection(event),
       usageSyncRun: (options) => runUsageSync(options || {}),
       usageSyncState: () => usageSyncTestState(),
       usageSyncParseLines: (lines, summary) => usageSyncParseRolloutLines(lines, summary || { lineErrors: 0 }),
@@ -17296,6 +17375,8 @@ const VERSION = "0.8.0";
       usageFactRestoreFromHostBackup: (options) => usageFactRestoreFromHostBackup(options || {}),
       usageFactPruneHostBackups: (clientOrOptions, maybeOptions) => usageFactPruneHostBackups(clientOrOptions && clientOrOptions.sendRequest ? clientOrOptions : (clientOrOptions && clientOrOptions.client) || appServerSyncClient(), maybeOptions || clientOrOptions || {}),
       usageFactExport: (format) => usageFactExport(format || "json"),
+      // 下载封装：MIME 与文件名只能从这里验证（按钮固定走 json）。
+      usageFactDownloadExport: (format) => usageFactDownloadExport(format || "json"),
       usageFactImport: (text) => usageFactImport(text),
       usageTimeModel: (turns) => usageTimeModel(turns),
       // 跨午夜拆分（验收 #14）
@@ -17335,6 +17416,11 @@ const VERSION = "0.8.0";
         hostBackupStatus: state.usageHostBackupStatus,
         hostBackupError: state.usageHostBackupError,
         hostBackupAt: state.usageHostBackupAt,
+        // 导出/导入/重建的一次性反馈：只驱动状态行，不参与统计口径。
+        ledgerStatus: state.usageLedgerStatus,
+        ledgerError: state.usageLedgerError,
+        unhandledRejectionCount: state.unhandledRejectionCount,
+        lastUnhandledRejection: state.lastUnhandledRejection,
         epochs: state.usageLiveEpochs,
         epochWarning: state.usageLiveEpochWarnings,
       }),
@@ -17347,6 +17433,8 @@ const VERSION = "0.8.0";
         state.usageFactFallbackTurns = new Map();
         state.usageFactFallbackThreads = new Map();
         state.usageFactReconcile = { threads: new Map(), updatedAt: 0, rows: [] };
+        state.usageLedgerStatus = "";
+        state.usageLedgerError = "";
       },
       usageSyncCollectRows: (dirHandle, options) => usageSyncCollectRows(dirHandle, options || {}),
       usageSyncDecodeBytes: (bytes) => usageSyncDecodeBytes(bytes),

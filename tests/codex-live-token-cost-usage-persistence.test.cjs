@@ -217,6 +217,10 @@ function createFakeIndexedDB() {
 // --- harness ----------------------------------------------------------------
 
 const storage = new Map();
+// 按钮分发测试需要拿到脚本创建的隐藏 <input>，才能触发 cancel/change。
+const createdNodes = [];
+// 导出走 Blob + ObjectURL：记录下去，才能断言 MIME 与文件名。
+const downloads = [];
 let currentNow = Date.parse("2026-10-22T00:00:00.000Z");
 class FixedDate extends Date {
   constructor(...args) {
@@ -234,6 +238,31 @@ class FixedDate extends Date {
 }
 
 const fake = createFakeIndexedDB();
+
+// 导出走 Blob：只记录 MIME 与正文，不做真实下载。
+class TestBlob {
+  constructor(parts, options = {}) {
+    this.parts = parts;
+    this.type = (options && options.type) || "";
+    this.size = parts.reduce((sum, part) => sum + String(part).length, 0);
+  }
+}
+class TestURL extends URL {
+  static createObjectURL(blob) {
+    const url = `blob:test/${downloads.length}`;
+    downloads.push({ url, blob });
+    return url;
+  }
+  static revokeObjectURL() {}
+}
+// 导入走 FileReader：文件对象用 { content } 提供正文。
+class TestFileReader {
+  readAsText(file) {
+    this.result = String((file && file.content) || "");
+    const handler = this.onload;
+    if (typeof handler === "function") Promise.resolve().then(() => handler());
+  }
+}
 
 const context = {
   console,
@@ -263,7 +292,9 @@ const context = {
   Number,
   String,
   RegExp,
-  URL,
+  URL: TestURL,
+  Blob: TestBlob,
+  FileReader: TestFileReader,
   atob(value) {
     return Buffer.from(value, "base64").toString("binary");
   },
@@ -295,17 +326,50 @@ const context = {
     readyState: "loading",
     addEventListener() {},
     removeEventListener() {},
-    createElement() {
-      return {
+    createElement(tagName) {
+      const node = {
+        tagName: String(tagName || "").toUpperCase(),
         style: {},
         dataset: {},
+        attributes: {},
         children: [],
+        files: null,
+        listeners: new Map(),
+        removed: false,
+        clicked: 0,
         classList: { add() {}, remove() {}, contains() { return false; } },
-        setAttribute() {},
-        removeAttribute() {},
-        appendChild() {},
-        remove() {},
+        setAttribute(name, value) {
+          this.attributes[name] = value;
+        },
+        removeAttribute(name) {
+          delete this.attributes[name];
+        },
+        appendChild(child) {
+          this.children.push(child);
+        },
+        addEventListener(type, handler) {
+          if (!this.listeners.has(type)) this.listeners.set(type, []);
+          this.listeners.get(type).push(handler);
+        },
+        removeEventListener(type, handler) {
+          const list = this.listeners.get(type);
+          if (!list) return;
+          const at = list.indexOf(handler);
+          if (at >= 0) list.splice(at, 1);
+        },
+        // 测试专用：模拟用户点击/取消造成的浏览器事件。
+        fire(type) {
+          for (const handler of Array.from(this.listeners.get(type) || [])) handler({ type, target: this });
+        },
+        click() {
+          this.clicked += 1;
+        },
+        remove() {
+          this.removed = true;
+        },
       };
+      createdNodes.push(node);
+      return node;
     },
     getElementById() {
       return { remove() {} };
@@ -970,6 +1034,216 @@ function createFakeAppServer(files = {}) {
     // 对账 / 主机能力不再渲染到数据同步区块（内部 API 仍保留，见 A/B 组用例）。
     assert.equal(html.includes("逐响应覆盖率"), false, "the reconcile line is no longer rendered");
     assert.equal(html.includes("主机能力"), false, "the host capability line is no longer rendered");
+  }
+
+  // ==========================================================================
+  // B15. the four ledger buttons are wired to their actions
+  // ==========================================================================
+  {
+    // 只测函数测不到接线错误：把 export 接到 rebuild 上也全绿，所以从分发层驱动。
+    const clickButton = (action) => {
+      const selector = `[data-action='${action}']`;
+      api.handleSettingsClick({
+        target: {
+          classList: { contains: () => false },
+          closest: (value) => (value === selector ? {} : null),
+        },
+      });
+    };
+    const createdSince = (mark) => createdNodes.slice(mark);
+    let mark = 0;
+    let states = null;
+
+    // --- 导出：MIME、文件名、状态行 -----------------------------------------
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "resp_btn_export",
+      threadId: "01thread-buttons",
+      turnId: "turn-buttons-1",
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+      observedAtMs: currentNow,
+      source: "rollout_record",
+    });
+    downloads.length = 0;
+    mark = createdNodes.length;
+    clickButton("export-usage");
+    assert.equal(downloads.length, 1, "the export button downloads the ledger");
+    assert.equal(downloads[0].blob.type, "application/json", "a JSON export is not labelled as NDJSON");
+    const anchor = createdSince(mark).find((node) => node.tagName === "A");
+    assert.ok(anchor, "the export builds a download anchor");
+    assert.match(anchor.download, /^codex-usage-ledger-\d{4}-\d{2}-\d{2}\.json$/, "the JSON export keeps the .json extension");
+    assert.equal(anchor.clicked, 1, "the download anchor is clicked exactly once");
+    states = api.usageFactState();
+    assert.equal(states.ledgerError, "", "a successful export leaves no error behind");
+    assert.equal(states.ledgerStatus, "已导出 1 条响应（JSON）", "the export reports how many responses it wrote");
+    assert.ok(
+      api.generalSettingsHtml().includes('data-field="usage-ledger-action"'),
+      "the ledger status line is rendered in the settings panel",
+    );
+
+    // NDJSON 走同一封装：MIME 与扩展名必须跟着格式走。
+    downloads.length = 0;
+    mark = createdNodes.length;
+    assert.equal(api.usageFactDownloadExport("ndjson"), true, "the NDJSON export still works");
+    assert.equal(downloads[0].blob.type, "application/x-ndjson", "an NDJSON export is labelled as NDJSON");
+    assert.match(createdSince(mark).find((node) => node.tagName === "A").download, /\.ndjson$/, "the NDJSON export keeps the .ndjson extension");
+
+    // 浏览器拦下载时必须留痕，不能静默失败。
+    const RealBlob = context.Blob;
+    context.Blob = class {
+      constructor() {
+        throw new Error("download blocked by the test");
+      }
+    };
+    try {
+      clickButton("export-usage");
+    } finally {
+      context.Blob = RealBlob;
+    }
+    states = api.usageFactState();
+    assert.equal(states.ledgerStatus, "", "a blocked export must not claim success");
+    assert.match(states.ledgerError, /导出失败/, "a blocked export is surfaced on the status line");
+
+    // --- 重建：重算 turn 投影并报告结果 --------------------------------------
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "resp_btn_rebuild_1",
+      threadId: "01thread-buttons",
+      turnId: "turn-buttons-r1",
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+      observedAtMs: currentNow,
+      source: "rollout_record",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_btn_rebuild_2",
+      threadId: "01thread-buttons",
+      turnId: "turn-buttons-r2",
+      usage: { input_tokens: 20, output_tokens: 2, total_tokens: 22 },
+      observedAtMs: currentNow + 1000,
+      source: "rollout_record",
+    });
+    clickButton("rebuild-usage");
+    states = api.usageFactState();
+    assert.equal(states.ledgerError, "", "a successful rebuild leaves no error behind");
+    assert.match(
+      states.ledgerStatus,
+      /^已重建统计：重算 \d+ 行 turn 投影 · 当前 2 条响应 · 33 tokens$/,
+      "the rebuild reports the recomputed projection",
+    );
+
+    // --- 备份：没有本地通道时把原因写回主机备份行，且不动账本状态行 ----------
+    api.usageSyncResetClient();
+    const ledgerStatusBeforeBackup = api.usageFactState().ledgerStatus;
+    clickButton("backup-usage");
+    await settle();
+    states = api.usageFactState();
+    assert.equal(states.hostBackupStatus, "主机备份暂不可用（未找到 Codex 本地通道）", "the backup button explains the missing local channel");
+    assert.equal(states.ledgerStatus, ledgerStatusBeforeBackup, "the backup button does not touch the ledger status line");
+
+    // --- 导入：change 路径合并、等持久化、自报结果 ---------------------------
+    api.usageFactReset();
+    const payload = JSON.stringify({
+      schemaVersion: 2,
+      generatedAt: currentNow,
+      count: 2,
+      total: 33,
+      responses: [
+        {
+          responseId: "resp_btn_import_1",
+          threadId: "01thread-buttons",
+          turnId: "turn-buttons-i1",
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+          observedAtMs: currentNow,
+          source: "rollout_record",
+        },
+        {
+          responseId: "resp_btn_import_2",
+          threadId: "01thread-buttons",
+          turnId: "turn-buttons-i2",
+          usage: { input_tokens: 20, output_tokens: 2, total_tokens: 22 },
+          observedAtMs: currentNow + 1000,
+          source: "rollout_record",
+        },
+      ],
+    });
+    mark = createdNodes.length;
+    const pendingImport = api.usageFactImportFile();
+    const fileInput = createdSince(mark).find((node) => node.tagName === "INPUT");
+    assert.ok(fileInput, "the import button creates a file input");
+    assert.equal(fileInput.type, "file", "the input is a file picker");
+    assert.equal(fileInput.style.display, "none", "the file picker stays hidden");
+    assert.equal(fileInput.clicked, 1, "the file picker is opened");
+    let settledImport = null;
+    pendingImport.then((value) => {
+      settledImport = value;
+    });
+    fileInput.files = [{ content: payload }];
+    fileInput.fire("change");
+    await settle(80);
+    assert.ok(settledImport, "the import promise settles once the file dialog reports a file");
+    assert.equal(settledImport.imported, 2, "the dialog import merges both responses");
+    assert.equal(settledImport.persisted, true, "the import waits for the IndexedDB write");
+    assert.equal(settledImport.persist, undefined, "the internal persist promise is not part of the result");
+    assert.equal(fileInput.removed, true, "the hidden input is detached after the import");
+    states = api.usageFactState();
+    assert.equal(states.ledgerError, "", "a successful import leaves no error behind");
+    assert.equal(states.ledgerStatus, "已导入 2 条响应（跳过 0 条重复）", "the import reports what it merged");
+    assert.equal(
+      fake.dumpStore(PROFILE_DB_NAME, RESPONSES_STORE).some((row) => row.responseId === "resp_btn_import_1"),
+      true,
+      "the imported facts reach IndexedDB",
+    );
+
+    // --- 导入：取消文件对话框必须结束 Promise，不能悬挂 ----------------------
+    mark = createdNodes.length;
+    const pendingCancel = api.usageFactImportFile();
+    const cancelInput = createdSince(mark).find((node) => node.tagName === "INPUT");
+    let settledCancel = null;
+    pendingCancel.then((value) => {
+      settledCancel = value;
+    });
+    cancelInput.fire("cancel");
+    await settle();
+    assert.ok(settledCancel, "cancelling the file dialog settles the import promise instead of hanging");
+    assert.equal(settledCancel.canceled, true, "the cancel path is reported as canceled");
+    assert.equal(cancelInput.removed, true, "the hidden input is detached after cancel");
+
+    // --- 导入：写入失败必须回报，不能伪报成功 --------------------------------
+    api.usageFactReset();
+    fake.state.failNextPut = { store: RESPONSES_STORE, error: new Error("simulated quota") };
+    mark = createdNodes.length;
+    const pendingFailure = api.usageFactImportFile();
+    const failureInput = createdSince(mark).find((node) => node.tagName === "INPUT");
+    let settledFailure = null;
+    pendingFailure.then((value) => {
+      settledFailure = value;
+    });
+    failureInput.files = [{ content: payload }];
+    failureInput.fire("change");
+    await settle(80);
+    assert.ok(settledFailure, "the import still settles when the write fails");
+    assert.equal(settledFailure.persisted, false, "a failed IndexedDB write is reported to the caller");
+    states = api.usageFactState();
+    assert.match(states.ledgerError, /写入本地库失败/, "the failed write is surfaced on the status line");
+    assert.match(states.ledgerStatus, /但写入本地库失败/, "the status line says the import did not persist");
+
+    // --- 自动主机备份接线：写入成功后必须排一次防抖备份 ----------------------
+    assert.ok(code.includes("usageFactScheduleHostBackup();"), "a successful fact write schedules the debounced host backup");
+    assert.ok(code.includes("void usageFactBackupToHost({ quiet: true });"), "the automatic backup stays quiet so it cannot overwrite the manual status line");
+
+    // --- 未处理的 Promise 失败必须留痕 ---------------------------------------
+    const realConsole = context.console;
+    context.console = Object.create(realConsole);
+    context.console.warn = () => {};
+    const rejectionsBefore = api.usageFactState().unhandledRejectionCount;
+    try {
+      api.handleUnhandledRejection({ reason: new Error("boom") });
+    } finally {
+      context.console = realConsole;
+    }
+    states = api.usageFactState();
+    assert.equal(states.unhandledRejectionCount, rejectionsBefore + 1, "an unhandled rejection is counted");
+    assert.match(states.lastUnhandledRejection, /boom/, "the last rejection message is kept for diagnostics");
   }
 
   console.log("usage persistence P0 tests passed");
