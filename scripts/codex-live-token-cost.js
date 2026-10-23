@@ -133,7 +133,9 @@ const VERSION = "0.8.0";
   const PROFILE_LEDGER_STORE_RATE_LIMITS = "profileRateLimits";
   const PROFILE_LEDGER_STORE_OFFICIAL_SNAPSHOTS = "profileOfficialSnapshots";
   const PROFILE_LEDGER_STORE_META = "profileMeta";
-  const USAGE_FACT_SCHEMA_VERSION = 2;
+  // v3：逐响应事实开始保存 model / effort。旧事实（v2）归一化后 model 为空，
+  // 下一次同步会用 rollout 里的真实模型回填，不再永久显示「未知」。
+  const USAGE_FACT_SCHEMA_VERSION = 3;
   const USAGE_FACT_META_KEY = "usage-facts";
   const USAGE_FACT_MIGRATION_KEY = "legacy-migration";
   const USAGE_FACT_HOST_BACKUP_KEY = "host-backup";
@@ -149,7 +151,9 @@ const VERSION = "0.8.0";
   const USAGE_SYNC_STORE_HANDLES = "handles";
   const USAGE_SYNC_STORE_FILE_STAMPS = "fileStamps";
   const USAGE_SYNC_DIR_HANDLE_KEY = "codex-data-root";
-  const USAGE_SYNC_FILE_STAMPS_KEY = "rollout-files";
+  // v2：事实层开始带模型，旧的增量戳会让未变更的 rollout 永远不再解析，
+  // 所以换 key 触发一次全量重读，把历史 turn 的模型补齐。
+  const USAGE_SYNC_FILE_STAMPS_KEY = "rollout-files-v2";
   const USAGE_SYNC_PICKER_ID = "codex-live-token-cost";
   const USAGE_SYNC_LAST_RESULT_KEY = "__codexLiveTokenCostUsageSyncLastV1";
   const USAGE_SYNC_SOURCE = "codex-usage-backfill";
@@ -795,8 +799,10 @@ const VERSION = "0.8.0";
       completedAt,
       durationMs: Math.max(0, Math.round(Number(raw.durationMs) || 0)),
       durationStatus,
-      model: normalizeText(raw.model, 120) || UNKNOWN_MODEL,
+      model: usageModelLabel(raw.model),
       usage: hasUsage ? normalizeUsage(raw.usage) : null,
+      // 逐响应 id 是跨来源去重的可靠身份（实时 / 同步 / 导入）。
+      responseIds: usageTurnResponseIdList(raw),
       costUsd: Number.isFinite(Number(raw.costUsd)) && Number(raw.costUsd) > 0 ? Number(raw.costUsd) : null,
       fastMode: typeof raw.fastMode === "boolean" ? raw.fastMode : null,
       effort: normalizeReasoningEffort(raw.effort || raw.reasoningEffort),
@@ -963,6 +969,8 @@ const VERSION = "0.8.0";
     if (!toCount(next.callCount) && toCount(existing.callCount)) merged.callCount = existing.callCount;
     if (typeof next.fastMode !== "boolean" && typeof existing.fastMode === "boolean") merged.fastMode = existing.fastMode;
     if (!next.effort && existing.effort) merged.effort = existing.effort;
+    // 逐响应 id 只增不减：重复观察同一 turn 不能把已知身份洗掉。
+    merged.responseIds = Array.from(new Set([...(existing.responseIds || []), ...(next.responseIds || [])]));
     if (profileDurationRank(next.durationStatus) < profileDurationRank(existing.durationStatus)) {
       merged.durationStatus = existing.durationStatus;
       merged.completedAt = existing.completedAt;
@@ -1043,6 +1051,12 @@ const VERSION = "0.8.0";
         profileLedgerRebuildRollup();
         await profileLedgerWriteSnapshot(db);
         saveProfileLedgerSnapshot();
+        // Profile 库是异步加载的；加载完成后补一次 legacy 模型回填与 hydrate，
+        // 否则迁移事实会一直显示为「未知」。
+        if (state.usageFacts.size) {
+          usageFactBackfillLegacyModels();
+          usageFactHydrateLedger();
+        }
         if (profileDataOverrideEnabledFor()) syncProfileUsageQueryCache();
         else scheduleProfileUsageRefresh(0);
         scheduleRender();
@@ -1152,6 +1166,20 @@ const VERSION = "0.8.0";
     return normalizeText(responseId, 200);
   }
 
+  // Codex 旧版本 / 导入数据会把缺失模型写成英文 "unknown"；统一成本地未知模型，
+  // 避免模型明细里同时出现 "unknown" 和 "未知" 两行。
+  function usageModelLabel(value, fallback = UNKNOWN_MODEL) {
+    const name = normalizeText(value, 120);
+    if (!name || name.toLowerCase() === "unknown" || name === UNKNOWN_MODEL) return fallback;
+    return name;
+  }
+
+  // turn 的逐响应 id 列表：实时捕获 / 历史同步 / 导入三条来源之间最可靠的去重身份。
+  function usageTurnResponseIdList(turn) {
+    const raw = turn?.responseIds || turn?.response_ids;
+    return Array.from(new Set((Array.isArray(raw) ? raw : []).map((id) => normalizeText(id, 200)).filter(Boolean)));
+  }
+
   function usageFactNormalize(record) {
     if (!record || typeof record !== "object") return null;
     const responseId = usageFactKey(record.responseId || record.response_id);
@@ -1163,6 +1191,9 @@ const VERSION = "0.8.0";
       threadId: normalizeText(record.threadId || record.thread_id, 240),
       turnId: normalizeText(record.turnId || record.turn_id, 240),
       rootTurnId: normalizeText(record.rootTurnId || record.root_turn_id, 240),
+      // 模型归到「每条响应」而不是「每轮」：一轮里换模型也能正确计费。
+      model: usageModelLabel(record.model || record.model_name, ""),
+      effort: normalizeReasoningEffort(record.effort || record.reasoningEffort || record.reasoning_effort),
       usage,
       turnCumulative: usageSyncRawUsageShape(record.turnCumulative || record.turn_token_usage),
       threadCumulative: usageSyncRawUsageShape(record.threadCumulative || record.thread_token_usage),
@@ -1177,12 +1208,22 @@ const VERSION = "0.8.0";
     if (!next) return existing;
     // 同一 response_id 取字段更全的一条：累计字段不能被更薄的记录覆盖。
     const merged = { ...existing };
-    for (const field of ["threadId", "turnId", "rootTurnId"]) {
+    for (const field of ["threadId", "turnId", "rootTurnId", "effort"]) {
       if (!merged[field] && next[field]) merged[field] = next[field];
     }
+    // 模型：rollout 是云端事实，优先于实时通知里可能过期的当前模型。
+    if (next.model && (!merged.model || next.source === "rollout_record")) merged.model = next.model;
     if (!merged.turnCumulative && next.turnCumulative) merged.turnCumulative = next.turnCumulative;
     if (!merged.threadCumulative && next.threadCumulative) merged.threadCumulative = next.threadCumulative;
     if (!merged.observedAtMs && next.observedAtMs) merged.observedAtMs = next.observedAtMs;
+    // 身份：实时通知拿不到真实 turn_id 时用的是本地生成的 id；rollout 到了以后
+    // 把它归到真实 turn，避免同一响应在账本里留下两条 turn 行。
+    if (next.source === "rollout_record" && merged.source === "live_notification") {
+      if (next.turnId) merged.turnId = next.turnId;
+      if (next.threadId) merged.threadId = next.threadId;
+      if (next.rootTurnId) merged.rootTurnId = next.rootTurnId;
+      merged.source = next.source;
+    }
     return merged;
   }
 
@@ -1195,6 +1236,29 @@ const VERSION = "0.8.0";
     return merged;
   }
 
+  // 旧账本迁移出来的事实行是整轮聚合，不是逐响应记录；同一线程一旦有
+  // rollout record，就必须让位，否则整轮聚合会叠加在逐响应明细之上。
+  function usageFactSupersededIds() {
+    const records = Array.from(state.usageFacts.values());
+    const recordedThreads = new Set();
+    for (const record of records) {
+      if (record.source !== "legacy-migration" && record.threadId) recordedThreads.add(record.threadId);
+    }
+    const superseded = new Set();
+    for (const record of records) {
+      if (record.source === "legacy-migration" && record.threadId && recordedThreads.has(record.threadId)) {
+        superseded.add(record.responseId);
+      }
+    }
+    return superseded;
+  }
+
+  function usageFactAuthoritativeRecords() {
+    const superseded = usageFactSupersededIds();
+    const records = Array.from(state.usageFacts.values());
+    return superseded.size ? records.filter((record) => !superseded.has(record.responseId)) : records;
+  }
+
   function usageFactTotals() {
     let total = 0;
     let count = 0;
@@ -1205,11 +1269,65 @@ const VERSION = "0.8.0";
     return { count, total };
   }
 
+  function usageFactAuthoritativeTotals() {
+    let total = 0;
+    let count = 0;
+    for (const record of usageFactAuthoritativeRecords()) {
+      count += 1;
+      total += toCount(record.usage?.total_tokens);
+    }
+    return { count, total };
+  }
+
+  // 旧账本迁移事实没带 model；从 Profile / 旧快照按 turnId 回填，
+  // 避免 UI 留下没有意义的「未知」模型行。
+  function usageFactLegacyModelIndex() {
+    ensureProfileLedgerLoaded();
+    const index = new Map();
+    const add = (turns) => {
+      for (const turn of Array.isArray(turns) ? turns : []) {
+        const turnId = normalizeText(turn?.turnId, 240);
+        const model = usageModelLabel(turn?.model, "");
+        if (!turnId || !model || index.has(turnId)) continue;
+        index.set(turnId, { model, effort: normalizeReasoningEffort(turn?.effort) });
+      }
+    };
+    add(state.profileLedger?.turns);
+    try {
+      add(loadJson(LOCAL_USAGE_KEY, null)?.turns);
+    } catch {
+      // best effort
+    }
+    try {
+      add(loadJson(PROFILE_LEDGER_SNAPSHOT_KEY, null)?.turns);
+    } catch {
+      // best effort
+    }
+    return index;
+  }
+
+  function usageFactBackfillLegacyModels() {
+    const index = usageFactLegacyModelIndex();
+    if (!index.size) return { updated: 0 };
+    const changed = [];
+    for (const [responseId, record] of state.usageFacts) {
+      if (record?.source !== "legacy-migration" || record.model) continue;
+      const found = index.get(normalizeText(record.turnId, 240));
+      if (!found?.model) continue;
+      const next = { ...record, model: found.model };
+      if (found.effort && !next.effort) next.effort = found.effort;
+      state.usageFacts.set(responseId, next);
+      changed.push(next);
+    }
+    if (changed.length) void usageFactPersistResponses(changed).catch(() => {});
+    return { updated: changed.length };
+  }
+
   function usageFactTurnTotals(turnId) {
     let total = 0;
     let count = 0;
     let threadCumulative = null;
-    for (const record of state.usageFacts.values()) {
+    for (const record of usageFactAuthoritativeRecords()) {
       if (record.turnId !== turnId) continue;
       count += 1;
       total += toCount(record.usage?.total_tokens);
@@ -1220,20 +1338,43 @@ const VERSION = "0.8.0";
 
   function usageFactThreads() {
     const threads = new Map();
-    for (const record of state.usageFacts.values()) {
+    for (const record of usageFactAuthoritativeRecords()) {
       if (!record.threadId) continue;
-      const entry = threads.get(record.threadId) || { threadId: record.threadId, total: 0, responses: 0, expectedTotal: 0 };
+      const entry = threads.get(record.threadId) || {
+        threadId: record.threadId,
+        total: 0,
+        responses: 0,
+        expectedTotal: 0,
+        counterSamples: [],
+      };
       entry.total += toCount(record.usage?.total_tokens);
       entry.responses += 1;
-      if (record.threadCumulative) entry.expectedTotal = Math.max(entry.expectedTotal, toCount(record.threadCumulative.total_tokens));
+      if (record.threadCumulative) {
+        const cumulative = toCount(record.threadCumulative.total_tokens);
+        entry.expectedTotal = Math.max(entry.expectedTotal, cumulative);
+        if (cumulative > 0) entry.counterSamples.push({ at: toCount(record.observedAtMs), cumulative });
+      }
       threads.set(record.threadId, entry);
+    }
+    // 累计计数器会在新 epoch / 任务切换时重置；回落次数用来区分
+    // 「真实少记」和「计数器重置」——后者不能算进真实差异。
+    for (const entry of threads.values()) {
+      const samples = (entry.counterSamples || []).sort((left, right) => left.at - right.at);
+      let previous = 0;
+      let resets = 0;
+      for (const sample of samples) {
+        if (sample.cumulative < previous) resets += 1;
+        previous = sample.cumulative;
+      }
+      entry.counterResets = resets;
+      delete entry.counterSamples;
     }
     // 降级 turn（只有 token_count、没有 record）的响应数单独记，
     // 用来算覆盖率：recorded / (recorded + fallback)。
     for (const [turnId, count] of state.usageFactFallbackTurns) {
       const threadId = normalizeText(state.usageFactFallbackThreads.get(turnId), 240);
       if (!threadId) continue;
-      const entry = threads.get(threadId) || { threadId, total: 0, responses: 0, expectedTotal: 0 };
+      const entry = threads.get(threadId) || { threadId, total: 0, responses: 0, expectedTotal: 0, counterResets: 0 };
       entry.fallback = (entry.fallback || 0) + toCount(count);
       threads.set(threadId, entry);
     }
@@ -1241,12 +1382,13 @@ const VERSION = "0.8.0";
   }
 
   // 对账：sum(responses.usage.total) 对比 thread_token_usage / threads.tokens_used。
-  // 差异只展示，不静默修正。
+  // 累计计数器重置的线程单独标成 counter-reset，不混进真实差异。
   function usageFactReconcileReport() {
     const threads = usageFactThreads();
     const rows = [];
     for (const entry of threads.values()) {
       const delta = entry.expectedTotal ? entry.expectedTotal - entry.total : 0;
+      const counterResets = toCount(entry.counterResets);
       const fallback = toCount(entry.fallback);
       // 覆盖率：有 record 的响应数 /（有 record + 只有 token_count 的降级响应数）。
       const estimated = entry.responses + fallback;
@@ -1260,7 +1402,8 @@ const VERSION = "0.8.0";
         actualTotal: entry.total,
         expectedTotal: entry.expectedTotal,
         delta,
-        status: !entry.expectedTotal ? "unknown" : delta === 0 ? "matched" : "diff",
+        counterResets,
+        status: !entry.expectedTotal ? "unknown" : delta === 0 ? "matched" : counterResets > 0 ? "counter-reset" : "diff",
       });
     }
     rows.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta) || left.threadId.localeCompare(right.threadId));
@@ -1272,7 +1415,12 @@ const VERSION = "0.8.0";
     const report = state.usageFactReconcile?.rows || [];
     const matched = report.filter((row) => row.status === "matched").length;
     const diff = report.filter((row) => row.status === "diff").length;
-    const delta = report.reduce((sum, row) => sum + Math.abs(row.delta), 0);
+    const counterReset = report.filter((row) => row.status === "counter-reset").length;
+    const unknown = report.filter((row) => row.status === "unknown").length;
+    const delta = report.filter((row) => row.status === "diff").reduce((sum, row) => sum + Math.abs(row.delta), 0);
+    const counterResetDelta = report
+      .filter((row) => row.status === "counter-reset")
+      .reduce((sum, row) => sum + Math.abs(row.delta), 0);
     const estimated = report.reduce((sum, row) => sum + toCount(row.estimatedResponses), 0);
     const recorded = report.reduce((sum, row) => sum + toCount(row.responses), 0);
     const coverage = estimated ? Math.round((recorded / estimated) * 100) : 100;
@@ -1280,7 +1428,10 @@ const VERSION = "0.8.0";
       threads: report.length,
       matched,
       diff,
+      counterReset,
+      unknown,
       delta,
+      counterResetDelta,
       coverage,
       recorded,
       estimated,
@@ -1558,6 +1709,8 @@ const VERSION = "0.8.0";
           responseId,
           threadId: turnSessionKey(turn),
           turnId,
+          model: turn?.model,
+          effort: turn?.effort,
           usage: {
             input_tokens: toCount(callUsage.input),
             cached_input_tokens: toCount(callUsage.cached),
@@ -1574,6 +1727,8 @@ const VERSION = "0.8.0";
           responseId: `legacy:${turnId}:0:${usageKey(usage)}`,
           threadId: turnSessionKey(turn),
           turnId,
+          model: turn?.model,
+          effort: turn?.effort,
           usage: {
             input_tokens: toCount(usage.input),
             cached_input_tokens: toCount(usage.cached),
@@ -1970,9 +2125,10 @@ const VERSION = "0.8.0";
   }
 
   // 由事实派生 turn 行：同一 shape as usageSyncFinalizeTurnRow，供主统计/HUD 使用。
+  // 模型按「该轮出现最多的模型」归属；没有模型时统一显示 UNKNOWN_MODEL。
   function usageFactTurnsFromFacts() {
     const byTurn = new Map();
-    for (const record of state.usageFacts.values()) {
+    for (const record of usageFactAuthoritativeRecords()) {
       const turnId = normalizeText(record.turnId, 240) || `${normalizeText(record.threadId, 240)}:orphan`;
       let entry = byTurn.get(turnId);
       if (!entry) {
@@ -1982,6 +2138,8 @@ const VERSION = "0.8.0";
           usage: { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 },
           calls: [],
           responseIds: [],
+          modelCounts: new Map(),
+          effortCounts: new Map(),
           startedAtMs: record.observedAtMs || 0,
           finishedAtMs: record.observedAtMs || 0,
         };
@@ -1990,21 +2148,37 @@ const VERSION = "0.8.0";
       usageSyncSumRawUsage(entry.usage, record.usage);
       entry.responseIds.push(record.responseId);
       entry.calls.push({ usage: record.usage, observedAt: usageSyncIsoOrNull(record.observedAtMs) || undefined });
+      if (record.model) entry.modelCounts.set(record.model, (entry.modelCounts.get(record.model) || 0) + 1);
+      if (record.effort) entry.effortCounts.set(record.effort, (entry.effortCounts.get(record.effort) || 0) + 1);
       if (record.observedAtMs) {
         entry.startedAtMs = entry.startedAtMs ? Math.min(entry.startedAtMs, record.observedAtMs) : record.observedAtMs;
         entry.finishedAtMs = Math.max(entry.finishedAtMs || 0, record.observedAtMs);
       }
     }
+    const mostCommon = (counts) => {
+      let winner = "";
+      let best = 0;
+      for (const [value, count] of counts) {
+        if (count > best) {
+          best = count;
+          winner = value;
+        }
+      }
+      return winner;
+    };
     const rows = [];
     for (const entry of byTurn.values()) {
       const threadKey = entry.threadId ? `local:${entry.threadId}` : "";
       if (!threadKey) continue;
+      const model = mostCommon(entry.modelCounts);
+      const effort = mostCommon(entry.effortCounts);
       rows.push({
         turnId: entry.turnId,
         sessionKey: threadKey,
         threadKey,
         threadAttributionStatus: "reliable",
-        model: "unknown",
+        model: model || UNKNOWN_MODEL,
+        ...(effort ? { effort } : {}),
         createdAt: usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
         startedAt: usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
         finishedAt: usageSyncIsoOrNull(entry.finishedAtMs) || usageSyncIsoOrNull(entry.startedAtMs) || new Date(0).toISOString(),
@@ -2022,30 +2196,124 @@ const VERSION = "0.8.0";
     return rows;
   }
 
+  // 用事实层重算一组 response_id 的用量；任何一个 id 没有事实就返回 null，
+  // 调用方据此保留原有 usage，绝不静默丢数据。
+  function usageFactAggregateForIds(responseIds) {
+    const superseded = usageFactSupersededIds();
+    const ids = (Array.isArray(responseIds) ? responseIds : []).filter((responseId) => !superseded.has(responseId));
+    if (!ids.length) return null;
+    const usage = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 };
+    const calls = [];
+    let startedAtMs = 0;
+    let finishedAtMs = 0;
+    for (const responseId of ids) {
+      const record = state.usageFacts.get(responseId);
+      if (!record) return null;
+      usageSyncSumRawUsage(usage, record.usage);
+      calls.push({ usage: record.usage, observedAt: usageSyncIsoOrNull(record.observedAtMs) || undefined });
+      if (record.observedAtMs) {
+        startedAtMs = startedAtMs ? Math.min(startedAtMs, record.observedAtMs) : record.observedAtMs;
+        finishedAtMs = Math.max(finishedAtMs, record.observedAtMs);
+      }
+    }
+    return { usage: normalizeUsage(usage), calls, callCount: calls.length, startedAtMs, finishedAtMs };
+  }
+
   // 事实层 -> 主账本：IndexedDB 是事实源，localStorage 只是 UI 快照。
-  // 这里用事实派生的 turn 覆盖同 turnId 的镜像行，保证清空 localStorage 后统计仍可恢复。
+  // 匹配顺序：turnId -> response_id。实时 turn 的本地 id 与 rollout 的真实 id 不同，
+  // 只按 turnId 匹配会为同一份响应再加一行（重复计数）。
+  // 最后再按 response_id 做一次全局去重：同一响应只允许属于一条账本行。
   function usageFactHydrateLedger() {
     if (!state.usageFacts.size) return 0;
+    if (Array.from(state.usageFacts.values()).some((record) => record.source === "legacy-migration" && !record.model)) {
+      usageFactBackfillLegacyModels();
+    }
     const rows = usageFactTurnsFromFacts();
     if (!rows.length) return 0;
-    const byId = new Map(state.localLedger.map((turn) => [normalizeText(turn?.turnId, 240), turn]));
+    const superseded = usageFactSupersededIds();
+    if (superseded.size) {
+      state.localLedger = state.localLedger.filter((turn) => {
+        const ids = usageTurnResponseIdList(turn);
+        return !ids.length || ids.some((responseId) => !superseded.has(responseId));
+      });
+    }
+    const byId = new Map();
+    const byResponse = new Map();
+    for (const turn of state.localLedger) {
+      const turnId = normalizeText(turn?.turnId, 240);
+      if (turnId) byId.set(turnId, turn);
+      for (const responseId of usageTurnResponseIdList(turn)) if (!byResponse.has(responseId)) byResponse.set(responseId, turn);
+    }
     let replaced = 0;
     for (const row of rows) {
-      const existing = byId.get(row.turnId);
+      let existing = byId.get(row.turnId);
+      if (!existing) {
+        for (const responseId of row.responseIds || []) {
+          const candidate = byResponse.get(responseId);
+          if (candidate) {
+            existing = candidate;
+            break;
+          }
+        }
+      }
       if (!existing) {
         byId.set(row.turnId, row);
+        for (const responseId of row.responseIds || []) byResponse.set(responseId, row);
         continue;
       }
-      // 事实的 usage 优先：镜像是 UI 快照，可能被裁剪或滞后。
-      existing.usage = row.usage;
-      existing.callCount = row.callCount;
-      existing.calls = row.calls;
-      existing.responseIds = row.responseIds;
-      existing.usageSource = row.usageSource;
+      // 用「已有行 + 事实行」的 response_id 并集重算，避免同一响应被两行各算一次。
+      const ids = Array.from(new Set([...usageTurnResponseIdList(existing), ...(row.responseIds || [])]));
+      const aggregate = usageFactAggregateForIds(ids);
+      existing.responseIds = ids;
+      if (aggregate) {
+        existing.usage = aggregate.usage;
+        existing.calls = aggregate.calls;
+        existing.callCount = aggregate.callCount;
+        if (aggregate.startedAtMs) existing.startedAt = usageSyncIsoOrNull(aggregate.startedAtMs) || existing.startedAt;
+        if (aggregate.finishedAtMs) existing.finishedAt = usageSyncIsoOrNull(aggregate.finishedAtMs) || existing.finishedAt;
+        // 只有全部响应都有事实时才升级口径；部分命中时保留原来源标签。
+        existing.usageSource = row.usageSource;
+      }
+      // 事实里的真实模型优先；未知不覆盖已知。
+      if (row.model && row.model !== UNKNOWN_MODEL) existing.model = row.model;
+      if (row.effort && !existing.effort) existing.effort = row.effort;
       if (!existing.startedAt || String(existing.startedAt) > String(row.startedAt)) existing.startedAt = row.startedAt;
+      if (!existing.createdAt || String(existing.createdAt) > String(row.createdAt)) existing.createdAt = row.createdAt;
+      byId.set(row.turnId, existing);
+      const existingId = normalizeText(existing.turnId, 240);
+      if (existingId) byId.set(existingId, existing);
+      for (const responseId of ids) byResponse.set(responseId, existing);
       replaced += 1;
     }
-    const merged = Array.from(byId.values()).sort(
+    // 全局去重：按 response_id 数量从多到少认领，较薄的行只保留未被认领的响应。
+    const unique = Array.from(new Set(byId.values()));
+    const claimed = new Set();
+    const kept = [];
+    for (const turn of unique.sort((left, right) => usageTurnResponseIdList(right).length - usageTurnResponseIdList(left).length || String(left.turnId || "").localeCompare(String(right.turnId || "")))) {
+      const ids = usageTurnResponseIdList(turn);
+      if (!ids.length) {
+        kept.push(turn);
+        continue;
+      }
+      const remaining = ids.filter((responseId) => !claimed.has(responseId));
+      if (!remaining.length) {
+        replaced += 1;
+        continue;
+      }
+      if (remaining.length !== ids.length) {
+        const aggregate = usageFactAggregateForIds(remaining);
+        if (aggregate) {
+          turn.responseIds = remaining;
+          turn.usage = aggregate.usage;
+          turn.calls = aggregate.calls;
+          turn.callCount = aggregate.callCount;
+          replaced += 1;
+        }
+      }
+      for (const responseId of remaining) claimed.add(responseId);
+      kept.push(turn);
+    }
+    const merged = kept.sort(
       (left, right) => String(left.createdAt || left.startedAt || "").localeCompare(String(right.createdAt || right.startedAt || "")) || String(left.turnId || "").localeCompare(String(right.turnId || "")),
     );
     state.localLedger = merged;
@@ -4797,18 +5065,43 @@ const VERSION = "0.8.0";
     return [...(Array.isArray(localTurns) ? localTurns : []), ...extra];
   }
 
-  // 使用统计合并 Profile Ledger（IDB）里的回填数据：turnId 优先去重，其次按用量签名去重，
-  // 避免实时捕获与历史导入的同一轮重复计数。
+  // 使用统计合并 Profile Ledger（IDB）里的回填数据：turnId 优先去重，其次按
+  // response_id 重叠去重（实时行与 rollout 行的 turnId 可能不同），最后按用量签名兜底。
+  // 三层都是为了同一个目标：同一份响应只计入一次。
   function mergeProfileLedgerTurns(turns) {
     const base = (Array.isArray(turns) ? turns : []).slice();
     const ids = new Set();
     const keys = new Set();
-    for (const turn of base) {
+    const responseIds = new Set();
+    const remember = (turn) => {
       const id = normalizeText(turn?.turnId, 240);
       if (id) ids.add(id);
       const key = codexppTokenKey(turn);
       if (key) keys.add(key);
-    }
+      for (const responseId of usageTurnResponseIdList(turn)) responseIds.add(responseId);
+    };
+    for (const turn of base) remember(turn);
+    // 事实/回溯行没有 response_id 时无法按 id 去重；旧实时行只记了单次调用，
+    // 会落在同一轮的时间窗里。同一会话内已被逐响应行覆盖的时间窗不再重复计入。
+    const factWindows = base
+      .filter((turn) => usageTurnResponseIdList(turn).length > 0)
+      .map((turn) => ({
+        session: turnSessionKey(turn),
+        start: toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
+        end: toTimestampMs(turn?.finishedAt) || toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt),
+      }))
+      .filter((window) => window.session && window.start);
+    const coveredByFactWindow = (turn) => {
+      if (usageTurnResponseIdList(turn).length > 0) return false;
+      const session = turnSessionKey(turn);
+      const start = toTimestampMs(turn?.startedAt || turn?.createdAt || turn?.observedAt);
+      if (!session || !start) return false;
+      return factWindows.some((window) => {
+        if (!sameSessionKey(session, window.session)) return false;
+        if (start >= window.start - 180000 && start <= window.end + 180000) return true;
+        return false;
+      });
+    };
     const extra = [];
     for (const turn of ensureProfileLedgerLoaded().turns || []) {
       if (!normalizeUsage(turn?.usage).exact) continue;
@@ -4816,8 +5109,9 @@ const VERSION = "0.8.0";
       if (id && ids.has(id)) continue;
       const key = codexppTokenKey(turn);
       if (key && keys.has(key)) continue;
-      if (id) ids.add(id);
-      if (key) keys.add(key);
+      if (usageTurnResponseIdList(turn).some((responseId) => responseIds.has(responseId))) continue;
+      if (coveredByFactWindow(turn)) continue;
+      remember(turn);
       extra.push(turn);
     }
     return base.concat(extra);
@@ -4933,8 +5227,25 @@ const VERSION = "0.8.0";
     return mirror;
   }
 
+  // 预算按 UTF-8 字节算：模型名可能是中文（1 字符 = 3 字节），
+  // 用 String.length 会低估体积，导致镜像实际写超 512K。
+  let localLedgerUtf8Encoder = null;
+  function localLedgerByteLength(text) {
+    const value = String(text || "");
+    try {
+      if (!localLedgerUtf8Encoder) localLedgerUtf8Encoder = new TextEncoder();
+      return localLedgerUtf8Encoder.encode(value).length;
+    } catch {
+      return value.length;
+    }
+  }
+
   function localLedgerMirrorBytes(turns, extra = {}) {
-    return JSON.stringify({ turns: turns.map(localLedgerMirrorTurn), ...extra }).length;
+    return localLedgerByteLength(JSON.stringify({ turns: turns.map(localLedgerMirrorTurn), ...extra }));
+  }
+
+  function localLedgerMirrorTurnBytes(turn) {
+    return localLedgerByteLength(JSON.stringify(localLedgerMirrorTurn(turn))) + 1;
   }
 
   // 在字节预算内，从最新往回装近期 turn；装不下的旧 turn 由调用方折进日归档。
@@ -4954,14 +5265,14 @@ const VERSION = "0.8.0";
     // 事实行也占预算：它们虽然永久存在 IndexedDB，镜像里放不下就只留最近的一部分。
     for (let index = permanent.length - 1; index >= 0; index -= 1) {
       const turn = permanent[index];
-      const turnSize = JSON.stringify(localLedgerMirrorTurn(turn)).length + 1;
+      const turnSize = localLedgerMirrorTurnBytes(turn);
       if (size + turnSize > limit) break;
       snapshot.push(turn);
       size += turnSize;
     }
     for (let index = ephemeral.length - 1; index >= 0; index -= 1) {
       const turn = ephemeral[index];
-      const turnSize = JSON.stringify(localLedgerMirrorTurn(turn)).length + 1;
+      const turnSize = localLedgerMirrorTurnBytes(turn);
       if (size + turnSize > limit) break;
       snapshot.push(turn);
       size += turnSize;
@@ -5151,8 +5462,9 @@ const VERSION = "0.8.0";
       ...(sessionKey ? { sessionKey } : {}),
       ...(threadKey ? { threadKey } : {}),
       callCount: toCount(raw.callCount ?? raw.call_count ?? raw.requestCount ?? raw.request_count) || 1,
-      model: normalizeText(raw.model || raw.request_model || raw.pricing_model, 120) || UNKNOWN_MODEL,
+      model: usageModelLabel(raw.model || raw.request_model || raw.pricing_model),
       effort: normalizeReasoningEffort(raw.effort),
+      responseIds: usageTurnResponseIdList(raw),
       fastMode: typeof raw.fastMode === "boolean" ? raw.fastMode : null,
       invocations: Array.isArray(raw.invocations) ? raw.invocations.filter((item) => normalizeProfileInvocation(item)) : [],
       calls: Array.isArray(raw.calls)
@@ -5212,6 +5524,26 @@ const VERSION = "0.8.0";
       turnId: turn.turnId.replace(/^analytics:/, "local-archive:"),
       source: "local-usage-archive",
     }));
+  }
+
+  // 本地归档只是旧账本被挤出时的日聚合兜底。同一日期一旦有逐响应事实或
+  // Profile 轮次，归档必须让位，否则同一批用量会被日聚合和逐轮账本各计一次。
+  function localUsageArchiveTurnsForAnalytics(dates = null) {
+    const archive = normalizeLocalUsageArchive(state.localUsageArchive);
+    const wanted = dates
+      ? new Set(Array.from(dates).map((date) => normalizeText(date, 10)).filter(Boolean))
+      : new Set(Object.keys(archive.days || {}));
+    if (!wanted.size) return [];
+    const covered = new Set();
+    for (const days of usageFactDayIndex().values()) {
+      for (const date of days.keys()) covered.add(date);
+    }
+    for (const turn of ensureProfileLedgerLoaded().turns || []) {
+      const date = localDateKey(turnTimestampMs(turn));
+      if (date) covered.add(date);
+    }
+    const uncovered = Array.from(wanted).filter((date) => !covered.has(date));
+    return localUsageArchiveTurns(archive, uncovered);
   }
 
   function mergeLocalUsageArchive(archive, turns) {
@@ -5490,11 +5822,12 @@ const VERSION = "0.8.0";
     };
   }
 
-  // token_count 的去重键：(turn_id, signature, cumulativeTotal)。
-  // 同一 cumulativeTotal 的重复心跳（实测间隔 15.9s / 24.9s / 约 9 小时）只接受一次。
-  function usageSyncFallbackKey(turnId, usage, cumulativeTotal) {
+  // token_count 的去重键：(turn_id, signature)。
+  // rate-limit 心跳会重发上一次 last_token_usage，但累计值可能变（cc-switch 同样按
+  // 签名去重）：同签名只接受一次，否则同一份用量会被再记一遍。
+  function usageSyncFallbackKey(turnId, usage) {
     const signature = USAGE_SYNC_USAGE_FIELDS.map((field) => toCount(usage?.[field])).join("/");
-    return `${turnId}\u0001${signature}\u0001${toCount(cumulativeTotal)}`;
+    return `${turnId}\u0001${signature}`;
   }
 
   // 可观测性计数器（P2 #5）：解析行数、逐响应记录数、心跳数、重复数。
@@ -5534,6 +5867,9 @@ const VERSION = "0.8.0";
       let record = thread.turns.get(turnId);
       if (!record) {
         record = usageSyncCreateTurnRecord(turnId);
+        // 新建记录时先固化当前粘性模型；turn_context / token_count 随后可覆盖。
+        if (thread.fallbackModel) record.model = thread.fallbackModel;
+        if (thread.fallbackEffort) record.effort = thread.fallbackEffort;
         thread.turns.set(turnId, record);
       }
       return record;
@@ -5569,15 +5905,16 @@ const VERSION = "0.8.0";
       if (type === "turn_context") {
         const turnId = usageSyncText(payload.turn_id, 120) || lastTurnId;
         const record = ensureTurn(turnId);
-        const model = usageSyncText(payload.model, 120);
+        const model = usageSyncText(payload.model || payload.info?.model, 120);
         const effort = usageSyncText(payload.effort, 40);
         if (model) {
           thread.fallbackModel = model;
-          if (record) record.model = record.model || model;
+          // turn_context 描述的就是这一轮：以它为准，不用「先到先得」。
+          if (record) record.model = model;
         }
         if (effort) {
           thread.fallbackEffort = effort;
-          if (record) record.effort = record.effort || effort;
+          if (record) record.effort = effort;
         }
         continue;
       }
@@ -5588,6 +5925,10 @@ const VERSION = "0.8.0";
         if (!responseId || !usage) continue;
         const turnId = usageSyncText(payload.turn_id || payload.root_turn_id, 120) || lastTurnId;
         const record = ensureTurn(turnId);
+        // 在响应到达时就固化「当时的」粘性模型；如果等到整份文件解析完，
+        // 线程末尾的模型会错误回填到更早的轮次。
+        if (record && !record.model && thread.fallbackModel) record.model = thread.fallbackModel;
+        if (record && !record.effort && thread.fallbackEffort) record.effort = thread.fallbackEffort;
         const entry = {
           responseId,
           usage,
@@ -5605,11 +5946,26 @@ const VERSION = "0.8.0";
       }
       if (type === "event_msg") {
         const ptype = usageSyncText(payload.type, 60);
+        // 恢复 / Desktop 线程可能在没有新 turn_context 的情况下换模型。
+        if (ptype === "thread_settings_applied") {
+          const settings = payload.thread_settings && typeof payload.thread_settings === "object" ? payload.thread_settings : payload;
+          const model = usageSyncText(settings.model, 120);
+          const effort = usageSyncText(settings.reasoning_effort || settings.effort, 40);
+          // 与 cc-switch 一致：设置是「下一轮起生效」的粘性模型，不回写上一轮。
+          // 新一轮在 task_started 时继承它，turn_context 到了会再覆盖。
+          if (model) thread.fallbackModel = model;
+          if (effort) thread.fallbackEffort = effort;
+          continue;
+        }
         if (ptype === "task_started") {
           const turnId = usageSyncText(payload.turn_id || payload.turn_attribution?.turn_id, 120);
           if (turnId) {
             lastTurnId = turnId;
             lastTurn = ensureTurn(turnId);
+            // 恢复线程 / Desktop 线程可能整轮没有 turn_context：用当前线程的
+            // 粘性模型先把这一轮认下来，turn_context 到了会再覆盖。
+            if (lastTurn && !lastTurn.model && thread.fallbackModel) lastTurn.model = thread.fallbackModel;
+            if (lastTurn && !lastTurn.effort && thread.fallbackEffort) lastTurn.effort = thread.fallbackEffort;
             const startedAtMs = usageSyncUnixToMs(payload.started_at);
             if (startedAtMs) lastTurn.startedAtMs = lastTurn.startedAtMs || startedAtMs;
             // 时间模型：触发方式与父子关系（子代理单独归组，不混进用户 turn）。
@@ -5669,6 +6025,11 @@ const VERSION = "0.8.0";
             thread.rateLimits.push({ observedAtMs: toTimestampMs(obj.timestamp), rateLimits });
           }
           fileSummary.heartbeats += 1;
+          // 新版本 token_count 会带当前模型（cc-switch 也读这三个位置）。
+          const tokenModel = usageSyncText(payload.info?.model || payload.info?.model_name || payload.model, 120);
+          const tokenEffort = usageSyncText(payload.info?.effort || payload.info?.reasoning_effort, 40);
+          if (tokenModel) thread.fallbackModel = tokenModel;
+          if (tokenEffort) thread.fallbackEffort = tokenEffort;
           const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
           if (!usage) continue;
           const cumulativeTotal = toCount(payload.info?.total_token_usage?.total_tokens);
@@ -5678,9 +6039,11 @@ const VERSION = "0.8.0";
             attachCall({ usage, observedAtMs: toTimestampMs(obj.timestamp) });
             continue;
           }
-          const dedupeKey = usageSyncFallbackKey(turnId, usage, cumulativeTotal);
+          if (tokenModel) record.model = tokenModel;
+          if (tokenEffort) record.effort = tokenEffort;
+          const dedupeKey = usageSyncFallbackKey(turnId, usage);
           if (record.fallbackSeen.has(dedupeKey)) {
-            // 可观测性：重复心跳（同 turn + 同签名 + 同累计）被去重的次数。
+            // 可观测性：重复心跳（同 turn + 同签名）被去重的次数。
             fileSummary.duplicateHeartbeats += 1;
             continue;
           }
@@ -5804,7 +6167,7 @@ const VERSION = "0.8.0";
   // 一次遍历 facts，供 rollup / 日桶 / 区间聚合共用。
   function usageFactDayIndex() {
     const index = new Map();
-    for (const record of state.usageFacts.values()) {
+    for (const record of usageFactAuthoritativeRecords()) {
       const turnId = normalizeText(record?.turnId, 240);
       const usage = record?.usage;
       const at = toCount(record?.observedAtMs);
@@ -5885,7 +6248,7 @@ const VERSION = "0.8.0";
     return usageDaySlicesFromIndex(dayIndex || usageFactDayIndex(), turn).length > 1;
   }
 
-  function usageSyncFinalizeTurnRow(threadId, record) {
+  function usageSyncFinalizeTurnRow(threadId, record, fallbackModel = "", fallbackEffort = "") {
     // 事实优先：responses（token_usage_record）派生 turn 用量。
     // 只有该 turn 完全没有 record 时，才用去重后的 token_count 回退条目。
     const responses = record.responses instanceof Map ? Array.from(record.responses.values()) : [];
@@ -5910,8 +6273,8 @@ const VERSION = "0.8.0";
         sessionKey: `local:${threadId}`,
         threadKey: `local:${threadId}`,
         threadAttributionStatus: "reliable",
-        model: record.model || "unknown",
-        ...(record.effort ? { effort: record.effort } : {}),
+        model: record.model || fallbackModel || UNKNOWN_MODEL,
+        ...(record.effort || fallbackEffort ? { effort: record.effort || fallbackEffort } : {}),
         createdAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
         startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
         finishedAt: usageSyncIsoOrNull(record.finishedAtMs || firstMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
@@ -5959,8 +6322,8 @@ const VERSION = "0.8.0";
       sessionKey: `local:${threadId}`,
       threadKey: `local:${threadId}`,
       threadAttributionStatus: "reliable",
-      model: record.model || "unknown",
-      ...(record.effort ? { effort: record.effort } : {}),
+      model: record.model || fallbackModel || UNKNOWN_MODEL,
+      ...(record.effort || fallbackEffort ? { effort: record.effort || fallbackEffort } : {}),
       createdAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       startedAt: usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
       finishedAt: usageSyncIsoOrNull(lastMs) || usageSyncIsoOrNull(firstMs) || new Date(0).toISOString(),
@@ -7122,7 +7485,7 @@ const VERSION = "0.8.0";
     }
     if (Array.isArray(source.fallbackCalls)) {
       for (const call of source.fallbackCalls) {
-        const key = usageSyncFallbackKey(target.turnId, call.usage, call.cumulativeTotal);
+        const key = usageSyncFallbackKey(target.turnId, call.usage);
         if (target.fallbackSeen.has(key)) continue;
         target.fallbackSeen.add(key);
         target.fallbackCalls.push(call);
@@ -7148,7 +7511,7 @@ const VERSION = "0.8.0";
     const fileSummary = usageSyncEnsureObservability({ lineErrors: 0 });
     const thread = usageSyncParseRolloutLines(String(text).split(/\r?\n/), fileSummary);
     if (thread) {
-      const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [], orphanResponses: new Map(), rateLimits: [] };
+      const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [], orphanResponses: new Map(), rateLimits: [], fallbackModel: "", fallbackEffort: "" };
       for (const [turnId, record] of thread.turns) {
         const existing = target.turns.get(turnId);
         target.turns.set(turnId, existing ? usageSyncMergeTurnRecord(existing, record) : record);
@@ -7158,6 +7521,9 @@ const VERSION = "0.8.0";
         for (const [responseId, entry] of thread.orphanResponses) target.orphanResponses.set(responseId, entry);
       }
       if (Array.isArray(thread.rateLimits)) target.rateLimits.push(...thread.rateLimits);
+      // 线程级模型回退：同一线程的后续文件没写 turn_context 时仍能归属模型。
+      if (thread.fallbackModel) target.fallbackModel = thread.fallbackModel;
+      if (thread.fallbackEffort) target.fallbackEffort = thread.fallbackEffort;
       threads.set(thread.threadId, target);
     }
     // 可观测性：把本次文件的解析/重复计数汇总给调用方。
@@ -7170,9 +7536,9 @@ const VERSION = "0.8.0";
     const rateLimits = [];
     for (const [threadId, info] of threads) {
       for (const record of info.turns.values()) {
-        const row = usageSyncFinalizeTurnRow(threadId, record);
+        const row = usageSyncFinalizeTurnRow(threadId, record, info.fallbackModel, info.fallbackEffort);
         if (row) rows.push(row);
-        // 逐响应事实入库：按 response_id 幂等。
+        // 逐响应事实入库：按 response_id 幂等；模型挂在每条响应上。
         if (record.responses instanceof Map) {
           for (const [responseId, entry] of record.responses) {
             facts.push({
@@ -7180,6 +7546,8 @@ const VERSION = "0.8.0";
               threadId,
               turnId: record.turnId,
               rootTurnId: "",
+              model: record.model || info.fallbackModel || "",
+              effort: record.effort || info.fallbackEffort || "",
               usage: entry.usage,
               turnCumulative: entry.turnCumulative,
               threadCumulative: entry.threadCumulative,
@@ -7196,6 +7564,8 @@ const VERSION = "0.8.0";
             threadId,
             turnId: "",
             rootTurnId: "",
+            model: info.fallbackModel || "",
+            effort: info.fallbackEffort || "",
             usage: entry.usage,
             turnCumulative: entry.turnCumulative,
             threadCumulative: entry.threadCumulative,
@@ -7219,7 +7589,7 @@ const VERSION = "0.8.0";
           fallbackSeen: new Set(),
           skillCounts: new Map(),
           pluginCounts: new Map(),
-        });
+        }, info.fallbackModel, info.fallbackEffort);
         if (orphanRow) rows.push(orphanRow);
       }
     }
@@ -9046,6 +9416,8 @@ const VERSION = "0.8.0";
       // 实时捕获的 turn：没有 rollout record 佐证，标为 live_notification。
       usageSource: "live_notification",
       callCount: turn.calls.length,
+      // 逐响应 id 让实时行也能和 rollout / 导入行按响应对齐去重。
+      responseIds: Array.from(new Set(turn.calls.map((call) => normalizeText(call.responseId, 200)).filter(Boolean))),
       model: modelName(),
       effort: normalizeReasoningEffort(turn.context?.effort || activeModelInfo().effort),
       fastMode: typeof turn.context?.fastMode === "boolean" ? turn.context.fastMode : null,
@@ -9271,6 +9643,8 @@ const VERSION = "0.8.0";
         responseId,
         threadId,
         turnId,
+        model: metric.model,
+        effort: metric.effort,
         usage: {
           input_tokens: toCount(usage.input),
           cached_input_tokens: toCount(usage.cached),
@@ -9701,7 +10075,7 @@ const VERSION = "0.8.0";
     state.analyticsRollup = saved?.version === 1 && saved.days && typeof saved.days === "object" ? pruneAnalyticsRollup(saved) : null;
     if (!state.analyticsRollup) {
       ensureLocalLedgerLoaded();
-      state.analyticsRollup = pruneAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurns(), ...state.localLedger]));
+      state.analyticsRollup = pruneAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurnsForAnalytics(), ...state.localLedger]));
       saveAnalyticsRollup(state.analyticsRollup);
     }
     return state.analyticsRollup;
@@ -9732,7 +10106,7 @@ const VERSION = "0.8.0";
 
   function rebuildAnalyticsRollup() {
     ensureLocalLedgerLoaded();
-    return saveAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurns(), ...state.localLedger]));
+    return saveAnalyticsRollup(buildAnalyticsRollup([...localUsageArchiveTurnsForAnalytics(), ...state.localLedger]));
   }
 
   function refreshAnalyticsRollupDates(dates) {
@@ -9742,7 +10116,7 @@ const VERSION = "0.8.0";
     const next = loadAnalyticsRollup();
     const dayIndex = usageFactDayIndex();
     const partial = buildAnalyticsRollup(
-      [...localUsageArchiveTurns(state.localUsageArchive, targets), ...state.localLedger].filter((turn) =>
+      [...localUsageArchiveTurnsForAnalytics(targets), ...state.localLedger].filter((turn) =>
         usageDaySlicesFromIndex(dayIndex, turn).some((slice) => targets.has(slice.date)),
       ),
     );
@@ -9897,78 +10271,6 @@ const VERSION = "0.8.0";
     return `<svg class="cltc-analytics-chart" data-analytics-chart="true" viewBox="0 0 ${width} ${height}" role="graphics-document" aria-label="${metric === "cost" ? "花费趋势" : "Token 趋势"}">${empty}<g class="cltc-analytics-grid" aria-hidden="true">${grid}</g>${bars}</svg>`;
   }
 
-  // 来源标注（P1 #7）：每个数字标明是官方 / 本地估算 / 推断。
-  // 本项目按用户决定只用本机价格表计算金额，所以金额来源恒为「本地价格表」；
-  // token 来源分「逐响应事实」（record）与「降级估算」（token_count 去重回退）。
-  function usageSourceLabels(turns) {
-    const items = Array.isArray(turns) ? turns : [];
-    let recorded = 0;
-    let fallback = 0;
-    let live = 0;
-    let inferred = 0;
-    let unpriced = 0;
-    let crossMidnight = 0;
-    // 跨午夜拆分计数：一次建索引，供本批 turn 复用。
-    const dayIndex = usageFactDayIndex();
-    for (const turn of items) {
-      const source = normalizeText(turn?.usageSource, 60);
-      if (source === "token_usage_record") recorded += 1;
-      else if (source === "token_count_fallback") fallback += 1;
-      else if (source === "live_notification") live += 1;
-      else inferred += 1;
-      const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
-      if (!priceFor(model)) unpriced += 1;
-      if (usageTurnCrossesMidnight(turn, dayIndex)) crossMidnight += 1;
-    }
-    const total = items.length || 1;
-    // 有 record 或实时通知都算「有事实来源」；只有降级/推断才算估算。
-    const sourced = recorded + live;
-    const estimated = fallback + inferred;
-    return {
-      turns: items.length,
-      recorded,
-      fallback,
-      live,
-      inferred,
-      unpriced,
-      crossMidnight,
-      sourcedShare: Math.round((sourced / total) * 100),
-      recordedShare: Math.round((recorded / total) * 100),
-      costSource: "本地价格表",
-      tokenSource: recorded ? "逐响应事实" : live ? "实时通知" : fallback ? "降级估算" : "推断",
-    };
-  }
-
-  function usageSourcePanelHtml(turns, timeModelHtml = "") {
-    const labels = usageSourceLabels(turns);
-    if (!labels.turns) return "";
-    const rows = [
-      ["Token 口径", `${labels.tokenSource} · 事实覆盖 ${labels.sourcedShare}%`, labels.sourcedShare >= 90 ? "success" : "warn"],
-      ["费用口径", `${labels.costSource}（未定价 ${labels.unpriced} 个模型）`, labels.unpriced ? "warn" : "success"],
-      ["事实明细", `逐响应 ${labels.recorded} 轮 · 实时 ${labels.live} 轮 · 降级 ${labels.fallback} 轮 · 推断 ${labels.inferred} 轮`, "neutral"],
-      // 跨午夜：整轮不再算到开始日，按每条响应自己的观测时间落到那天。
-      [
-        "跨午夜归属",
-        labels.crossMidnight ? `${labels.crossMidnight} 轮已按响应时间拆到两天` : "无（所有轮次都在单日内）",
-        labels.crossMidnight ? "warn" : "success",
-      ],
-    ];
-    return `
-      <div class="cltc-analytics-section cltc-usage-sources">
-        <div class="cltc-analytics-section-head"><div><h3>数据来源</h3><p>每个数字的出处</p></div></div>
-        <div class="cltc-usage-source-rows">
-          ${rows
-            .map(
-              ([label, value, tone]) =>
-                `<div class="cltc-usage-source-row"><span>${escapeHtml(label)}</span><strong data-tone="${tone}">${escapeHtml(value)}</strong></div>`,
-            )
-            .join("")}
-          ${timeModelHtml}
-        </div>
-      </div>
-    `;
-  }
-
   function usageAnalyticsHtml(options = {}) {
     ensureLocalLedgerLoaded();
     const now = toTimestampMs(options.now) || Date.now();
@@ -9983,8 +10285,8 @@ const VERSION = "0.8.0";
         : mergeProfileLedgerTurns(
             mergeCodexppHistoryTurns(
               preset === "today"
-                ? [...localUsageArchiveTurns(state.localUsageArchive, [localDateKey(now)]), ...state.localLedger]
-                : [...localUsageArchiveTurns(), ...state.localLedger],
+                ? [...localUsageArchiveTurnsForAnalytics([localDateKey(now)]), ...state.localLedger]
+                : [...localUsageArchiveTurnsForAnalytics(), ...state.localLedger],
             ),
           );
     const turns = analyticsVisibleTurns(sourceTurns);
@@ -10026,10 +10328,6 @@ const VERSION = "0.8.0";
         </button>`,
       )
       .join("");
-    const timeModel = usageTimeModel(filtered);
-    const timeModelHtml = timeModel.turns
-      ? `<div class="cltc-usage-source-row"><span>活跃 / 空闲</span><strong>${fmtDuration(timeModel.activeMs)} / ${fmtDuration(timeModel.idleMs)}${timeModel.maxIdleMs > 3600000 ? ` · 最长间隔 ${fmtDuration(timeModel.maxIdleMs)}` : ""}</strong></div>`
-      : "";
     return `
       <section class="cltc-settings-section cltc-analytics" data-analytics-preset="${preset}" data-analytics-model-filter="${escapeHtml(model)}">
         <div class="cltc-settings-section-heading cltc-analytics-heading">
@@ -10059,7 +10357,6 @@ const VERSION = "0.8.0";
           ${metricRow("模型调用", fmtCount(current.calls), { current: current.calls, previous: previous.calls }, false, comparisonTone("calls", current.calls, previous.calls))}
           ${metricRow("缓存命中率", current.cacheHitRate == null ? "—" : `${current.cacheHitRate}%`, { current: current.cacheHitRate, previous: previous.cacheHitRate }, current.cacheHitRate == null, comparisonTone("cache", current.cacheHitRate, previous.cacheHitRate))}
         </div>
-        ${usageSourcePanelHtml(filtered, timeModelHtml)}
         <div class="cltc-analytics-split">
           <div class="cltc-analytics-section">
             <div class="cltc-analytics-section-head">
@@ -10294,6 +10591,37 @@ const VERSION = "0.8.0";
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  // HUD 日桶按 turn 求和，必须先去重：同 turnId 以账本行覆盖归档行；
+  // 不同 turnId 但 response_id 重叠（实时行 vs rollout 行）只保留先出现的一条。
+  function usageUniqueTurnsForTotals(turns) {
+    const byTurn = new Map();
+    const ordered = [];
+    for (const turn of Array.isArray(turns) ? turns : []) {
+      const turnId = normalizeText(turn?.turnId || turn?.id, 120);
+      if (!turnId) {
+        ordered.push(turn);
+        continue;
+      }
+      const previous = byTurn.get(turnId);
+      if (previous) {
+        const index = ordered.indexOf(previous);
+        if (index >= 0) ordered[index] = turn;
+      } else {
+        ordered.push(turn);
+      }
+      byTurn.set(turnId, turn);
+    }
+    const claimedResponses = new Set();
+    const out = [];
+    for (const turn of ordered) {
+      const ids = usageTurnResponseIdList(turn);
+      if (ids.some((responseId) => claimedResponses.has(responseId))) continue;
+      for (const responseId of ids) claimedResponses.add(responseId);
+      out.push(turn);
+    }
+    return out;
+  }
+
   function localDailyUsage(options = {}) {
     ensureLocalLedgerLoaded();
     const activeCurrentTurn = localCurrentTurn(currentSessionKey());
@@ -10306,7 +10634,7 @@ const VERSION = "0.8.0";
     if (!cached || cached.revision !== state.localLedgerRevision) {
       // 跨午夜拆分：一次建索引，供本批 turn 复用。
       const dayIndex = usageFactDayIndex();
-      for (const turn of [...localUsageArchiveTurns(), ...state.localLedger]) {
+      for (const turn of usageUniqueTurnsForTotals([...localUsageArchiveTurns(), ...state.localLedger])) {
         const usage = normalizeUsage(turn?.usage);
         if (!usage.exact) continue;
         const turnId = normalizeText(turn?.turnId || turn?.id, 120);
@@ -13270,35 +13598,6 @@ const VERSION = "0.8.0";
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .cltc-settings .cltc-usage-source-rows {
-        display: grid;
-        gap: 8px;
-      }
-      .cltc-settings .cltc-usage-source-row {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
-        min-width: 0;
-        font-size: 12px;
-        line-height: 17px;
-      }
-      .cltc-settings .cltc-usage-source-row > span {
-        color: var(--cltc-muted);
-        flex: 0 0 auto;
-      }
-      .cltc-settings .cltc-usage-source-row > strong {
-        font-weight: 500;
-        text-align: right;
-        min-width: 0;
-        overflow-wrap: anywhere;
-      }
-      .cltc-settings .cltc-usage-source-row > strong[data-tone='warn'] {
-        color: var(--cltc-warning);
-      }
-      .cltc-settings .cltc-usage-source-row > strong[data-tone='success'] {
-        color: var(--cltc-text);
-      }
       .cltc-settings .cltc-analytics-section {
         display: grid;
         gap: 14px;
@@ -13389,10 +13688,14 @@ const VERSION = "0.8.0";
       .cltc-settings .cltc-composition-bar span {
         min-width: 0;
       }
-      .cltc-settings [data-tone="neutral"] { background: #8e8e93; }
-      .cltc-settings [data-tone="green"] { background: var(--cltc-success); }
-      .cltc-settings [data-tone="blue"] { background: var(--cltc-chart-blue); }
-      .cltc-settings [data-tone="purple"] { background: var(--cltc-chart-purple); }
+      .cltc-settings .cltc-composition-bar [data-tone="neutral"],
+      .cltc-settings .cltc-composition-legend [data-tone="neutral"] { background: #8e8e93; }
+      .cltc-settings .cltc-composition-bar [data-tone="green"],
+      .cltc-settings .cltc-composition-legend [data-tone="green"] { background: var(--cltc-success); }
+      .cltc-settings .cltc-composition-bar [data-tone="blue"],
+      .cltc-settings .cltc-composition-legend [data-tone="blue"] { background: var(--cltc-chart-blue); }
+      .cltc-settings .cltc-composition-bar [data-tone="purple"],
+      .cltc-settings .cltc-composition-legend [data-tone="purple"] { background: var(--cltc-chart-purple); }
       .cltc-settings .cltc-composition-legend {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -15002,14 +15305,14 @@ const VERSION = "0.8.0";
     const statusText = usageSyncStatusText();
     const statusTone = busy ? "busy" : state.usageSyncAutoFailures >= 3 ? "warn" : "success";
     const statusHtml = statusText ? `<p class="cltc-sync-status" data-field="usage-sync-status" data-tone="${statusTone}" role="status">${escapeHtml(statusText)}</p>` : "";
-    const facts = usageFactTotals();
+    const facts = usageFactAuthoritativeTotals();
     const reconcile = usageFactReconcileSummary();
     const degraded = state.usageFactDegraded;
     const degradedHtml = degraded
       ? `<p class="cltc-sync-status" data-field="usage-fact-degraded" data-tone="warn" role="status">降级存储：${escapeHtml(state.usageFactDegradedReason || "IndexedDB 不可用")}；逐响应明细可能不完整，请先导出备份</p>`
       : "";
     const reconcileHtml = reconcile.threads
-      ? `<p class="cltc-sync-status" data-field="usage-fact-reconcile" data-tone="${reconcile.diff ? "warn" : "success"}" role="status">对账：${reconcile.threads} 个线程 · ${reconcile.matched} 个一致 · ${reconcile.diff} 个存在差异${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""} · 逐响应覆盖率 ${reconcile.coverage}%</p>`
+      ? `<p class="cltc-sync-status" data-field="usage-fact-reconcile" data-tone="${reconcile.diff ? "warn" : "success"}" role="status">对账：${reconcile.threads} 个线程 · ${reconcile.matched} 个一致${reconcile.counterReset ? ` · ${reconcile.counterReset} 个计数器重置${reconcile.counterResetDelta ? `（${reconcile.counterResetDelta} tokens，非真实差异）` : ""}` : ""}${reconcile.unknown ? ` · ${reconcile.unknown} 个无计数器` : ""} · ${reconcile.diff} 个真实差异${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""} · 逐响应覆盖率 ${reconcile.coverage}%</p>`
       : "";
     // 主机能力矩阵（P2 #3）：说清「宿主机有没有这个方法」，不只报「失败」。
     const hostCapabilities = hostCapabilitySummary();
@@ -15021,7 +15324,7 @@ const VERSION = "0.8.0";
     const observability = state.usageSyncResult?.observability;
     const observabilityHtml =
       observability && (observability.lines || observability.duplicateRecords || observability.duplicateHeartbeats)
-        ? `<p class="cltc-sync-status" data-field="usage-sync-observability" data-tone="neutral" role="status">解析：${observability.lines} 行 · 逐响应记录 ${observability.records} · 心跳 ${observability.heartbeats} · 重复记录 ${observability.duplicateRecords} · 重复心跳 ${observability.duplicateHeartbeats}</p>`
+        ? `<p class="cltc-sync-status" data-field="usage-sync-observability" role="status">解析：${observability.lines} 行 · 逐响应记录 ${observability.records} · 心跳 ${observability.heartbeats} · 重复记录 ${observability.duplicateRecords} · 重复心跳 ${observability.duplicateHeartbeats}</p>`
         : "";
     const backupHtml = state.usageHostBackupStatus
       ? `<p class="cltc-sync-status" data-field="usage-host-backup" data-tone="${state.usageHostBackupError ? "warn" : "success"}" role="status">${escapeHtml(state.usageHostBackupStatus)}</p>`
@@ -15050,7 +15353,7 @@ const VERSION = "0.8.0";
             <div class="cltc-settings-row cltc-sync-row">
               <span>
                 <strong>本地账本</strong>
-                <small>逐响应事实保存在本机 IndexedDB：${facts.count} 条响应 · ${facts.total} tokens；费用按本机价格表计算</small>
+                <small>逐条保存每次模型调用的用量（当前 ${fmtCount(facts.count)} 条响应 · ${fmtCount(facts.total)} tokens）。清除应用数据会丢失，建议定期备份；费用按本机价格表计算。</small>
               </span>
               <span class="cltc-settings-actions">
                 <button type="button" data-action="backup-usage">备份到主机</button>
@@ -16816,6 +17119,17 @@ const VERSION = "0.8.0";
       trimLocalLedger,
       compactLocalLedger,
       localUsageArchiveTurns,
+      localUsageArchiveTurnsForAnalytics,
+      setLocalUsageArchive(archive) {
+        state.localUsageArchive = normalizeLocalUsageArchive(archive);
+      },
+      setLocalLedger(turns) {
+        state.localLedger = Array.isArray(turns) ? turns : [];
+        invalidateLocalUsageCache();
+      },
+      localLedgerSnapshot() {
+        return state.localLedger.map((turn) => JSON.parse(JSON.stringify(turn)));
+      },
       codexppHistoryTurnsFromPayload,
       codexppTokenKey,
       mergeCodexppHistoryTurns,
@@ -16877,12 +17191,18 @@ const VERSION = "0.8.0";
       usageSyncRun: (options) => runUsageSync(options || {}),
       usageSyncState: () => usageSyncTestState(),
       usageSyncParseLines: (lines, summary) => usageSyncParseRolloutLines(lines, summary || { lineErrors: 0 }),
-      usageSyncFinalizeTurnRow: (threadId, record) => usageSyncFinalizeTurnRow(threadId, record),
+      usageSyncFinalizeTurnRow: (threadId, record, fallbackModel, fallbackEffort) => usageSyncFinalizeTurnRow(threadId, record, fallbackModel || "", fallbackEffort || ""),
       usageSyncIngestRolloutText: (text, threads) => usageSyncIngestRolloutText(text, threads),
       usageSyncFinalizeCollected: (files, threads, stats) => usageSyncFinalizeCollected(files, threads, stats),
       // 事实层：逐响应事实、持久化、主机备份、导出/导入、对账。
       usageFactUpsert: (record) => usageFactUpsert(record),
       usageFactTotals: () => usageFactTotals(),
+      usageFactAuthoritativeTotals: () => usageFactAuthoritativeTotals(),
+      usageFactBackfillLegacyModels: () => usageFactBackfillLegacyModels(),
+      usageFactRecord: (responseId) => {
+        const record = state.usageFacts.get(responseId);
+        return record ? { ...record } : null;
+      },
       usageFactReconcileReport: () => usageFactReconcileReport(),
       usageFactHydrateLedger: () => usageFactHydrateLedger(),
       usageFactReconcileSummary: () => usageFactReconcileSummary(),
@@ -16914,8 +17234,6 @@ const VERSION = "0.8.0";
           // best effort
         }
       },
-      usageSourceLabels: (turns) => usageSourceLabels(turns),
-      usageSourcePanelHtml: (turns) => usageSourcePanelHtml(turns),
       usageFactImportFile: () => usageFactImportFile(),
       usageFactMigrationDiff: (legacyTurns, before, after, migrated) => usageFactMigrationDiff(legacyTurns, before, after, migrated),
       usageFactFallbackEvict: (turns, budget, options) => usageFallbackEvict(turns, budget, options || {}),

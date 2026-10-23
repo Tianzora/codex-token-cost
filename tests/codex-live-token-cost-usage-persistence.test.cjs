@@ -409,7 +409,7 @@ function createFakeAppServer(files = {}) {
     const stored = fake.dumpStore(PROFILE_DB_NAME, RESPONSES_STORE);
     assert.equal(stored.length, 5, "IndexedDB holds one row per response_id");
     assert.equal(stored[0].responseId, "resp_persist_0");
-    assert.equal(stored[0].schemaVersion, 2);
+    assert.equal(stored[0].schemaVersion, 3);
 
     // A fresh script instance must hydrate the facts from IndexedDB.
     context.__codexLiveTokenCost.destroy();

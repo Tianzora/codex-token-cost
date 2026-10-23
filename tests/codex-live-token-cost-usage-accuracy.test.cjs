@@ -5,7 +5,7 @@
 // A. correctness
 //   1. 2026-10-15 golden fixture: history total must be 316,310,040 (not 317,055,092)
 //   2. cross-rollout-file turn merge keeps every response_id (no first-wins loss)
-//   3. token_count only feeds rate limits; fallback dedupes by (turn, signature, cumulative)
+//   3. token_count only feeds rate limits; fallback dedupes by (turn, signature)
 //   4. live duplicates at 15.9s / 24.9s / ~9h are booked only once
 //   5. aborted / failed turns are kept, usage derives from response facts
 //   6. reconciliation surfaces the delta instead of silently correcting it
@@ -697,6 +697,48 @@ const metaLine = (threadId) =>
   }
 
   // ==========================================================================
+  // A6c. a cumulative counter reset is not reported as a real diff
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "resp_reset_1",
+      threadId: "01thread-reset",
+      turnId: "turn-reset",
+      usage: { input_tokens: 60, output_tokens: 0, total_tokens: 60 },
+      threadCumulative: { input_tokens: 60, output_tokens: 0, total_tokens: 60 },
+      observedAtMs: 1000,
+    });
+    api.usageFactUpsert({
+      responseId: "resp_reset_2",
+      threadId: "01thread-reset",
+      turnId: "turn-reset",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      threadCumulative: { input_tokens: 160, output_tokens: 0, total_tokens: 160 },
+      observedAtMs: 2000,
+    });
+    api.usageFactUpsert({
+      responseId: "resp_reset_3",
+      threadId: "01thread-reset",
+      turnId: "turn-reset",
+      usage: { input_tokens: 50, output_tokens: 0, total_tokens: 50 },
+      threadCumulative: { input_tokens: 50, output_tokens: 0, total_tokens: 50 },
+      observedAtMs: 3000,
+    });
+    const row = api.usageFactReconcileReport().rows.find((item) => item.threadId === "01thread-reset");
+    assert.equal(row.actualTotal, 210);
+    assert.equal(row.expectedTotal, 160);
+    assert.equal(row.delta, -50);
+    assert.equal(row.counterResets, 1);
+    assert.equal(row.status, "counter-reset", "a reset counter is not a real diff");
+    const summary = api.usageFactReconcileSummary();
+    assert.equal(summary.diff, 0);
+    assert.equal(summary.counterReset, 1);
+    assert.equal(summary.counterResetDelta, 50);
+    assert.equal(summary.delta, 0, "only real diffs count toward the alert delta");
+  }
+
+  // ==========================================================================
   // A4. live duplicates at 15.9s / 24.9s / ~9h are booked only once
   // ==========================================================================
   {
@@ -892,32 +934,140 @@ const metaLine = (threadId) =>
   }
 
   // ==========================================================================
-  // A7b. source labelling (P1 #7)
+  // A7b. model attribution from the three rollout signals
   // ==========================================================================
   {
-    const turns = [
-      { turnId: "t1", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_usage_record", model: "gpt-5.5" },
-      { turnId: "t2", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_usage_record", model: "gpt-5.5" },
-      { turnId: "t3", usage: { input: 1, output: 0, cached: 0, total: 1, exact: true }, usageSource: "token_count_fallback", model: "unknown-model-x" },
+    const inline = (line) => JSON.stringify(line);
+    const lines = [
+      metaLine("01thread-model-attr"),
+      inline({
+        timestamp: "2026-10-15T06:50:00.000Z",
+        type: "turn_context",
+        payload: { turn_id: "turn-model-ctx", model: "gpt-6-sol", effort: "high" },
+      }),
+      recordLine("resp_model_ctx", "turn-model-ctx", { input: 100, output: 10, total: 110 }),
+      // Restored / Desktop threads may switch models without a new turn_context.
+      inline({
+        timestamp: "2026-10-15T06:51:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "thread_settings_applied",
+          thread_settings: { model: "gpt-5.5", reasoning_effort: "medium" },
+        },
+      }),
+      inline({
+        timestamp: "2026-10-15T06:51:01.000Z",
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: "turn-model-settings" },
+      }),
+      recordLine("resp_model_settings", "turn-model-settings", { input: 200, output: 20, total: 220 }),
+      // Newer token_count heartbeats carry the active model themselves.
+      inline({
+        timestamp: "2026-10-15T06:52:00.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          turn_id: "turn-model-heartbeat",
+          info: {
+            model: "gpt-5.4",
+            effort: "low",
+            total_token_usage: { total_tokens: 55 },
+            last_token_usage: { input_tokens: 50, cached_input_tokens: 0, output_tokens: 5, total_tokens: 55 },
+          },
+          rate_limits: { limit_id: "codex", primary: null, secondary: null },
+        },
+      }),
     ];
-    const labels = api.usageSourceLabels(turns);
-    assert.equal(labels.turns, 3);
-    assert.equal(labels.recorded, 2);
-    assert.equal(labels.fallback, 1);
-    assert.equal(labels.inferred, 0);
-    assert.equal(labels.live, 0);
-    assert.equal(labels.sourcedShare, 67, "the sourced share counts recorded turns");
-    // The harness has no price table loaded, so every model counts as unpriced.
-    assert.equal(labels.unpriced, 3, "every model without a price is counted as unpriced");
-    assert.equal(labels.costSource, "本地价格表", "the cost source is the local price table");
-    assert.equal(labels.tokenSource, "逐响应事实");
-    const html = api.usageSourcePanelHtml(turns);
-    assert.ok(html.includes("数据来源"), "the source panel renders");
-    assert.ok(html.includes("本地价格表"), "the cost source is visible");
-    assert.ok(html.includes("逐响应"), "the token source is visible");
-    assert.equal(labels.crossMidnight, 0, "no turn crosses midnight in this fixture");
-    assert.ok(html.includes("跨午夜归属"), "the cross-midnight row is visible");
-    assert.ok(html.includes("无（所有轮次都在单日内）"), "the cross-midnight row reports the clean case");
+    const thread = api.usageSyncParseLines(lines, { lineErrors: 0 });
+    assert.ok(thread, "the model attribution fixture must parse");
+
+    const ctxRow = api.usageSyncFinalizeTurnRow("01thread-model-attr", thread.turns.get("turn-model-ctx"));
+    assert.equal(ctxRow.model, "gpt-6-sol", "turn_context is authoritative for its turn");
+    assert.equal(ctxRow.effort, "high");
+
+    const settingsRow = api.usageSyncFinalizeTurnRow("01thread-model-attr", thread.turns.get("turn-model-settings"));
+    assert.equal(settingsRow.model, "gpt-5.5", "thread_settings_applied supplies the sticky model");
+    assert.equal(settingsRow.effort, "medium");
+
+    const heartbeatRecord = thread.turns.get("turn-model-heartbeat");
+    const heartbeatRow = api.usageSyncFinalizeTurnRow("01thread-model-attr", heartbeatRecord);
+    assert.equal(heartbeatRow.model, "gpt-5.4", "token_count.info.model is used when present");
+    assert.equal(heartbeatRow.effort, "low");
+    assert.equal(heartbeatRow.usage.total_tokens, 55);
+
+    // The per-thread sticky model is also passed to finalize as a fallback for
+    // turns that carry no model evidence of their own.
+    const fallbackThread = api.usageSyncParseLines(
+      [metaLine("01thread-model-fallback"), recordLine("resp_model_fallback", "turn-model-fallback", { input: 300, output: 30, total: 330 })],
+      { lineErrors: 0 },
+    );
+    const fallbackRecord = fallbackThread.turns.get("turn-model-fallback");
+    assert.equal(fallbackRecord.model, "", "the rollout itself has no model for this turn");
+    const fallbackRow = api.usageSyncFinalizeTurnRow("01thread-model-fallback", fallbackRecord, "gpt-5.6-terra", "high");
+    assert.equal(fallbackRow.model, "gpt-5.6-terra", "the thread fallback fills the missing model");
+    assert.equal(fallbackRow.effort, "high");
+    const unknownRow = api.usageSyncFinalizeTurnRow("01thread-model-fallback", fallbackRecord);
+    assert.equal(unknownRow.model, "未知", "a turn with no model at all is labelled 未知, not unknown");
+  }
+
+  // token_count dedupe is signature-based: the same usage snapshot is stored once
+  // even when the cumulative counter keeps climbing (cc-switch behaviour).
+  {
+    const lines = [
+      metaLine("01thread-heartbeat"),
+      tokenCountLine("turn-hb", { input: 10, output: 2, total: 12 }, 12, "2026-10-15T07:00:00.000Z"),
+      tokenCountLine("turn-hb", { input: 10, output: 2, total: 12 }, 24, "2026-10-15T07:00:16.000Z"),
+    ];
+    const summary = { lineErrors: 0 };
+    const thread = api.usageSyncParseLines(lines, summary);
+    const record = thread.turns.get("turn-hb");
+    assert.equal(record.fallbackCalls.length, 1, "one snapshot per signature");
+    assert.equal(summary.duplicateHeartbeats, 1, "the second snapshot is reported as a duplicate");
+    const row = api.usageSyncFinalizeTurnRow("01thread-heartbeat", record);
+    assert.equal(row.usage.total_tokens, 12, "a duplicate snapshot must not double the fallback total");
+  }
+
+  // Fact merge: rollout identity and model win over the live notification.
+  {
+    api.usageFactReset();
+    const at = Date.parse("2026-10-22T01:00:00.000Z");
+    api.usageFactUpsert({
+      responseId: "resp_fact_merge",
+      threadId: "live-thread",
+      turnId: "live-turn",
+      model: "gpt-5.5",
+      usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      observedAtMs: at,
+      source: "live_notification",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_fact_merge",
+      threadId: "01rollout-thread",
+      turnId: "rollout-turn",
+      model: "gpt-5.6-terra",
+      effort: "high",
+      usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      observedAtMs: at,
+      source: "rollout_record",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_fact_unknown",
+      threadId: "01rollout-thread",
+      turnId: "rollout-turn",
+      model: "unknown",
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      observedAtMs: at,
+      source: "rollout_record",
+    });
+    const exported = JSON.parse(api.usageFactExport("json").text);
+    const mergedFact = exported.responses.find((record) => record.responseId === "resp_fact_merge");
+    assert.equal(mergedFact.turnId, "rollout-turn", "the rollout turn_id replaces the live id");
+    assert.equal(mergedFact.threadId, "01rollout-thread", "the rollout thread_id replaces the live id");
+    assert.equal(mergedFact.model, "gpt-5.6-terra", "the rollout model wins over the live model");
+    assert.equal(mergedFact.effort, "high");
+    assert.equal(mergedFact.schemaVersion, 3, "facts carry the model-aware schema version");
+    const unknownFact = exported.responses.find((record) => record.responseId === "resp_fact_unknown");
+    assert.equal(unknownFact.model, "", 'legacy "unknown" is normalized before it reaches the ledger');
   }
 
   // ==========================================================================
@@ -1011,11 +1161,9 @@ const metaLine = (threadId) =>
     // Cost is a linear function of tokens, so the split must stay additive.
     assert.ok(Math.abs(onlyDay15.cost + onlyDay16.cost - api.turnCost(turn, "gpt-5.5").value) < 1e-9, "the split cost equals the whole-turn cost");
 
-    // The source panel must mark the split turn.
-    const labels = api.usageSourceLabels([turn]);
-    assert.equal(labels.crossMidnight, 1, "the split turn is counted and marked");
-    const html = api.usageSourcePanelHtml([turn]);
-    assert.ok(html.includes("1 轮已按响应时间拆到两天"), "the panel marks how many turns were split");
+    // The split is derived from facts, so the turn itself must be marked as
+    // crossing midnight without a separate source panel.
+    assert.equal(api.usageTurnCrossesMidnight(turn), true, "the split turn stays marked");
 
     // A single-day turn is NOT split (and keeps the whole-turn figures).
     const sameDayTurn = {
@@ -1082,6 +1230,180 @@ const metaLine = (threadId) =>
   }
 
   // ==========================================================================
+  // A8b2. the daily archive yields to authoritative facts for the same day
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    const date = "2026-09-09";
+    api.setLocalUsageArchive({
+      version: 1,
+      updatedAt: Date.now(),
+      days: {
+        [date]: {
+          models: {
+            "minimax-m3.1-flash": {
+              usage: { input: 100, output: 10, cached: 50, total: 110, exact: true },
+              calls: 1,
+            },
+          },
+        },
+      },
+    });
+    const archived = api.localUsageArchiveTurnsForAnalytics([date]);
+    assert.equal(archived.length, 1, "archive is used when no facts/profile cover the day");
+    assert.equal(archived[0].usage.total, 110);
+
+    api.usageFactUpsert({
+      responseId: "resp_archive_guard",
+      threadId: "01thread-archive-guard",
+      turnId: "turn-archive-guard",
+      usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      observedAtMs: new Date(2026, 8, 9, 10, 0, 0).getTime(),
+      source: "rollout_record",
+    });
+    assert.equal(
+      api.localUsageArchiveTurnsForAnalytics([date]).length,
+      0,
+      "a fact-backed day must not add the old daily archive on top",
+    );
+
+    api.setLocalUsageArchive({ version: 1, updatedAt: 0, days: {} });
+    api.usageFactReset();
+  }
+
+  // ==========================================================================
+  // A8c. hydration dedupes by response_id and fills the rollout model
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    const base = Date.parse("2026-10-22T02:00:00.000Z");
+    currentNow = base;
+    const sessionKey = "hydrate-session";
+    api.beginLocalTurn({ sessionKey, turnId: "hydrate-live-turn", forceNewIfUsed: true });
+    const booked = api.rememberLocalUsage(
+      { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      "message",
+      {},
+      { sessionKey, responseId: "resp_hydrate_1", threadId: "01thread-hydrate", turnId: "hydrate-live-turn", persist: true },
+    );
+    assert.equal(booked, true, "the live row must reach the ledger");
+    api.usageFactUpsert({
+      responseId: "resp_hydrate_1",
+      threadId: "01thread-hydrate",
+      turnId: "rollout-hydrate-turn",
+      model: "gpt-5.4",
+      effort: "high",
+      usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      observedAtMs: base,
+      source: "rollout_record",
+    });
+
+    const rowsFor = (responseId) =>
+      api.localUsageExport().turns.filter((row) => (row.responseIds || []).includes(responseId));
+    assert.equal(rowsFor("resp_hydrate_1").length, 1, "the live row exists before hydration");
+
+    api.usageFactHydrateLedger();
+    const hydrated = rowsFor("resp_hydrate_1");
+    assert.equal(hydrated.length, 1, "hydration must not add a second row for the same response");
+    assert.equal(hydrated[0].usage.total, 110, "usage is recomputed from the facts");
+    assert.equal(hydrated[0].model, "gpt-5.4", "the rollout model replaces the live model");
+    assert.equal(hydrated[0].usageSource, "token_usage_record");
+    api.setLocalCurrentTurn(null, sessionKey);
+
+    // Two legacy ledger rows sharing one response_id collapse into one row.
+    api.usageFactReset();
+    const imported = api.importLocalUsageTurns(
+      [
+        {
+          turnId: "hydrate-dup-a",
+          threadId: "01thread-hydrate-dup",
+          sessionKey: "local:01thread-hydrate-dup",
+          model: "gpt-5.5",
+          responseIds: ["resp_hydrate_dup"],
+          callCount: 1,
+          usage: { input: 100, output: 10, cached: 0, total: 110, exact: true },
+          startedAt: new Date(base).toISOString(),
+          finishedAt: new Date(base + 1000).toISOString(),
+          observedAt: base,
+        },
+        {
+          turnId: "hydrate-dup-b",
+          threadId: "01thread-hydrate-dup",
+          sessionKey: "local:01thread-hydrate-dup",
+          model: "gpt-5.5",
+          responseIds: ["resp_hydrate_dup"],
+          callCount: 1,
+          usage: { input: 200, output: 20, cached: 0, total: 220, exact: true },
+          startedAt: new Date(base).toISOString(),
+          finishedAt: new Date(base + 1000).toISOString(),
+          observedAt: base,
+        },
+      ],
+      { idbOnly: false },
+    );
+    assert.equal(imported.imported, 2, "both duplicate rows are seeded");
+    assert.equal(rowsFor("resp_hydrate_dup").length, 2, "the fixture really holds two rows");
+    api.usageFactUpsert({
+      responseId: "resp_hydrate_dup",
+      threadId: "01thread-hydrate-dup",
+      turnId: "rollout-hydrate-dup",
+      usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+      observedAtMs: base,
+      source: "rollout_record",
+    });
+    api.usageFactHydrateLedger();
+    const deduped = rowsFor("resp_hydrate_dup");
+    assert.equal(deduped.length, 1, "one response_id must belong to exactly one ledger row");
+    assert.equal(deduped[0].usage.total, 110, "the surviving row is recomputed from the fact, not from either duplicate");
+  }
+
+  // ==========================================================================
+  // A8d. mergeProfileLedgerTurns also dedupes by response_id
+  // ==========================================================================
+  {
+    const base = Date.parse("2026-10-22T03:00:00.000Z");
+    const imported = api.importLocalUsageTurns(
+      [
+        {
+          turnId: "profile-merge-dedupe",
+          threadId: "01thread-profile-merge",
+          sessionKey: "local:01thread-profile-merge",
+          model: "gpt-5.5",
+          responseIds: ["resp_profile_merge"],
+          callCount: 1,
+          // Deliberately a different signature: only the response_id overlap
+          // can stop this row from being added a second time.
+          usage: { input: 200, output: 20, cached: 0, total: 220, exact: true },
+          startedAt: new Date(base).toISOString(),
+          finishedAt: new Date(base + 1000).toISOString(),
+          observedAt: base,
+        },
+      ],
+      { idbOnly: true },
+    );
+    assert.equal(imported.imported, 1, "the profile ledger row is seeded");
+    const liveTurn = {
+      turnId: "live-profile-merge",
+      sessionKey: "local:01thread-profile-merge",
+      threadKey: "local:01thread-profile-merge",
+      model: "gpt-5.5",
+      responseIds: ["resp_profile_merge"],
+      callCount: 1,
+      usage: { input: 100, output: 10, cached: 0, total: 110, exact: true },
+      startedAt: new Date(base).toISOString(),
+      finishedAt: new Date(base + 1000).toISOString(),
+      createdAt: new Date(base).toISOString(),
+    };
+    const merged = api.mergeProfileLedgerTurns([liveTurn]);
+    assert.equal(
+      merged.filter((turn) => (turn.responseIds || []).includes("resp_profile_merge")).length,
+      1,
+      "a profile turn sharing a response_id must not be counted twice",
+    );
+    assert.equal(merged.some((turn) => turn.turnId === "profile-merge-dedupe"), false, "the overlapping profile row is skipped");
+  }
+
+  // ==========================================================================
   // A9. observability counters (P2 #5)
   // ==========================================================================
   {
@@ -1140,6 +1462,75 @@ const metaLine = (threadId) =>
     assert.equal(mirror.responseIds[0], "resp_privacy");
     const serialized = JSON.stringify(mirror);
     assert.equal(/assistant message body|command stdout|rm -rf|leaked|payload/.test(serialized), false, "no free text survives serialization");
+  }
+
+  // ==========================================================================
+  // A11. a response-less live fallback inside a fact-backed window is not double counted
+  // ==========================================================================
+  {
+    const baseStart = new Date(2026, 8, 9, 10, 0, 0).getTime();
+    const baseTurn = {
+      turnId: "fact-window-base",
+      sessionKey: "dedupe-window-session",
+      startedAt: new Date(baseStart).toISOString(),
+      finishedAt: new Date(baseStart + 10 * 60_000).toISOString(),
+      usage: { input: 100, output: 10, cached: 0, total: 110, exact: true },
+      responseIds: ["resp_window_base"],
+      callCount: 1,
+    };
+    const overlapping = {
+      turnId: "live-window-overlap",
+      sessionKey: "local:dedupe-window-session",
+      startedAt: new Date(baseStart + 60_000).toISOString(),
+      usage: { input: 20, output: 2, cached: 0, total: 22, exact: true },
+      callCount: 1,
+    };
+    api.profileLedgerUpsertTurn(overlapping);
+    const merged = api.mergeProfileLedgerTurns([baseTurn]);
+    assert.equal(
+      merged.some((turn) => turn.turnId === "live-window-overlap"),
+      false,
+      "a response-less fallback inside the fact window must be skipped",
+    );
+
+    const standalone = {
+      ...overlapping,
+      turnId: "live-window-standalone",
+      startedAt: new Date(baseStart + 60 * 60_000).toISOString(),
+    };
+    api.profileLedgerUpsertTurn(standalone);
+    const mergedAgain = api.mergeProfileLedgerTurns([baseTurn]);
+    assert.equal(
+      mergedAgain.some((turn) => turn.turnId === "live-window-standalone"),
+      true,
+      "a fallback outside every fact window is still kept",
+    );
+  }
+
+  // ==========================================================================
+  // A12. legacy facts get their model backfilled from the Profile turn
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    const responseId = "legacy:model-backfill-test:0:x";
+    api.usageFactUpsert({
+      responseId,
+      threadId: "thread-model-backfill",
+      turnId: "turn-model-backfill",
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+      observedAtMs: Date.now(),
+      source: "legacy-migration",
+    });
+    api.profileLedgerUpsertTurn({
+      turnId: "turn-model-backfill",
+      threadKey: "thread-model-backfill",
+      model: "gpt-5.5",
+      startedAt: new Date().toISOString(),
+      usage: { input: 10, output: 1, cached: 0, total: 11, exact: true },
+    });
+    const result = api.usageFactBackfillLegacyModels();
+    assert.equal(result.updated >= 1, true, "the response-less legacy fact is updated");
+    assert.equal(api.usageFactRecord(responseId).model, "gpt-5.5", "the model comes from the Profile turn");
   }
 
   console.log("usage accuracy P0 tests passed");
