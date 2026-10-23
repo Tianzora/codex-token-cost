@@ -151,14 +151,6 @@ macOS 尚未验证。其它 Codex / Codex++ 版本可能有选择器或接口差
 - **兜底**：新增 `unhandledrejection` 记账，异步动作失败不再完全静默。
 - **Windows 价格同步修复**（[@gjk-777](https://github.com/gjk-777)，[PR #10](https://github.com/Tianzora/codex-token-cost/pull/10)）：默认命令沙箱禁止联网、Windows Schannel 报 `SEC_E_NO_CREDENTIALS` 导致价格同步失败。现在只为下载单条命令开联网并限定用户脚本目录写入，且在 curl 退出码 35 时改用 Node 备用下载（保留证书校验、重定向、Range 与超时）。
 
-## 贡献者
-
-- [@Tianzora](https://github.com/Tianzora) — 项目发起与主要维护
-- [@gjk-777](https://github.com/gjk-777) — Windows 沙箱下的价格同步下载修复（[PR #10](https://github.com/Tianzora/codex-token-cost/pull/10)）
-- [@timeance](https://github.com/timeance)、[@mmyddd](https://github.com/mmyddd)、[@Rat0323](https://github.com/Rat0323) — 早期功能贡献
-
-欢迎提交 issue 与 PR。改动主脚本前请先读 `WORKSPACE_CONTEXT.md` 的「项目约定」：测试对源码文本有大量断言，结构改动不能破坏它们。
-
 ## 隐私
 
 - 主脚本写入 Codex WebView 的 `localStorage`，并在可用时使用 IndexedDB 保存 Profile ledger。
