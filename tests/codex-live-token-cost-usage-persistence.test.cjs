@@ -494,6 +494,86 @@ function createFakeAppServer(files = {}) {
     assert.match(api.usageFactState().hostBackupError, /校验失败/, "the checksum failure is reported");
   }
 
+  // ==========================================================================
+  // B10. host capability matrix (P2 #3)
+  // ==========================================================================
+  {
+    api.hostCapabilityReset();
+    // Unknown-method errors are recognised as "the host does not have it".
+    assert.equal(api.hostCapabilityMissingError(new Error("unsupported method: fs/copy")), true);
+    assert.equal(api.hostCapabilityMissingError(new Error("unknown method: fs/readDirectory")), true);
+    assert.equal(api.hostCapabilityMissingError({ message: "MethodNotFound" }), true);
+    assert.equal(api.hostCapabilityMissingError(new Error("NotFoundError: C:\\nope")), false);
+
+    let summary = api.hostCapabilitySummary();
+    assert.equal(summary.missing.length, 0);
+    assert.equal(summary.unknown.length, 8, "a fresh matrix has every method unobserved");
+    assert.equal(api.hostCapabilityStatusText(), "", "no status line before anything is observed");
+
+    api.hostCapabilityRecord("fs/copy", "missing");
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.missing.join(","), "fs/copy", "a missing method is reported");
+    assert.equal(summary.backupReady, false, "a host without fs/copy cannot back up");
+    assert.match(api.hostCapabilityStatusText(), /不支援 fs\/copy/, "the status text names the missing method");
+
+    // ok overrides missing (a host may gain the method after an upgrade).
+    api.hostCapabilityRecord("fs/copy", "ok");
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.missing.length, 0);
+    assert.equal(summary.backupReady, true);
+    assert.match(api.hostCapabilityStatusText(), /^主机能力：1\/8 可用 · 未观测 7 个方法$/);
+
+    // The matrix survives a reload (24h cache in localStorage).
+    context.__codexLiveTokenCost.destroy();
+    api = boot();
+    await settle();
+    assert.equal(api.hostCapabilitySummary().methods["fs/copy"].outcome, "ok", "the matrix is cached across reloads");
+
+    // Only read-only methods are probed; no write/command is ever attempted.
+    api.hostCapabilityReset();
+    const probeClient = createFakeAppServer({ "C:\\Users\\test\\.codex\\sessions": "" });
+    const calls = [];
+    const original = probeClient.sendRequest.bind(probeClient);
+    probeClient.sendRequest = async (method, params) => {
+      calls.push(method);
+      return original(method, params);
+    };
+    await api.hostProbeCapabilities(probeClient, { path: "C:\\Users\\test\\.codex", force: true });
+    assert.equal(calls.some((method) => method === "fs/writeFile" || method === "fs/copy" || method === "command/exec"), false, "the probe never writes or runs commands");
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.methods["fs/readDirectory"]?.outcome, "ok", "fs/readDirectory is probed");
+    // The fake host has no fs/getMetadata, so the probe must record it as missing.
+    assert.equal(summary.methods["fs/getMetadata"]?.outcome, "missing", "an unsupported method is recorded as missing");
+    // fs/readFile on a directory fails for another reason, so it stays unobserved.
+    assert.equal(summary.unknown.includes("fs/readFile"), true, "a non-unsupported error leaves the method unobserved");
+
+    // A host that lacks the fs channel is recorded as missing, not as a generic error.
+    api.hostCapabilityReset();
+    const crippled = {
+      disposed: false,
+      hostId: "local",
+      async sendRequest(method) {
+        throw new Error(`unsupported method: ${method}`);
+      },
+    };
+    await api.hostProbeCapabilities(crippled, { path: "C:\\Users\\test\\.codex", force: true });
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.methods["fs/getMetadata"]?.outcome, "missing");
+    assert.equal(summary.missing.length >= 3, true, "every probed method is marked missing");
+
+    // Real usage fills the write-side capabilities.
+    api.hostCapabilityReset();
+    const backupClient = createFakeAppServer();
+    await api.usageFactBackupToHost({ client: backupClient, root: "C:\\Users\\test\\.codex" });
+    summary = api.hostCapabilitySummary();
+    assert.equal(summary.methods["fs/writeFile"]?.outcome, "ok", "a real write marks fs/writeFile ok");
+    assert.equal(summary.methods["fs/copy"]?.outcome, "ok", "a real copy marks fs/copy ok");
+    assert.equal(summary.methods["fs/createDirectory"]?.outcome, "ok");
+    assert.equal(summary.methods["fs/remove"]?.outcome, "ok");
+    // fs/getMetadata is not in the backup critical set, so backupReady stays true.
+    assert.equal(summary.backupReady, true, "a backup that succeeded reports the host as writable");
+  }
+
   // A failed write must keep the previous file (the .tmp swap never happens).
   {
     const client = createFakeAppServer();

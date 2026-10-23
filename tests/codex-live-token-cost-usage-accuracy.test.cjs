@@ -492,6 +492,61 @@ const metaLine = (threadId) =>
       assert.equal(responses, 616, "golden file must yield 616 response facts");
       assert.equal(total, 316310040, "golden total must be 316,310,040");
       assert.notEqual(total, 317055092, "the 745,052 overcount must be gone");
+
+      // --- cross-midnight split on real data (acceptance #14) ---------------
+      // The same 616 records, grouped by the local day of each response's own
+      // timestamp, must match the rollup exactly and still sum to 316,310,040.
+      // This is timezone-independent: the expectation is derived from the same
+      // localDateKey the implementation uses.
+      const threads = new Map();
+      api.usageSyncIngestRolloutText(text, threads);
+      const collected = api.usageSyncFinalizeCollected([], threads, { parsedFiles: 1, skippedFiles: 0, readErrors: [], lineErrors: 0, nextStamps: {} });
+      const expectedByDay = new Map();
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        let obj;
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (obj.type !== "token_usage_record") continue;
+        const at = Date.parse(obj.timestamp);
+        const day = api.localDateKey(at);
+        const tokens = Number(obj.payload?.usage?.total_tokens) || 0;
+        expectedByDay.set(day, (expectedByDay.get(day) || 0) + tokens);
+      }
+      api.usageFactReset();
+      for (const fact of collected.facts) api.usageFactUpsert(fact);
+      const rollup = api.buildAnalyticsRollup(collected.rows);
+      const rollupDays = Object.keys(rollup.days).sort();
+      assert.equal(
+        rollupDays.join(","),
+        Array.from(expectedByDay.keys()).sort().join(","),
+        "the rollup days match the local days of the raw response timestamps",
+      );
+      let rollupTotal = 0;
+      for (const day of rollupDays) {
+        let dayTotal = 0;
+        for (const model of Object.keys(rollup.days[day].models)) dayTotal += rollup.days[day].models[model].usage.total || 0;
+        assert.equal(dayTotal, expectedByDay.get(day), `day ${day} must equal the per-response local-day sum`);
+        rollupTotal += dayTotal;
+      }
+      assert.equal(rollupTotal, 316310040, "the cross-midnight split must not change the grand total");
+      // At least one turn in this file really does cross local midnight; its
+      // slices must sum back to the turn total (exact partition, no loss).
+      const realDayIndex = api.usageFactDayIndex();
+      let splitTurns = 0;
+      for (const row of collected.rows) {
+        const slices = api.usageTurnDaySlices(row, realDayIndex);
+        if (slices.length < 2) continue;
+        splitTurns += 1;
+        let sum = 0;
+        for (const slice of slices) sum += slice.usage.total;
+        assert.equal(sum, row.usage.total_tokens, "each split turn's slices sum back to its total");
+      }
+      assert.ok(splitTurns >= 1, "this golden file contains a cross-midnight turn");
+      api.usageFactReset();
     } else {
       console.log("note: golden 2026-10-15 rollout not present; skipped file-level assertion");
     }
@@ -860,6 +915,231 @@ const metaLine = (threadId) =>
     assert.ok(html.includes("数据来源"), "the source panel renders");
     assert.ok(html.includes("本地价格表"), "the cost source is visible");
     assert.ok(html.includes("逐响应"), "the token source is visible");
+    assert.equal(labels.crossMidnight, 0, "no turn crosses midnight in this fixture");
+    assert.ok(html.includes("跨午夜归属"), "the cross-midnight row is visible");
+    assert.ok(html.includes("无（所有轮次都在单日内）"), "the cross-midnight row reports the clean case");
+  }
+
+  // ==========================================================================
+  // A8. cross-midnight split (acceptance #14)
+  //
+  // A turn whose responses straddle local midnight must be attributed per
+  // response time, not dumped on the start day. Measured on the real
+  // 2026-10-15 rollout: the split is an exact partition (sum of parts == whole).
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    // Local-time construction keeps the fixture timezone-independent.
+    const beforeMidnight = new Date(2026, 9, 15, 23, 50, 0).getTime();
+    const afterMidnight = new Date(2026, 9, 16, 0, 10, 0).getTime();
+    assert.equal(api.localDateKey(beforeMidnight), "2026-10-15");
+    assert.equal(api.localDateKey(afterMidnight), "2026-10-16");
+
+    const nightUsage = { input_tokens: 800, cached_input_tokens: 400, output_tokens: 200, total_tokens: 1000 };
+    const dawnUsage = { input_tokens: 240, cached_input_tokens: 40, output_tokens: 60, total_tokens: 300 };
+    api.usageFactUpsert({ responseId: "resp_night", threadId: "01thread-mid", turnId: "turn-mid", usage: nightUsage, observedAtMs: beforeMidnight, source: "rollout_record" });
+    api.usageFactUpsert({ responseId: "resp_dawn", threadId: "01thread-mid", turnId: "turn-mid", usage: dawnUsage, observedAtMs: afterMidnight, source: "rollout_record" });
+
+    // The turn row aggregates both responses (as usageSyncFinalizeTurnRow would).
+    const turn = {
+      turnId: "turn-mid",
+      sessionKey: "local:01thread-mid",
+      threadKey: "local:01thread-mid",
+      model: "gpt-5.5",
+      callCount: 2,
+      usageSource: "token_usage_record",
+      startedAt: new Date(beforeMidnight).toISOString(),
+      finishedAt: new Date(afterMidnight).toISOString(),
+      observedAt: beforeMidnight,
+      usage: { input: 1040, output: 260, cached: 440, total: 1300, exact: true },
+    };
+
+    assert.equal(api.usageTurnCrossesMidnight(turn), true, "the fixture must be detected as crossing midnight");
+    const slices = api.usageTurnDaySlices(turn);
+    assert.equal(slices.length, 2, "a cross-midnight turn splits into two day slices");
+    assert.equal(slices[0].date, "2026-10-15");
+    assert.equal(slices[0].usage.total, 1000, "the pre-midnight portion stays on 10-15");
+    assert.equal(slices[0].calls, 1);
+    assert.equal(slices[1].date, "2026-10-16");
+    assert.equal(slices[1].usage.total, 300, "the post-midnight portion moves to 10-16");
+    assert.equal(slices[1].calls, 1);
+    assert.equal(
+      slices[0].usage.total + slices[1].usage.total,
+      turn.usage.total,
+      "the split is a partition: no token is gained or lost",
+    );
+    assert.equal(
+      slices[0].usage.input + slices[1].usage.input,
+      turn.usage.input,
+      "the input partition is exact too",
+    );
+    // Cross-realm arrays break deepStrictEqual in the VM sandbox; compare text.
+    assert.equal(api.usageTurnDayDates(turn).join(","), "2026-10-15,2026-10-16");
+
+    // buildAnalyticsRollup must place each slice on its own day.
+    const rollup = api.buildAnalyticsRollup([turn]);
+    assert.equal(rollup.days["2026-10-15"].models["gpt-5.5"].usage.total, 1000);
+    assert.equal(rollup.days["2026-10-16"].models["gpt-5.5"].usage.total, 300);
+    assert.equal(rollup.days["2026-10-15"].models["gpt-5.5"].calls, 1);
+    assert.equal(rollup.days["2026-10-16"].models["gpt-5.5"].calls, 1);
+    assert.equal(
+      rollup.days["2026-10-15"].models["gpt-5.5"].usage.total + rollup.days["2026-10-16"].models["gpt-5.5"].usage.total,
+      turn.usage.total,
+      "the rollup keeps the grand total unchanged",
+    );
+
+    // A day-scoped range must only count the portion that happened that day.
+    const day15 = {
+      startMs: new Date(2026, 9, 15, 0, 0, 0, 0).getTime(),
+      endMs: new Date(2026, 9, 15, 23, 59, 59, 999).getTime(),
+    };
+    const day16 = {
+      startMs: new Date(2026, 9, 16, 0, 0, 0, 0).getTime(),
+      endMs: new Date(2026, 9, 16, 23, 59, 59, 999).getTime(),
+    };
+    const onlyDay15 = api.aggregateUsageAnalytics([turn], day15);
+    const onlyDay16 = api.aggregateUsageAnalytics([turn], day16);
+    assert.equal(onlyDay15.totalTokens, 1000, "the 10-15 range counts only the pre-midnight part");
+    assert.equal(onlyDay16.totalTokens, 300, "the 10-16 range counts only the post-midnight part");
+    assert.equal(onlyDay15.calls, 1);
+    assert.equal(onlyDay16.calls, 1);
+    assert.equal(
+      onlyDay15.totalTokens + onlyDay16.totalTokens,
+      turn.usage.total,
+      "the two day ranges add back up to the turn total",
+    );
+    // Cost is a linear function of tokens, so the split must stay additive.
+    assert.ok(Math.abs(onlyDay15.cost + onlyDay16.cost - api.turnCost(turn, "gpt-5.5").value) < 1e-9, "the split cost equals the whole-turn cost");
+
+    // The source panel must mark the split turn.
+    const labels = api.usageSourceLabels([turn]);
+    assert.equal(labels.crossMidnight, 1, "the split turn is counted and marked");
+    const html = api.usageSourcePanelHtml([turn]);
+    assert.ok(html.includes("1 轮已按响应时间拆到两天"), "the panel marks how many turns were split");
+
+    // A single-day turn is NOT split (and keeps the whole-turn figures).
+    const sameDayTurn = {
+      turnId: "turn-mid",
+      model: "gpt-5.5",
+      callCount: 2,
+      usageSource: "token_usage_record",
+      observedAt: beforeMidnight,
+      usage: turn.usage,
+    };
+    const singleSlices = api.usageTurnDaySlices({ ...sameDayTurn, turnId: "turn-other" });
+    assert.equal(singleSlices.length, 1, "a turn without facts stays unsplit");
+    assert.equal(singleSlices[0].usage.total, 1300);
+
+    // Guard: when the facts disagree with the turn total, never fabricate a split.
+    api.usageFactReset();
+    api.usageFactUpsert({ responseId: "resp_partial", threadId: "01thread-mid", turnId: "turn-gap", usage: nightUsage, observedAtMs: beforeMidnight, source: "rollout_record" });
+    const mismatched = {
+      turnId: "turn-gap",
+      model: "gpt-5.5",
+      callCount: 5,
+      usageSource: "token_usage_record",
+      observedAt: beforeMidnight,
+      usage: { input: 9000, output: 1000, cached: 0, total: 10000, exact: true },
+    };
+    const guarded = api.usageTurnDaySlices(mismatched);
+    assert.equal(guarded.length, 1, "facts that do not add up to the turn total are not split");
+    assert.equal(guarded[0].usage.total, 10000, "the whole turn stays on its own day");
+    assert.equal(guarded[0].date, "2026-10-15");
+    api.usageFactReset();
+  }
+
+  // ==========================================================================
+  // A8b. the split also reaches the HUD day buckets (localDailyUsage)
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    const beforeMidnight = new Date(2026, 9, 20, 23, 40, 0).getTime();
+    const afterMidnight = new Date(2026, 9, 21, 0, 20, 0).getTime();
+    api.usageFactUpsert({ responseId: "resp_bucket_night", threadId: "01thread-bucket", turnId: "turn-bucket", usage: { input_tokens: 500, output_tokens: 100, total_tokens: 600 }, observedAtMs: beforeMidnight, source: "rollout_record" });
+    api.usageFactUpsert({ responseId: "resp_bucket_dawn", threadId: "01thread-bucket", turnId: "turn-bucket", usage: { input_tokens: 150, output_tokens: 50, total_tokens: 200 }, observedAtMs: afterMidnight, source: "rollout_record" });
+    api.importLocalUsageTurns(
+      [
+        {
+          turnId: "turn-bucket",
+          threadId: "01thread-bucket",
+          sessionKey: "local:01thread-bucket",
+          model: "gpt-5.5",
+          callCount: 2,
+          startedAt: new Date(beforeMidnight).toISOString(),
+          finishedAt: new Date(afterMidnight).toISOString(),
+          observedAt: beforeMidnight,
+          usage: { input: 650, output: 150, cached: 0, total: 800, exact: true },
+        },
+      ],
+      { replaceSource: "cross-midnight-test", idbOnly: false },
+    );
+    const days = api.localDailyUsage();
+    assert.equal(days.get("2026-10-20").tokens, 600, "the pre-midnight slice lands on 10-20");
+    assert.equal(days.get("2026-10-21").tokens, 200, "the post-midnight slice lands on 10-21");
+    assert.equal(days.get("2026-10-20").requests, 1);
+    assert.equal(days.get("2026-10-21").requests, 1);
+    api.usageFactReset();
+  }
+
+  // ==========================================================================
+  // A9. observability counters (P2 #5)
+  // ==========================================================================
+  {
+    const lines = [
+      metaLine("01thread-obs"),
+      recordLine("resp_obs_1", "turn-obs", { input: 100, output: 10, total: 110 }),
+      // same response_id again -> duplicate record (idempotent, not counted twice)
+      recordLine("resp_obs_1", "turn-obs", { input: 100, output: 10, total: 110 }),
+      tokenCountLine("turn-obs", { input: 10, output: 2, total: 12 }, 12, "2026-10-15T06:00:00.000Z"),
+      // same signature + same cumulative -> duplicate heartbeat
+      tokenCountLine("turn-obs", { input: 10, output: 2, total: 12 }, 12, "2026-10-15T06:00:15.900Z"),
+      "{this is not json}",
+    ];
+    const summary = { lineErrors: 0 };
+    const thread = api.usageSyncParseLines(lines, summary);
+    assert.ok(thread, "the observability fixture must parse");
+    assert.equal(summary.lines, lines.length, "every non-empty line is counted");
+    assert.equal(summary.records, 2, "two token_usage_record lines are seen");
+    assert.equal(summary.duplicateRecords, 1, "the repeated response_id is counted as a duplicate");
+    assert.equal(summary.heartbeats, 2, "two token_count heartbeats are seen");
+    assert.equal(summary.duplicateHeartbeats, 1, "the repeated heartbeat is counted as a duplicate");
+    assert.equal(summary.lineErrors, 1, "the malformed line is still an error");
+    const row = api.usageSyncFinalizeTurnRow("01thread-obs", thread.turns.get("turn-obs"));
+    assert.equal(row.usage.total_tokens, 110, "duplicates never change the total");
+    assert.equal(row.callCount, 1, "one response, not two");
+  }
+
+  // ==========================================================================
+  // A10. privacy guard (P2 #4) — command output / message text never persists
+  // ==========================================================================
+  {
+    const turn = {
+      turnId: "turn-privacy",
+      model: "gpt-5.5",
+      callCount: 1,
+      usage: { input: 1, output: 1, cached: 0, total: 2, exact: true },
+      text: "assistant message body",
+      content: "tool output body",
+      stdout: "command stdout",
+      stderr: "command stderr",
+      command: "rm -rf /",
+      arguments: { path: "/secret" },
+      output: "model output text",
+      items: [{ type: "CommandExecution", text: "leaked" }],
+      rawPayload: { body: "payload" },
+      calls: [{ usage: { input: 1, output: 1, cached: 0, total: 2, exact: true } }],
+      responseIds: ["resp_privacy"],
+    };
+    const mirror = api.localLedgerMirrorTurn(turn);
+    for (const field of ["text", "content", "stdout", "stderr", "command", "arguments", "output", "items", "rawPayload", "calls"]) {
+      assert.equal(field in mirror, false, `${field} must not reach the localStorage mirror`);
+    }
+    // Usage / counters / identity are still there.
+    assert.equal(mirror.turnId, "turn-privacy");
+    assert.equal(mirror.usage.total, 2);
+    assert.equal(mirror.responseIds[0], "resp_privacy");
+    const serialized = JSON.stringify(mirror);
+    assert.equal(/assistant message body|command stdout|rm -rf|leaked|payload/.test(serialized), false, "no free text survives serialization");
   }
 
   console.log("usage accuracy P0 tests passed");

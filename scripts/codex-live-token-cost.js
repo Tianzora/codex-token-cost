@@ -495,6 +495,8 @@ const VERSION = "0.8.0";
     usageSyncDbPromise: null,
     usageSyncClient: null,
     usageSyncClientChannel: "",
+    // 主机能力矩阵（P2 #3）：app-server 方法集的探测/观测结果，24h 缓存。
+    hostCapabilities: null,
     usageSyncAutoTimer: 0,
     usageSyncAutoAt: 0,
     usageSyncAutoFailures: 0,
@@ -1675,11 +1677,11 @@ const VERSION = "0.8.0";
   }
 
   async function usageFactHostWriteFile(client, path, text) {
-    await client.sendRequest("fs/writeFile", { path, dataBase64: usageFactEncodeBase64(text) }, { priority: "background", source: "plugin_usage_sync" });
+    await hostRequest(client, "fs/writeFile", { path, dataBase64: usageFactEncodeBase64(text) }, { priority: "background", source: "plugin_usage_sync" });
   }
 
   async function usageFactHostReadFile(client, path) {
-    const result = await client.sendRequest("fs/readFile", { path }, { priority: "background", source: "plugin_usage_sync" });
+    const result = await hostRequest(client, "fs/readFile", { path }, { priority: "background", source: "plugin_usage_sync" });
     return typeof result?.dataBase64 === "string" ? usageFactDecodeBase64(result.dataBase64) : "";
   }
 
@@ -1694,7 +1696,7 @@ const VERSION = "0.8.0";
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
     let entries = [];
     try {
-      const response = await client.sendRequest("fs/readDirectory", { path: dir }, { priority: "background", source: "plugin_usage_sync" });
+      const response = await hostRequest(client, "fs/readDirectory", { path: dir }, { priority: "background", source: "plugin_usage_sync" });
       entries = Array.isArray(response?.entries) ? response.entries : [];
     } catch {
       return { ok: false, reason: "read-failed" };
@@ -1709,8 +1711,8 @@ const VERSION = "0.8.0";
       const source = usageSyncJoinPath(dir, name);
       const target = usageSyncJoinPath(dir, `${day}.ndjson.archived`);
       try {
-        await client.sendRequest("fs/copy", { sourcePath: source, destinationPath: target }, { priority: "background", source: "plugin_usage_sync" });
-        await client.sendRequest("fs/remove", { path: source, force: true }, { priority: "background", source: "plugin_usage_sync" });
+        await hostRequest(client, "fs/copy", { sourcePath: source, destinationPath: target }, { priority: "background", source: "plugin_usage_sync" });
+        await hostRequest(client, "fs/remove", { path: source, force: true }, { priority: "background", source: "plugin_usage_sync" });
         archived.push(day);
       } catch {
         // 归档失败就保留原文件：只读归档不是强制的，绝不因为清理失败丢数据。
@@ -1732,8 +1734,10 @@ const VERSION = "0.8.0";
     }
     const dir = usageFactBackupDir(root);
     const payload = usageFactBackupPayload();
+    // 能力矩阵：备份路径上顺带探测只读方法（24h 缓存，绝不写文件、绝不跑命令）。
+    void hostProbeCapabilities(client, { path: root });
     try {
-      await client.sendRequest("fs/createDirectory", { path: dir, recursive: true }, { priority: "background", source: "plugin_usage_sync" });
+      await hostRequest(client, "fs/createDirectory", { path: dir, recursive: true }, { priority: "background", source: "plugin_usage_sync" });
     } catch {
       // 目录已存在时 createDirectory 会报错，继续即可。
     }
@@ -1749,9 +1753,9 @@ const VERSION = "0.8.0";
         state.usageHostBackupStatus = state.usageHostBackupError;
         return { ok: false, reason: "checksum", day };
       }
-      await client.sendRequest("fs/copy", { sourcePath: tmpPath, destinationPath: finalPath }, { priority: "background", source: "plugin_usage_sync" });
+      await hostRequest(client, "fs/copy", { sourcePath: tmpPath, destinationPath: finalPath }, { priority: "background", source: "plugin_usage_sync" });
       try {
-        await client.sendRequest("fs/remove", { path: tmpPath, force: true }, { priority: "background", source: "plugin_usage_sync" });
+        await hostRequest(client, "fs/remove", { path: tmpPath, force: true }, { priority: "background", source: "plugin_usage_sync" });
       } catch {
         // 临时文件清理失败不影响已替换的正式文件。
       }
@@ -1776,9 +1780,9 @@ const VERSION = "0.8.0";
       state.usageHostBackupStatus = state.usageHostBackupError;
       return { ok: false, reason: "checksum", day: "manifest" };
     }
-    await client.sendRequest("fs/copy", { sourcePath: manifestTmp, destinationPath: manifestPath }, { priority: "background", source: "plugin_usage_sync" });
+    await hostRequest(client, "fs/copy", { sourcePath: manifestTmp, destinationPath: manifestPath }, { priority: "background", source: "plugin_usage_sync" });
     try {
-      await client.sendRequest("fs/remove", { path: manifestTmp, force: true }, { priority: "background", source: "plugin_usage_sync" });
+      await hostRequest(client, "fs/remove", { path: manifestTmp, force: true }, { priority: "background", source: "plugin_usage_sync" });
     } catch {
       // 临时文件清理失败不影响已替换的正式文件。
     }
@@ -2546,7 +2550,7 @@ const VERSION = "0.8.0";
   }
 
   async function priceSyncReadBase64(client, path) {
-    const result = await client.sendRequest("fs/readFile", { path }, priceSyncClientOptions());
+    const result = await hostRequest(client, "fs/readFile", { path }, priceSyncClientOptions());
     const dataBase64 = typeof result?.dataBase64 === "string" ? result.dataBase64 : "";
     if (!dataBase64) throw new Error("读取上游价格表失败");
     return dataBase64;
@@ -4902,10 +4906,30 @@ const VERSION = "0.8.0";
   const LOCAL_LEDGER_SNAPSHOT_BUDGETS = [512 * 1024, 256 * 1024, 128 * 1024, 64 * 1024, 32 * 1024];
 
   // 镜像里剥掉持久化后从不被读取的字段：calls[] 只有 usage+callCount 被下游消费。
+  // 隐私（P2 #4）：命令输出 / 消息正文 / 工具参数从不入库，这里再做一道显式白名单外的
+  // 剔除，防止未来某个调用方把 payload 原文挂到 turn 上被一起持久化。
+  const LOCAL_LEDGER_MIRROR_STRIP_FIELDS = [
+    "calls",
+    "items",
+    "text",
+    "content",
+    "output",
+    "stdout",
+    "stderr",
+    "command",
+    "arguments",
+    "outputText",
+    "itemText",
+    "rawPayload",
+    "payload",
+  ];
+
   function localLedgerMirrorTurn(turn) {
     if (!turn || typeof turn !== "object") return turn;
     const mirror = { ...turn };
-    if (Array.isArray(mirror.calls)) delete mirror.calls;
+    for (const field of LOCAL_LEDGER_MIRROR_STRIP_FIELDS) {
+      if (field in mirror) delete mirror[field];
+    }
     return mirror;
   }
 
@@ -5019,7 +5043,7 @@ const VERSION = "0.8.0";
         const candidate = {
           turns: eviction.kept,
           archive: mergeLocalUsageArchive(state.localUsageArchive, eviction.evicted),
-          dates: Array.from(new Set(eviction.evicted.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+          dates: usageTurnsDayDates(eviction.evicted),
         };
         try {
           localStorage.setItem(
@@ -5062,7 +5086,7 @@ const VERSION = "0.8.0";
         turns: snapshot,
         // 装不下的旧 turn 折进日归档：归档是派生汇总，不是唯一副本。
         archive: mergeLocalUsageArchive(state.localUsageArchive, evicted),
-        dates: Array.from(new Set(evicted.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+        dates: usageTurnsDayDates(evicted),
       };
       try {
         localStorage.setItem(
@@ -5218,7 +5242,7 @@ const VERSION = "0.8.0";
       archive: mergeLocalUsageArchive(archive, evicted),
       evicted: evicted.length,
       archived: evicted.length,
-      dates: Array.from(new Set(evicted.map((turn) => localDateKey(turnTimestampMs(turn))).filter(Boolean))),
+      dates: usageTurnsDayDates(evicted),
     };
   }
 
@@ -5473,7 +5497,27 @@ const VERSION = "0.8.0";
     return `${turnId}\u0001${signature}\u0001${toCount(cumulativeTotal)}`;
   }
 
+  // 可观测性计数器（P2 #5）：解析行数、逐响应记录数、心跳数、重复数。
+  const USAGE_SYNC_OBSERVABILITY_FIELDS = ["lines", "records", "heartbeats", "duplicateRecords", "duplicateHeartbeats"];
+
+  function usageSyncEnsureObservability(summary) {
+    if (!summary || typeof summary !== "object") return summary;
+    if (typeof summary.lineErrors !== "number") summary.lineErrors = 0;
+    for (const field of USAGE_SYNC_OBSERVABILITY_FIELDS) {
+      if (typeof summary[field] !== "number") summary[field] = 0;
+    }
+    return summary;
+  }
+
+  function usageSyncAddObservability(target, source) {
+    if (!target || !source) return target;
+    usageSyncEnsureObservability(target);
+    for (const field of USAGE_SYNC_OBSERVABILITY_FIELDS) target[field] += toCount(source[field]);
+    return target;
+  }
+
   function usageSyncParseRolloutLines(lines, fileSummary = { lineErrors: 0 }) {
+    usageSyncEnsureObservability(fileSummary);
     const thread = {
       threadId: "",
       turns: new Map(),
@@ -5507,6 +5551,8 @@ const VERSION = "0.8.0";
 
     for (const line of lines) {
       if (!line.trim()) continue;
+      // 可观测性（P2 #5）：解析行数、重复数一次算清，供同步状态行展示。
+      fileSummary.lines += 1;
       let obj;
       try {
         obj = JSON.parse(line);
@@ -5549,6 +5595,10 @@ const VERSION = "0.8.0";
           threadCumulative: usageSyncRawUsageShape(payload.thread_token_usage),
           observedAtMs: toTimestampMs(obj.timestamp),
         };
+        fileSummary.records += 1;
+        const target = record ? record.responses : thread.orphanResponses;
+        // 同一 response_id 重复出现 = 重复记录（幂等覆盖，不计入用量）。
+        if (target.has(responseId)) fileSummary.duplicateRecords += 1;
         if (record) record.responses.set(responseId, entry);
         else thread.orphanResponses.set(responseId, entry);
         continue;
@@ -5618,6 +5668,7 @@ const VERSION = "0.8.0";
           if (rateLimits && typeof rateLimits === "object") {
             thread.rateLimits.push({ observedAtMs: toTimestampMs(obj.timestamp), rateLimits });
           }
+          fileSummary.heartbeats += 1;
           const usage = usageSyncRawUsageShape(payload.info?.last_token_usage);
           if (!usage) continue;
           const cumulativeTotal = toCount(payload.info?.total_token_usage?.total_tokens);
@@ -5628,7 +5679,11 @@ const VERSION = "0.8.0";
             continue;
           }
           const dedupeKey = usageSyncFallbackKey(turnId, usage, cumulativeTotal);
-          if (record.fallbackSeen.has(dedupeKey)) continue;
+          if (record.fallbackSeen.has(dedupeKey)) {
+            // 可观测性：重复心跳（同 turn + 同签名 + 同累计）被去重的次数。
+            fileSummary.duplicateHeartbeats += 1;
+            continue;
+          }
           record.fallbackSeen.add(dedupeKey);
           record.fallbackCalls.push({ usage, observedAtMs: toTimestampMs(obj.timestamp), cumulativeTotal });
           continue;
@@ -5733,6 +5788,101 @@ const VERSION = "0.8.0";
       // 空闲占比过高说明用户离开了，不代表用量下降。
       idleShare: wallMs ? Math.round((idleMs / wallMs) * 100) : 0,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 跨午夜归属（验收 #14）
+  //
+  // 一个 turn 的用量按「每条响应自己的观测时间」落到本地自然日，不再整轮算到
+  // turn 的开始日。事实层（逐响应 observedAtMs）是唯一依据；没有逐响应事实
+  // （实时捕获行、导入的历史行、只有 token_count 的降级 turn）时整轮归到
+  // turn 自己的时间戳那天 —— 宁可少拆，也不按比例臆造。
+  // 拆分必须是严格的划分：各日用量之和 == 整轮用量，否则不拆。
+  // ---------------------------------------------------------------------------
+
+  // 逐响应事实按 turnId 建索引：turnId -> Map(date -> { raw, calls, firstMs, lastMs })。
+  // 一次遍历 facts，供 rollup / 日桶 / 区间聚合共用。
+  function usageFactDayIndex() {
+    const index = new Map();
+    for (const record of state.usageFacts.values()) {
+      const turnId = normalizeText(record?.turnId, 240);
+      const usage = record?.usage;
+      const at = toCount(record?.observedAtMs);
+      if (!turnId || !usage || !at) continue;
+      const date = localDateKey(at);
+      if (!date) continue;
+      let days = index.get(turnId);
+      if (!days) {
+        days = new Map();
+        index.set(turnId, days);
+      }
+      const bucket = days.get(date) || { raw: {}, calls: 0, firstMs: at, lastMs: at };
+      usageSyncSumRawUsage(bucket.raw, usage);
+      bucket.calls += 1;
+      bucket.firstMs = Math.min(bucket.firstMs, at);
+      bucket.lastMs = Math.max(bucket.lastMs, at);
+      days.set(date, bucket);
+    }
+    return index;
+  }
+
+  // 把 turn 的用量按本地自然日拆分，返回 [{ date, usage, calls, firstMs, lastMs }]。
+  // 没有逐响应事实、或各日之和对不上整轮用量时，退回单日（整轮归 turn 时间戳那天）。
+  function usageDaySlicesFromIndex(dayIndex, turn) {
+    const whole = normalizeUsage(turn?.usage);
+    if (!whole.exact) return [];
+    const fallbackMs = turnTimestampMs(turn);
+    const fallbackDate = localDateKey(fallbackMs);
+    if (!fallbackDate) return [];
+    const fallback = [{ date: fallbackDate, usage: whole, calls: toCount(turn?.callCount) || 1, firstMs: fallbackMs, lastMs: fallbackMs }];
+    const turnId = normalizeText(turn?.turnId, 240);
+    const days = turnId ? dayIndex?.get(turnId) : null;
+    if (!days || !days.size) return fallback;
+    const slices = [];
+    let sumTotal = 0;
+    for (const [date, bucket] of days) {
+      const usage = normalizeUsage(bucket.raw);
+      if (!usage.exact) continue;
+      sumTotal += toCount(usage.total || usage.input + usage.output);
+      slices.push({ date, usage, calls: bucket.calls, firstMs: bucket.firstMs, lastMs: bucket.lastMs });
+    }
+    const wholeTotal = toCount(whole.total || whole.input + whole.output);
+    if (!slices.length || sumTotal !== wholeTotal) return fallback;
+    slices.sort((left, right) => left.date.localeCompare(right.date));
+    // 单日时用整轮 usage 覆盖，保证与账本其它口径逐字一致。
+    if (slices.length === 1) {
+      return [{ date: slices[0].date, usage: whole, calls: toCount(turn?.callCount) || slices[0].calls, firstMs: slices[0].firstMs, lastMs: slices[0].lastMs }];
+    }
+    return slices;
+  }
+
+  // 单个 turn 的按日拆分（内部自建索引；批量调用请传 dayIndex 复用）。
+  function usageTurnDaySlices(turn, dayIndex = null) {
+    return usageDaySlicesFromIndex(dayIndex || usageFactDayIndex(), turn);
+  }
+
+  // turn 触达的所有本地日期（跨午夜时多于一天），供归档/rollup 刷新定位。
+  function usageTurnDayDates(turn, dayIndex = null) {
+    const dates = [];
+    for (const slice of usageDaySlicesFromIndex(dayIndex || usageFactDayIndex(), turn)) {
+      if (slice.date) dates.push(slice.date);
+    }
+    return dates;
+  }
+
+  // 一批 turn 触达的日期集合（共享一次事实索引）。
+  function usageTurnsDayDates(turns, dayIndex = null) {
+    const index = dayIndex || usageFactDayIndex();
+    const dates = new Set();
+    for (const turn of Array.isArray(turns) ? turns : []) {
+      for (const date of usageTurnDayDates(turn, index)) dates.add(date);
+    }
+    return Array.from(dates);
+  }
+
+  // turn 是否跨过本地午夜（各日拆分后多于一天）。
+  function usageTurnCrossesMidnight(turn, dayIndex = null) {
+    return usageDaySlicesFromIndex(dayIndex || usageFactDayIndex(), turn).length > 1;
   }
 
   function usageSyncFinalizeTurnRow(threadId, record) {
@@ -5902,6 +6052,7 @@ const VERSION = "0.8.0";
     const threads = new Map();
     const readErrors = [];
     const nextStamps = {};
+    const observability = usageSyncEnsureObservability({});
     let parsedFiles = 0;
     let skippedFiles = 0;
     let lineErrors = 0;
@@ -5917,14 +6068,14 @@ const VERSION = "0.8.0";
           continue;
         }
         nextStamps[item.path] = { lastModified: loaded.lastModified, size: loaded.size };
-        const ingested = usageSyncIngestRolloutText(loaded.text, threads);
+        const ingested = usageSyncIngestRolloutText(loaded.text, threads, observability);
         lineErrors += ingested.lineErrors;
         if (ingested.parsed) parsedFiles += 1;
       } catch (error) {
         readErrors.push(`${item.path}: ${(error && error.message) || error}`);
       }
     }
-    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps });
+    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps, observability });
   }
 
   function openUsageSyncDatabase() {
@@ -6060,6 +6211,153 @@ const VERSION = "0.8.0";
   // 先从 composer / 标题等 DOM 锚点向上找（便宜），再从 React 根向下遍历（兜底）。
   // 结果缓存；客户端被 dispose 后 isAppServerSyncClient 会自动判定失效并重新发现。
   const APP_SERVER_FIBER_SCAN_LIMIT = 20000;
+
+  // ---------------------------------------------------------------------------
+  // 主机能力矩阵（P2 #3）
+  //
+  // app-server 的方法集随 Codex++ 版本变化（`fs/*`、`command/exec`）。这里维护一份
+  // 能力矩阵，避免降级时只能看到「失败」而说不出「主机没有哪个方法」：
+  //   - 只读方法（fs/getMetadata / fs/readDirectory / fs/readFile）主动探测；
+  //   - 有副作用的方法（fs/writeFile / fs/copy / command/exec）**不做试探写入**，
+  //     由真实使用结果回填（成功 = ok，unsupported/unknown method = missing）。
+  // 结果按 HOST_CAPABILITY_TTL_MS 缓存到 localStorage，24h 内不重复探测。
+  // ---------------------------------------------------------------------------
+
+  const HOST_CAPABILITY_KEY = "__codexLiveTokenCostHostCapabilitiesV1";
+  const HOST_CAPABILITY_TTL_MS = 24 * 60 * 60 * 1000;
+  // 能力矩阵覆盖的方法（顺序即 UI 展示顺序）。
+  const HOST_CAPABILITY_METHODS = [
+    "fs/readFile",
+    "fs/getMetadata",
+    "fs/readDirectory",
+    "fs/writeFile",
+    "fs/createDirectory",
+    "fs/copy",
+    "fs/remove",
+    "command/exec",
+  ];
+  // 只读、可无副作用探测的方法。
+  const HOST_PROBE_READONLY_METHODS = ["fs/getMetadata", "fs/readDirectory", "fs/readFile"];
+
+  function hostCapabilityLoad() {
+    if (state.hostCapabilities) return state.hostCapabilities;
+    const saved = loadJson(HOST_CAPABILITY_KEY, null);
+    const methods = {};
+    const raw = saved && typeof saved === "object" && saved.methods && typeof saved.methods === "object" ? saved.methods : {};
+    for (const method of HOST_CAPABILITY_METHODS) {
+      const entry = raw[method];
+      if (!entry || typeof entry !== "object") continue;
+      const outcome = entry.outcome === "ok" || entry.outcome === "missing" ? entry.outcome : "";
+      if (!outcome) continue;
+      methods[method] = { outcome, at: toCount(entry.at) };
+    }
+    state.hostCapabilities = { probedAt: toCount(saved?.probedAt), methods };
+    return state.hostCapabilities;
+  }
+
+  function hostCapabilitySave() {
+    const matrix = state.hostCapabilities;
+    if (!matrix) return false;
+    try {
+      localStorage.setItem(HOST_CAPABILITY_KEY, JSON.stringify({ probedAt: toCount(matrix.probedAt), methods: matrix.methods }));
+      return true;
+    } catch {
+      // 配额写满时能力矩阵只是诊断信息，静默降级。
+      return false;
+    }
+  }
+
+  // unsupported / unknown method 这类错误 = 宿主机没有这个方法（能力缺失）。
+  function hostCapabilityMissingError(error) {
+    const text = `${(error && error.name) || ""} ${(error && error.message) || error || ""}`;
+    return /unknown method|method not found|methodnotfound|unsupported method|not implemented|unimplemented|no such method|method .* not supported/i.test(
+      text,
+    );
+  }
+
+  function hostCapabilityRecord(method, outcome) {
+    const name = normalizeText(method, 80);
+    // 只记 ok / missing 两种确定结论：其它错误可能是路径不存在等偶发原因，不污染矩阵。
+    if (!name || (outcome !== "ok" && outcome !== "missing")) return;
+    if (!HOST_CAPABILITY_METHODS.includes(name)) return;
+    const matrix = hostCapabilityLoad();
+    const previous = matrix.methods[name];
+    // missing 是稳定结论，不被偶发 error 覆盖；ok 可以被 missing 覆盖（宿主降级）。
+    if (previous?.outcome === "missing" && outcome !== "ok") return;
+    if (previous?.outcome === outcome) {
+      previous.at = Date.now();
+      return;
+    }
+    matrix.methods[name] = { outcome, at: Date.now() };
+    hostCapabilitySave();
+  }
+
+  // 统一的 app-server 调用入口：成功/失败都回填能力矩阵，然后再把错误抛回去。
+  async function hostRequest(client, method, params, options) {
+    try {
+      const result = await client.sendRequest(method, params, options);
+      hostCapabilityRecord(method, "ok");
+      return result;
+    } catch (error) {
+      hostCapabilityRecord(method, hostCapabilityMissingError(error) ? "missing" : "");
+      throw error;
+    }
+  }
+
+  // 只读探测：对已知存在的路径试 getMetadata / readDirectory / readFile。
+  // 没有可用路径时只标记「未探测」，绝不写文件、绝不跑命令。
+  async function hostProbeCapabilities(client, options = {}) {
+    if (!isAppServerSyncClient(client)) return hostCapabilityLoad();
+    const matrix = hostCapabilityLoad();
+    const now = Date.now();
+    const ttl = Math.max(0, toCount(options.ttlMs) || HOST_CAPABILITY_TTL_MS);
+    if (!options.force && matrix.probedAt && now - matrix.probedAt < ttl) return matrix;
+    const probePath = normalizeText(options.path, 600);
+    if (!probePath) return matrix;
+    for (const method of HOST_PROBE_READONLY_METHODS) {
+      try {
+        if (method === "fs/getMetadata") await client.sendRequest(method, { path: probePath }, { priority: "background", source: "plugin_usage_sync" });
+        else if (method === "fs/readDirectory") await client.sendRequest(method, { path: probePath }, { priority: "background", source: "plugin_usage_sync" });
+        else await client.sendRequest(method, { path: probePath }, { priority: "background", source: "plugin_usage_sync" });
+        hostCapabilityRecord(method, "ok");
+      } catch (error) {
+        hostCapabilityRecord(method, hostCapabilityMissingError(error) ? "missing" : "");
+      }
+    }
+    state.hostCapabilities.probedAt = now;
+    hostCapabilitySave();
+    return state.hostCapabilities;
+  }
+
+  function hostCapabilitySummary() {
+    const matrix = hostCapabilityLoad();
+    const missing = [];
+    const unknown = [];
+    for (const method of HOST_CAPABILITY_METHODS) {
+      const outcome = matrix.methods[method]?.outcome;
+      if (outcome === "missing") missing.push(method);
+      else if (outcome !== "ok") unknown.push(method);
+    }
+    return {
+      probedAt: toCount(matrix.probedAt),
+      methods: { ...matrix.methods },
+      missing,
+      unknown,
+      ok: HOST_CAPABILITY_METHODS.length - missing.length - unknown.length,
+      // 备份必须的四个方法都确认可用时才认为「主机备份可写」。
+      backupReady: !["fs/writeFile", "fs/copy", "fs/readDirectory", "fs/remove"].some((method) => matrix.methods[method]?.outcome === "missing"),
+    };
+  }
+
+  function hostCapabilityStatusText() {
+    const summary = hostCapabilitySummary();
+    if (!summary.ok && !summary.missing.length) return "";
+    const parts = [];
+    if (summary.missing.length) parts.push(`不支援 ${summary.missing.join(" / ")}`);
+    if (summary.unknown.length) parts.push(`未观测 ${summary.unknown.length} 个方法`);
+    if (!parts.length) return `主机能力：${summary.ok}/${HOST_CAPABILITY_METHODS.length} 个方法可用`;
+    return `主机能力：${summary.ok}/${HOST_CAPABILITY_METHODS.length} 可用 · ${parts.join(" · ")}`;
+  }
 
   function isAppServerSyncClient(value) {
     if (!value || typeof value !== "object") return false;
@@ -6393,7 +6691,7 @@ const VERSION = "0.8.0";
     let result = null;
     try {
       result = await Promise.race([
-        client.sendRequest("command/exec", { command }, updateClientOptions()),
+        hostRequest(client, "command/exec", { command }, updateClientOptions()),
         timeout,
       ]);
     } finally {
@@ -6408,19 +6706,19 @@ const VERSION = "0.8.0";
   }
 
   async function updateReadBase64(client, path) {
-    const result = await client.sendRequest("fs/readFile", { path }, updateClientOptions());
+    const result = await hostRequest(client, "fs/readFile", { path }, updateClientOptions());
     const dataBase64 = typeof result?.dataBase64 === "string" ? result.dataBase64 : "";
     if (!dataBase64) throw new Error("读取远端脚本失败");
     return dataBase64;
   }
 
   async function updateWriteBase64(client, path, dataBase64) {
-    await client.sendRequest("fs/writeFile", { path, dataBase64 }, updateClientOptions());
+    await hostRequest(client, "fs/writeFile", { path, dataBase64 }, updateClientOptions());
   }
 
   async function updateRemoveFile(client, path) {
     try {
-      await client.sendRequest("fs/remove", { path }, updateClientOptions());
+      await hostRequest(client, "fs/remove", { path }, updateClientOptions());
     } catch {
       // 清理下载临时文件失败不影响更新结果。
     }
@@ -6772,7 +7070,7 @@ const VERSION = "0.8.0";
   }
 
   async function usageSyncReadDirectoryViaAppServer(client, path) {
-    const response = await client.sendRequest("fs/readDirectory", { path }, { priority: "background", source: "plugin_usage_sync" });
+    const response = await hostRequest(client, "fs/readDirectory", { path }, { priority: "background", source: "plugin_usage_sync" });
     return Array.isArray(response?.entries) ? response.entries : [];
   }
 
@@ -6846,8 +7144,8 @@ const VERSION = "0.8.0";
     return target;
   }
 
-  function usageSyncIngestRolloutText(text, threads) {
-    const fileSummary = { lineErrors: 0 };
+  function usageSyncIngestRolloutText(text, threads, observability = null) {
+    const fileSummary = usageSyncEnsureObservability({ lineErrors: 0 });
     const thread = usageSyncParseRolloutLines(String(text).split(/\r?\n/), fileSummary);
     if (thread) {
       const target = threads.get(thread.threadId) || { turns: new Map(), orphanCalls: [], orphanResponses: new Map(), rateLimits: [] };
@@ -6862,7 +7160,9 @@ const VERSION = "0.8.0";
       if (Array.isArray(thread.rateLimits)) target.rateLimits.push(...thread.rateLimits);
       threads.set(thread.threadId, target);
     }
-    return { parsed: Boolean(thread), lineErrors: fileSummary.lineErrors };
+    // 可观测性：把本次文件的解析/重复计数汇总给调用方。
+    if (observability) usageSyncAddObservability(observability, fileSummary);
+    return { parsed: Boolean(thread), lineErrors: fileSummary.lineErrors, observability: fileSummary };
   }
   function usageSyncFinalizeCollected(files, threads, stats) {
     const rows = [];
@@ -6951,6 +7251,8 @@ const VERSION = "0.8.0";
       firstDay: sortedDays[0] || "",
       lastDay: sortedDays[sortedDays.length - 1] || "",
       nextStamps: stats.nextStamps,
+      // 可观测性（P2 #5）：解析行数 / 逐响应记录 / 心跳 / 重复数。
+      observability: usageSyncEnsureObservability({ ...(stats.observability || {}) }),
     };
   }
 
@@ -6958,6 +7260,8 @@ const VERSION = "0.8.0";
     if (!isAppServerSyncClient(client)) throw new Error("自动同步通道不可用");
     const root = normalizeText(options.root, 600);
     if (!root) throw new Error("未定位到本机 .codex 目录");
+    // 能力矩阵：同步路径上顺带探测只读方法（24h 缓存，无副作用）。
+    void hostProbeCapabilities(client, { path: root }).catch?.(() => {});
     const files = await usageSyncCollectFilesViaAppServer(client, root);
     files.sort((left, right) => left.path.localeCompare(right.path));
 
@@ -6965,6 +7269,7 @@ const VERSION = "0.8.0";
     const threads = new Map();
     const readErrors = [];
     const nextStamps = {};
+    const observability = usageSyncEnsureObservability({});
     let parsedFiles = 0;
     let skippedFiles = 0;
     let lineErrors = 0;
@@ -6972,7 +7277,7 @@ const VERSION = "0.8.0";
       const item = files[index];
       if (typeof options.onProgress === "function") options.onProgress({ index: index + 1, total: files.length, path: item.path });
       try {
-        const meta = await client.sendRequest("fs/getMetadata", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
+        const meta = await hostRequest(client, "fs/getMetadata", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
         const lastModified = toCount(meta?.modifiedAtMs) || toCount(meta?.modified_at_ms);
         const previous = stampIndex ? stampIndex[item.path] : null;
         if (previous && lastModified && previous.lastModified === lastModified) {
@@ -6980,18 +7285,18 @@ const VERSION = "0.8.0";
           nextStamps[item.path] = previous;
           continue;
         }
-        const loaded = await client.sendRequest("fs/readFile", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
+        const loaded = await hostRequest(client, "fs/readFile", { path: item.absPath }, { priority: "background", source: "plugin_usage_sync" });
         const bytes = usageSyncBase64ToBytes(loaded?.dataBase64);
         const text = usageSyncDecodeBytes(bytes);
         nextStamps[item.path] = { lastModified, size: bytes.length };
-        const ingested = usageSyncIngestRolloutText(text, threads);
+        const ingested = usageSyncIngestRolloutText(text, threads, observability);
         lineErrors += ingested.lineErrors;
         if (ingested.parsed) parsedFiles += 1;
       } catch (error) {
         readErrors.push(`${item.path}: ${(error && error.message) || error}`);
       }
     }
-    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps });
+    return usageSyncFinalizeCollected(files, threads, { parsedFiles, skippedFiles, readErrors, lineErrors, nextStamps, observability });
   }
 
   async function usageSyncApplyCollected(collected, options = {}) {
@@ -7058,6 +7363,8 @@ const VERSION = "0.8.0";
       state.usageFactFallbackThreads.set(turnId, normalizeText(row.threadKey, 240).replace(/^local:/, ""));
     }
     await usageSyncStoreFileStamps(collected.nextStamps);
+    const observability = usageSyncEnsureObservability({ ...(collected.observability || {}) });
+    const reconcile = usageFactReconcileSummary();
     state.usageSyncResult = {
       imported: imported.imported,
       deduped: imported.deduped,
@@ -7068,12 +7375,20 @@ const VERSION = "0.8.0";
       turns: collected.rows.length,
       firstDay: collected.firstDay,
       lastDay: collected.lastDay,
+      observability,
+      coverage: reconcile.coverage,
+      delta: reconcile.delta,
       at: Date.now(),
     };
     const range = collected.firstDay ? ` · 覆盖 ${collected.firstDay} ~ ${collected.lastDay}` : "";
     const failures = collected.readErrors.length ? ` · ${collected.readErrors.length} 个文件读取失败` : "";
+    // 可观测性（P2 #5）：解析行数 / 重复数 / 覆盖率 / 差异一次报清。
+    const parseInfo = observability.lines
+      ? ` · 解析 ${observability.lines} 行（响应 ${observability.records} · 心跳 ${observability.heartbeats} · 重复 ${observability.duplicateRecords + observability.duplicateHeartbeats}）`
+      : "";
+    const reconcileInfo = reconcile.threads ? ` · 覆盖率 ${reconcile.coverage}%${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""}` : "";
     const prefix = auto ? "自动同步完成" : "同步完成";
-    state.usageSyncStatus = `${prefix}：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${failures}`;
+    state.usageSyncStatus = `${prefix}：写入 ${imported.imported} 轮 · 去重 ${imported.deduped} · 跳过 ${imported.skipped}${range}${parseInfo}${reconcileInfo}${failures}`;
     saveUsageSyncLastResult(state.usageSyncResult);
   }
 
@@ -9255,48 +9570,69 @@ const VERSION = "0.8.0";
     };
   }
 
+  // 区间聚合的分片计价：有存储费用时按 token 占比分摊，否则按本机价格表单独计价。
+  function usageSliceCost(turn, slice, model, wholeTotal) {
+    const usage = normalizeUsage(slice?.usage);
+    if (!usage.exact) return { value: 0, priced: true };
+    const storedCost = storedTurnCost(turn);
+    if (storedCost != null) {
+      const sliceTotal = toCount(usage.total || usage.input + usage.output);
+      return { value: wholeTotal ? (storedCost * sliceTotal) / wholeTotal : 0, priced: true };
+    }
+    return costForModelUsage(usage, turn?.model || model, { fastMode: turn?.fastMode === true });
+  }
+
   function aggregateUsageAnalytics(turns, range = {}) {
     const startMs = toTimestampMs(range.startMs) || 0;
     const endMs = toTimestampMs(range.endMs) || Number.MAX_SAFE_INTEGER;
     const totals = emptyUsageAnalytics();
     const models = new Map();
+    // 跨午夜拆分：一次建索引，供本批 turn 复用。
+    const dayIndex = usageFactDayIndex();
     for (const turn of Array.isArray(turns) ? turns : []) {
-      const timestamp = analyticsTurnTimestampMs(turn);
-      if (!timestamp || timestamp < startMs || timestamp > endMs) continue;
-      const usage = normalizeUsage(turn?.usage);
-      if (!usage.exact) continue;
-      const cacheRead = Math.min(toCount(usage.input), toCount(usage.cached));
-      const cacheWrite = Math.min(Math.max(0, toCount(usage.input) - cacheRead), toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
+      const wholeUsage = normalizeUsage(turn?.usage);
+      if (!wholeUsage.exact) continue;
+      const wholeTotal = toCount(wholeUsage.total || wholeUsage.input + wholeUsage.output);
+      const slices = usageDaySlicesFromIndex(dayIndex, turn);
+      if (!slices.length) continue;
       const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
-      const cost = turnCost(turn, model);
       const tokenOnly = (normalizeText(turn?.source, 80) === "codexpp-history" || normalizeText(turn?.importSource, 80) === "codexpp-history");
-      const item =
-        models.get(model) ||
-        {
-          model,
-          usage: { input: 0, output: 0, cached: 0, cacheWriteTokens: 0, total: 0, exact: true },
-          calls: 0,
-          cost: 0,
-          priced: true,
-        };
-      item.usage = addUsage(item.usage, usage);
-      if (!tokenOnly) {
-        item.calls += toCount(turn?.callCount) || 1;
-        item.cost += cost.value;
-        item.priced = item.priced && cost.priced;
-      }
-      models.set(model, item);
-      totals.totalTokens += toCount(usage.total || usage.input + usage.output);
-      totals.input += toCount(usage.input);
-      totals.output += toCount(usage.output);
-      totals.cacheRead += cacheRead;
-      totals.cacheWrite += cacheWrite;
-      totals.cacheWriteAvailable = totals.cacheWriteAvailable || turn?.cacheWriteAvailable === true || cacheWrite > 0;
-      totals.regularInput += Math.max(0, toCount(usage.input) - cacheRead - cacheWrite);
-      if (!tokenOnly) {
-        totals.calls += toCount(turn?.callCount) || 1;
-        totals.cost += cost.value;
-        totals.priced = totals.priced && cost.priced;
+      for (const slice of slices) {
+        // 区间命中用分片自己的观测时间跨度判断；跨午夜的 turn 只计入落在区间内的那一天。
+        if (!slice.lastMs || slice.lastMs < startMs || slice.firstMs > endMs) continue;
+        const usage = normalizeUsage(slice.usage);
+        if (!usage.exact) continue;
+        const cacheRead = Math.min(toCount(usage.input), toCount(usage.cached));
+        const cacheWrite = Math.min(Math.max(0, toCount(usage.input) - cacheRead), toCount(usage.cacheWriteTokens ?? usage.cacheCreationTokens));
+        const cost = usageSliceCost(turn, slice, model, wholeTotal);
+        const item =
+          models.get(model) ||
+          {
+            model,
+            usage: { input: 0, output: 0, cached: 0, cacheWriteTokens: 0, total: 0, exact: true },
+            calls: 0,
+            cost: 0,
+            priced: true,
+          };
+        item.usage = addUsage(item.usage, usage);
+        if (!tokenOnly) {
+          item.calls += toCount(slice.calls) || 1;
+          item.cost += cost.value;
+          item.priced = item.priced && cost.priced;
+        }
+        models.set(model, item);
+        totals.totalTokens += toCount(usage.total || usage.input + usage.output);
+        totals.input += toCount(usage.input);
+        totals.output += toCount(usage.output);
+        totals.cacheRead += cacheRead;
+        totals.cacheWrite += cacheWrite;
+        totals.cacheWriteAvailable = totals.cacheWriteAvailable || turn?.cacheWriteAvailable === true || cacheWrite > 0;
+        totals.regularInput += Math.max(0, toCount(usage.input) - cacheRead - cacheWrite);
+        if (!tokenOnly) {
+          totals.calls += toCount(slice.calls) || 1;
+          totals.cost += cost.value;
+          totals.priced = totals.priced && cost.priced;
+        }
       }
     }
     totals.cacheHitRate = totals.input ? Math.round((totals.cacheRead / totals.input) * 100) : null;
@@ -9312,24 +9648,34 @@ const VERSION = "0.8.0";
 
   function buildAnalyticsRollup(turns) {
     const rollup = { version: 1, updatedAt: Date.now(), days: {} };
+    // 跨午夜拆分：一次建索引，供本轮所有 turn 复用。
+    const dayIndex = usageFactDayIndex();
     for (const turn of analyticsVisibleTurns(turns)) {
       const usage = normalizeUsage(turn?.usage);
-      const date = localDateKey(turnTimestampMs(turn));
-      if (!usage.exact || !date) continue;
+      if (!usage.exact) continue;
       const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
-      const day = (rollup.days[date] ||= { models: {} });
-      const item = (day.models[model] ||= {
-        usage: { input: 0, output: 0, cached: 0, cacheWriteTokens: 0, total: 0, exact: true },
-        calls: 0,
-        storedCostUsd: 0,
-        storedCostCount: 0,
-      });
-      item.usage = addUsage(item.usage, usage);
-      item.calls += toCount(turn?.callCount) || 1;
+      const slices = usageDaySlicesFromIndex(dayIndex, turn);
+      if (!slices.length) continue;
       const storedCost = storedTurnCost(turn);
-      if (storedCost != null) {
-        item.storedCostUsd += storedCost;
-        item.storedCostCount++;
+      // 存储费用按各日 token 占比分摊（拆分 turn 一定是逐响应事实行，正常不含存储费用）。
+      const wholeTotal = toCount(usage.total || usage.input + usage.output);
+      for (const slice of slices) {
+        const date = slice.date;
+        if (!date) continue;
+        const day = (rollup.days[date] ||= { models: {} });
+        const item = (day.models[model] ||= {
+          usage: { input: 0, output: 0, cached: 0, cacheWriteTokens: 0, total: 0, exact: true },
+          calls: 0,
+          storedCostUsd: 0,
+          storedCostCount: 0,
+        });
+        item.usage = addUsage(item.usage, slice.usage);
+        item.calls += toCount(slice.calls) || 1;
+        if (storedCost != null) {
+          const sliceTotal = toCount(slice.usage.total || slice.usage.input + slice.usage.output);
+          item.storedCostUsd += wholeTotal ? (storedCost * sliceTotal) / wholeTotal : storedCost / slices.length;
+          item.storedCostCount += 1;
+        }
       }
     }
     return rollup;
@@ -9394,8 +9740,11 @@ const VERSION = "0.8.0";
     const targets = new Set((Array.isArray(dates) ? dates : [dates]).map((date) => normalizeText(date, 10)).filter(Boolean));
     if (!targets.size) return false;
     const next = loadAnalyticsRollup();
+    const dayIndex = usageFactDayIndex();
     const partial = buildAnalyticsRollup(
-      [...localUsageArchiveTurns(state.localUsageArchive, targets), ...state.localLedger].filter((turn) => targets.has(localDateKey(turnTimestampMs(turn)))),
+      [...localUsageArchiveTurns(state.localUsageArchive, targets), ...state.localLedger].filter((turn) =>
+        usageDaySlicesFromIndex(dayIndex, turn).some((slice) => targets.has(slice.date)),
+      ),
     );
     for (const date of targets) {
       if (partial.days[date]) next.days[date] = partial.days[date];
@@ -9469,20 +9818,35 @@ const VERSION = "0.8.0";
         cursor.setDate(cursor.getDate() + 1);
       }
     }
+    // 跨午夜拆分：一次建索引，供本批 turn 复用。
+    const dayIndex = usageFactDayIndex();
     for (const turn of Array.isArray(turns) ? turns : []) {
-      const timestamp = analyticsTurnTimestampMs(turn);
-      if (!timestamp || timestamp < startMs || timestamp > endMs) continue;
-      const date = new Date(timestamp);
-      const key =
-        mode === "hour"
-          ? `hour:${date.getHours()}`
-          : mode === "week"
-            ? `week:${Math.floor((startOfLocalDay(timestamp) - startOfLocalDay(startMs)) / (7 * 86_400_000))}`
-            : `day:${localDateKey(timestamp)}`;
-      const bucket = bucketMap.get(key);
-      if (!bucket) continue;
       const usage = normalizeUsage(turn?.usage);
-      bucket.value += metric === "cost" ? turnCost(turn, turn?.model).value : toCount(usage.total || usage.input + usage.output);
+      if (!usage.exact) continue;
+      const slices = usageDaySlicesFromIndex(dayIndex, turn);
+      if (!slices.length) continue;
+      const wholeTotal = toCount(usage.total || usage.input + usage.output);
+      for (const slice of slices) {
+        // 跨午夜的 turn 按各分片自己的时间落桶；单日 turn 保持原有口径（用 turn 时间戳），
+        // 避免把既有图表的小时分布整体改掉。
+        const timestamp = slices.length > 1 ? slice.firstMs : analyticsTurnTimestampMs(turn);
+        if (!timestamp || timestamp < startMs || timestamp > endMs) continue;
+        const date = new Date(timestamp);
+        const key =
+          mode === "hour"
+            ? `hour:${date.getHours()}`
+            : mode === "week"
+              ? `week:${Math.floor((startOfLocalDay(timestamp) - startOfLocalDay(startMs)) / (7 * 86_400_000))}`
+              : `day:${localDateKey(timestamp)}`;
+        const bucket = bucketMap.get(key);
+        if (!bucket) continue;
+        if (metric === "cost") {
+          bucket.value += slices.length > 1 ? usageSliceCost(turn, slice, turn?.model, wholeTotal).value : turnCost(turn, turn?.model).value;
+        } else {
+          const sliceUsage = slices.length > 1 ? normalizeUsage(slice.usage) : usage;
+          bucket.value += toCount(sliceUsage.total || sliceUsage.input + sliceUsage.output);
+        }
+      }
     }
     return buckets;
   }
@@ -9543,6 +9907,9 @@ const VERSION = "0.8.0";
     let live = 0;
     let inferred = 0;
     let unpriced = 0;
+    let crossMidnight = 0;
+    // 跨午夜拆分计数：一次建索引，供本批 turn 复用。
+    const dayIndex = usageFactDayIndex();
     for (const turn of items) {
       const source = normalizeText(turn?.usageSource, 60);
       if (source === "token_usage_record") recorded += 1;
@@ -9551,6 +9918,7 @@ const VERSION = "0.8.0";
       else inferred += 1;
       const model = normalizeText(turn?.model, 120) || UNKNOWN_MODEL;
       if (!priceFor(model)) unpriced += 1;
+      if (usageTurnCrossesMidnight(turn, dayIndex)) crossMidnight += 1;
     }
     const total = items.length || 1;
     // 有 record 或实时通知都算「有事实来源」；只有降级/推断才算估算。
@@ -9563,6 +9931,7 @@ const VERSION = "0.8.0";
       live,
       inferred,
       unpriced,
+      crossMidnight,
       sourcedShare: Math.round((sourced / total) * 100),
       recordedShare: Math.round((recorded / total) * 100),
       costSource: "本地价格表",
@@ -9577,6 +9946,12 @@ const VERSION = "0.8.0";
       ["Token 口径", `${labels.tokenSource} · 事实覆盖 ${labels.sourcedShare}%`, labels.sourcedShare >= 90 ? "success" : "warn"],
       ["费用口径", `${labels.costSource}（未定价 ${labels.unpriced} 个模型）`, labels.unpriced ? "warn" : "success"],
       ["事实明细", `逐响应 ${labels.recorded} 轮 · 实时 ${labels.live} 轮 · 降级 ${labels.fallback} 轮 · 推断 ${labels.inferred} 轮`, "neutral"],
+      // 跨午夜：整轮不再算到开始日，按每条响应自己的观测时间落到那天。
+      [
+        "跨午夜归属",
+        labels.crossMidnight ? `${labels.crossMidnight} 轮已按响应时间拆到两天` : "无（所有轮次都在单日内）",
+        labels.crossMidnight ? "warn" : "success",
+      ],
     ];
     return `
       <div class="cltc-analytics-section cltc-usage-sources">
@@ -9886,19 +10261,30 @@ const VERSION = "0.8.0";
     return { date, tokens: 0, input: 0, output: 0, cached: 0, requests: 0, cost: 0, priced: true };
   }
 
-  function addTurnToDailyBucket(bucket, turn, usage) {
+  function addTurnToDailyBucket(bucket, turn, usage, options = {}) {
     const model = turn.model || modelName();
     const cost = calcCost(usage, priceFor(model), { fastMode: turn.fastMode === true, model });
     const storedCost = storedTurnCost(turn);
     const hasStoredCost = storedCost != null;
+    const resolvedCost = options.costUsd != null ? Number(options.costUsd) || 0 : hasStoredCost ? storedCost : cost.value;
+    const priced = options.costUsd != null ? true : hasStoredCost || cost.priced;
     bucket.tokens += toCount(usage.total || usage.input + usage.output);
     bucket.input += toCount(usage.input);
     bucket.output += toCount(usage.output);
     bucket.cached += toCount(usage.cached);
-    bucket.requests += toCount(turn.callCount) || 1;
-    bucket.cost += hasStoredCost ? storedCost : cost.value;
-    bucket.priced = bucket.priced !== false && (hasStoredCost || cost.priced);
+    bucket.requests += options.calls != null ? toCount(options.calls) || 1 : toCount(turn.callCount) || 1;
+    bucket.cost += resolvedCost;
+    bucket.priced = bucket.priced !== false && priced;
     return bucket;
+  }
+
+  // 跨午夜拆分用的分片入桶：费用按分片用量单独计价（实测与整轮计价完全相等）。
+  function addTurnSliceToDailyBucket(bucket, turn, slice, totalTokens) {
+    const storedCost = storedTurnCost(turn);
+    if (storedCost == null) return addTurnToDailyBucket(bucket, turn, slice.usage, { calls: slice.calls });
+    const sliceTotal = toCount(slice.usage.total || slice.usage.input + slice.usage.output);
+    const share = totalTokens ? (storedCost * sliceTotal) / totalTokens : 0;
+    return addTurnToDailyBucket(bucket, turn, slice.usage, { calls: slice.calls, costUsd: share });
   }
 
   function turnTimestampMs(turn) {
@@ -9918,15 +10304,21 @@ const VERSION = "0.8.0";
       : new Map();
     const ledgerTurnIds = cached?.revision === state.localLedgerRevision ? cached.turnIds : new Set();
     if (!cached || cached.revision !== state.localLedgerRevision) {
+      // 跨午夜拆分：一次建索引，供本批 turn 复用。
+      const dayIndex = usageFactDayIndex();
       for (const turn of [...localUsageArchiveTurns(), ...state.localLedger]) {
         const usage = normalizeUsage(turn?.usage);
         if (!usage.exact) continue;
         const turnId = normalizeText(turn?.turnId || turn?.id, 120);
         if (turnId) ledgerTurnIds.add(turnId);
-        const date = localDateKey(turnTimestampMs(turn) || Date.now());
-        const group = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
-        addTurnToDailyBucket(group.bucket, turn, usage);
-        byDayModel.set(date, group);
+        const wholeTotal = toCount(usage.total || usage.input + usage.output);
+        for (const slice of usageDaySlicesFromIndex(dayIndex, turn)) {
+          const date = slice.date;
+          if (!date) continue;
+          const group = byDayModel.get(date) || { date, bucket: emptyDailyUsageBucket(date) };
+          addTurnSliceToDailyBucket(group.bucket, turn, slice, wholeTotal);
+          byDayModel.set(date, group);
+        }
       }
       state.localDailyUsageCache = { revision: state.localLedgerRevision, groups: byDayModel, turnIds: ledgerTurnIds, value: null };
     }
@@ -14619,6 +15011,18 @@ const VERSION = "0.8.0";
     const reconcileHtml = reconcile.threads
       ? `<p class="cltc-sync-status" data-field="usage-fact-reconcile" data-tone="${reconcile.diff ? "warn" : "success"}" role="status">对账：${reconcile.threads} 个线程 · ${reconcile.matched} 个一致 · ${reconcile.diff} 个存在差异${reconcile.delta ? ` · 差异 ${reconcile.delta} tokens` : ""} · 逐响应覆盖率 ${reconcile.coverage}%</p>`
       : "";
+    // 主机能力矩阵（P2 #3）：说清「宿主机有没有这个方法」，不只报「失败」。
+    const hostCapabilities = hostCapabilitySummary();
+    const capabilityText = hostCapabilityStatusText();
+    const capabilityHtml = capabilityText
+      ? `<p class="cltc-sync-status" data-field="usage-host-capabilities" data-tone="${hostCapabilities.missing.length ? "warn" : "success"}" role="status">${escapeHtml(capabilityText)}</p>`
+      : "";
+    // 可观测性（P2 #5）：解析行数 / 重复数集中展示。
+    const observability = state.usageSyncResult?.observability;
+    const observabilityHtml =
+      observability && (observability.lines || observability.duplicateRecords || observability.duplicateHeartbeats)
+        ? `<p class="cltc-sync-status" data-field="usage-sync-observability" data-tone="neutral" role="status">解析：${observability.lines} 行 · 逐响应记录 ${observability.records} · 心跳 ${observability.heartbeats} · 重复记录 ${observability.duplicateRecords} · 重复心跳 ${observability.duplicateHeartbeats}</p>`
+        : "";
     const backupHtml = state.usageHostBackupStatus
       ? `<p class="cltc-sync-status" data-field="usage-host-backup" data-tone="${state.usageHostBackupError ? "warn" : "success"}" role="status">${escapeHtml(state.usageHostBackupStatus)}</p>`
       : "";
@@ -14638,6 +15042,8 @@ const VERSION = "0.8.0";
             </div>
             ${statusHtml}
             ${degradedHtml}
+            ${capabilityHtml}
+            ${observabilityHtml}
             ${reconcileHtml}
           </div>
           <div class="cltc-sync-block">
@@ -16489,6 +16895,25 @@ const VERSION = "0.8.0";
       usageFactExport: (format) => usageFactExport(format || "json"),
       usageFactImport: (text) => usageFactImport(text),
       usageTimeModel: (turns) => usageTimeModel(turns),
+      // 跨午夜拆分（验收 #14）
+      usageFactDayIndex: () => usageFactDayIndex(),
+      usageTurnDaySlices: (turn, dayIndex) => usageTurnDaySlices(turn, dayIndex || null),
+      usageTurnDayDates: (turn, dayIndex) => usageTurnDayDates(turn, dayIndex || null),
+      usageTurnCrossesMidnight: (turn, dayIndex) => usageTurnCrossesMidnight(turn, dayIndex || null),
+      // 主机能力矩阵（P2 #3）
+      hostCapabilitySummary: () => hostCapabilitySummary(),
+      hostCapabilityStatusText: () => hostCapabilityStatusText(),
+      hostCapabilityRecord: (method, outcome) => hostCapabilityRecord(method, outcome),
+      hostProbeCapabilities: (client, options) => hostProbeCapabilities(client, options || {}),
+      hostCapabilityMissingError: (error) => hostCapabilityMissingError(error),
+      hostCapabilityReset: () => {
+        state.hostCapabilities = { probedAt: 0, methods: {} };
+        try {
+          localStorage.removeItem?.(HOST_CAPABILITY_KEY);
+        } catch {
+          // best effort
+        }
+      },
       usageSourceLabels: (turns) => usageSourceLabels(turns),
       usageSourcePanelHtml: (turns) => usageSourcePanelHtml(turns),
       usageFactImportFile: () => usageFactImportFile(),
@@ -16588,6 +17013,7 @@ const VERSION = "0.8.0";
       addTurnToDailyBucket,
       turnCost,
       localUsageExport,
+      localLedgerMirrorTurn: (turn) => localLedgerMirrorTurn(turn),
       debugSessionState,
       compareUpdateVersions,
       updateParseVersion,
