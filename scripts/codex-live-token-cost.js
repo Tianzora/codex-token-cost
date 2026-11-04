@@ -3262,9 +3262,11 @@ const VERSION = "0.8.1";
   function profileUnlockEnabled() {
     if (typeof profileUnlockEnabledRuntime === "boolean") return profileUnlockEnabledRuntime;
     try {
-      return localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) !== "false";
+      // 默认关闭：开启后会改写宿主的 Statsig 功能开关并拦截个人资料页请求，
+      // 必须由用户在设置里显式开启，安装即生效会绕过知情同意。
+      return localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) === "true";
     } catch {
-      return true;
+      return false;
     }
   }
 
@@ -11600,11 +11602,7 @@ const VERSION = "0.8.1";
 
   function profileFetchBody(method, body, url) {
     if (method === "PATCH") applyLocalProfilePatch(body);
-    if (method === "POST") {
-      const saved = applyLocalProfilePhotoUpload(body);
-      const response = { asset_pointer: "local-profile-photo" };
-      return saved && typeof saved.then === "function" ? saved.then(() => response) : response;
-    }
+    // 头像上传（POST /profiles/me/photo）不再拦截：请求原样发到服务器，本地只负责显示。
     return localProfileResponse();
   }
 
@@ -11815,23 +11813,6 @@ const VERSION = "0.8.1";
     return true;
   }
 
-  function patchProfilePhotoUploadClient(client) {
-    if (!client || (typeof client !== "object" && typeof client !== "function") || typeof client.post !== "function") return false;
-    if (client.__codexLiveTokenCostProfilePhotoPatch === VERSION) return true;
-    const originalPost = client.__codexLiveTokenCostOriginalPost || client.post.bind(client);
-    client.post = async function codexLiveTokenCostProfilePhotoPost(url, body, headers, ...args) {
-      const active = stickyBridge();
-      if ((active?.profileSyntheticEnabled() === true || active?.profileDataOverrideEnabledFor?.() === true) && isProfilePhotoUrl(url)) {
-        await active.applyLocalProfilePhotoUpload(body);
-        return { status: 200, body: { asset_pointer: "local-profile-photo" }, headers: { "content-type": "application/json" } };
-      }
-      return originalPost(url, body, headers, ...args);
-    };
-    client.__codexLiveTokenCostOriginalPost = originalPost;
-    client.__codexLiveTokenCostProfilePhotoPatch = VERSION;
-    return true;
-  }
-
   async function installProfileRequestClientPatch() {
     if (!profileDataOverrideEnabledFor() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
     const candidatesFor = (module) => {
@@ -11874,36 +11855,6 @@ const VERSION = "0.8.1";
     } catch (error) {
       window.__codexLiveTokenCostProfileRequestPatch = "error";
       window.__codexLiveTokenCostProfileRequestPatchError = error?.message || String(error);
-    }
-  }
-
-  async function installProfilePhotoUploadPatch() {
-    if (!profileSyntheticEnabled() || window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
-    try {
-      const module = await loadCodexAppModule("vscode-api-");
-      if (!profileSyntheticEnabled()) return;
-      let patched = 0;
-      const values = Object.values(module || {});
-      const photoClientExport = values.find((value) => {
-        if (typeof value !== "function" || typeof value.getInstance !== "function") return false;
-        try {
-          return String(value).includes("pendingRequests");
-        } catch {
-          return false;
-        }
-      });
-      for (const value of photoClientExport ? [photoClientExport] : values) {
-        try {
-          const client = typeof value?.getInstance === "function" ? value.getInstance() : value;
-          if (patchProfilePhotoUploadClient(client)) patched += 1;
-        } catch {
-          // Ignore non-client exports.
-        }
-      }
-      window.__codexLiveTokenCostProfilePhotoPatch = patched > 0 ? VERSION : "not-found";
-    } catch (error) {
-      window.__codexLiveTokenCostProfilePhotoPatch = "error";
-      window.__codexLiveTokenCostProfilePhotoPatchError = error?.message || String(error);
     }
   }
 
@@ -11986,7 +11937,6 @@ const VERSION = "0.8.1";
       profileSyntheticEnabled() &&
       message?.type === "fetch" &&
       (isProfileUsageUrl(message.url) ||
-        isProfilePhotoUrl(message.url) ||
         isProfilePageUrl(message.url) ||
         isProfilePinOptionsUrl(message.url))
     );
@@ -12173,7 +12123,6 @@ const VERSION = "0.8.1";
       installProfileUsernameUppercaseUnlock();
       installProfileMessageIntercept();
       installElectronBridgeHook();
-      void installProfilePhotoUploadPatch();
       void installProfileAuthContextPatch();
       patchProfileElectronBridge();
     }
@@ -15454,8 +15403,10 @@ const VERSION = "0.8.1";
         <div class="cltc-settings-section-heading">
           <h2>个人资料</h2>
           <p>${realChatgpt
-            ? "仅影响本地显示，不会改变账号、订阅或登录状态"
-            : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示"}</p>
+            ? "仅影响本地显示，不会改变账号、订阅或登录状态。"
+            : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示。"}${enabled
+            ? "已开启：会改写 Codex 功能开关 2478676115、拦截个人资料页请求并以本地数据替换显示；头像上传不被拦截。"
+            : "默认关闭；开启后会改写 Codex 功能开关 2478676115 并拦截个人资料页请求，头像上传不受影响。"}</p>
         </div>
         <div class="cltc-profile-card" data-disabled="${String(!enabled)}">
           ${avatarHtml}
@@ -16680,7 +16631,7 @@ const VERSION = "0.8.1";
     async function wrappedFetch(input, init) {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
-      if (profileSyntheticEnabled() && (isProfileUsageUrl(url) || isProfilePhotoUrl(url) || isProfilePageUrl(url) || isProfilePinOptionsUrl(url))) {
+      if (profileSyntheticEnabled() && (isProfileUsageUrl(url) || isProfilePageUrl(url) || isProfilePinOptionsUrl(url))) {
         return new Response(JSON.stringify(await profileFetchBodyAsync(method, init?.body, url)), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -17057,7 +17008,6 @@ const VERSION = "0.8.1";
     if (ownsGlobals) {
       if (window.__codexLiveTokenCostBridgeHook === VERSION) delete window.__codexLiveTokenCostBridgeHook;
       if (window.__codexLiveTokenCostProfileRequestPatch === VERSION) delete window.__codexLiveTokenCostProfileRequestPatch;
-      if (window.__codexLiveTokenCostProfilePhotoPatch === VERSION) delete window.__codexLiveTokenCostProfilePhotoPatch;
       if (window.__codexLiveTokenCostProfileAuthPatch === VERSION) delete window.__codexLiveTokenCostProfileAuthPatch;
       if (window.fetch?.__codexLiveTokenCostWrapped === VERSION) window.fetch = window.fetch.__codexLiveTokenCostOriginal;
       if (window.WebSocket?.__codexLiveTokenCostWrapped === VERSION) window.WebSocket = window.WebSocket.__codexLiveTokenCostOriginal;
@@ -17486,7 +17436,6 @@ const VERSION = "0.8.1";
       profileUsernameAllowed,
       applyLocalProfilePatch,
       patchProfileRequestClient,
-      patchProfilePhotoUploadClient,
       profileUsageQueryData,
       profilePageDataOverride,
       profileAccountInfoQueryData,

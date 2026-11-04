@@ -810,6 +810,10 @@ assert.equal(code.includes('data-misc-field="hubVisible"'), true);
 assert.equal(code.includes('data-misc-field="outputRateVisible"'), true);
 assert.match(code, /显示 HUD[\s\S]*?data-misc-field="hubVisible"[\s\S]*?显示 Token 输出速率[\s\S]*?data-misc-field="outputRateVisible"/);
 assert.equal(code.includes('data-misc-field="profileUnlockEnabled"'), true);
+// 个人资料覆盖默认关闭：localStorage 没有值时不得自动生效。
+assert.equal(code.includes('localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) === "true"'), true);
+// 头像上传不再被拦截：没有任何包装 client.post 的代码。
+assert.equal(code.includes('codexLiveTokenCostProfilePhotoPost'), false);
 assert.equal(code.includes('grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);'), true);
 assert.equal(code.includes('grid-template-columns: minmax(0, 2.05fr) repeat(4, minmax(0, .755fr)) minmax(0, 1.20fr);'), true);
 assert.equal(code.includes('data-cltc-output-rate-visible="true"'), true);
@@ -941,9 +945,9 @@ assert.equal(code.includes("contentScrollTop"), true);
 assert.equal(code.includes("listScrollTop"), true);
 assert.equal(code.includes("installProfileRequestClientPatch"), true);
 assert.equal(code.includes("installProfileAuthContextPatch"), true);
-assert.equal(code.includes("installProfilePhotoUploadPatch"), true);
+assert.equal(code.includes("installProfilePhotoUploadPatch"), false);
 assert.equal(code.includes("app-initial-"), true);
-assert.equal(code.includes("pendingRequests"), true);
+assert.equal(code.includes("pendingRequests"), false);
 assert.equal(code.includes("installElectronBridgeHook"), true);
 assert.equal(code.includes("__codexLiveTokenCostProfileLocal"), true);
 assert.equal(code.includes("handleProfileFetchResponseEvent"), true);
@@ -1236,10 +1240,11 @@ assert.equal(typeof api.persistLocalCurrentTurn, "function");
 assert.equal(typeof api.costForModelUsage, "function");
 assert.equal(typeof api.costPricedLabel, "function");
 assert.equal(typeof api.profileUnlockedSettingsSections, "function");
+assert.equal(api.profileUnlockEnabled(), false, "profile override must be off by default");
 assert.equal(typeof api.profileUsernameAllowed, "function");
 assert.equal(typeof api.applyLocalProfilePatch, "function");
 assert.equal(typeof api.patchProfileRequestClient, "function");
-assert.equal(typeof api.patchProfilePhotoUploadClient, "function");
+assert.equal(api.patchProfilePhotoUploadClient, undefined);
 assert.equal(typeof api.profileSyntheticEnabled, "function");
 assert.equal(typeof api.isRealChatgptAccount, "function");
 assert.equal(typeof api.codexAppAssetUrl, "function");
@@ -4866,21 +4871,10 @@ api.applyLocalProfilePatch({ requestBody: { profile_asset_pointer: "local-profil
 assert.equal(api.localProfileResponse().profile.profile_picture_url, "data:image/png;base64,UE5HREFUQQ==");
 api.applyLocalProfilePatch({ requestBody: { profile_picture_url: `data:image/png;base64,${"A".repeat(2_100_000)}` } });
 assert.equal(api.localProfileResponse().profile.profile_picture_url.length > 2_000_000, true);
-const photoClient = {
-  async post() {
-    throw new Error("Unauthorized");
-  },
-};
-assert.equal(api.patchProfilePhotoUploadClient(photoClient), true);
-const functionPhotoClient = function functionPhotoClient() {};
-functionPhotoClient.post = photoClient.post;
-assert.equal(api.patchProfilePhotoUploadClient(functionPhotoClient), true);
-Promise.resolve()
-  .then(() => photoClient.post("/wham/profiles/me/photo", multipartBase64, {}))
-  .then((uploadResult) => {
-    assert.equal(uploadResult.body.asset_pointer, "local-profile-photo");
-    assert.equal(api.localProfileResponse().profile.profile_picture_url, "data:image/png;base64,UE5HREFUQQ==");
-  });
+// 头像上传不再拦截：脚本不包装 client.post，请求原样发到服务器。
+assert.equal(api.patchProfilePhotoUploadClient, undefined);
+assert.equal(code.includes("codexLiveTokenCostProfilePhotoPost"), false);
+assert.equal(code.includes('return { status: 200, body: { asset_pointer: "local-profile-photo" }'), false);
 
 api.finishLocalTurn(0, { reason: "official-complete-reset", force: true });
 api.beginLocalTurn({ forceNewIfUsed: true });
