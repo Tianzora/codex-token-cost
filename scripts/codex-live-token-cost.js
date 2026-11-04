@@ -11800,9 +11800,20 @@ const VERSION = "0.8.1";
     if (typeof originalSafePatch === "function") {
       client.safePatch = async function codexLiveTokenCostProfileSafePatch(url, options, ...args) {
         if (syntheticActive() && isProfilePageUrl(url)) return stickyBridge().localProfilePagePatchResponse(options);
-        if ((syntheticActive() || overrideActive()) && isProfileUsageUrl(url)) {
+        if (syntheticActive() && isProfileUsageUrl(url)) {
           stickyBridge().applyLocalProfilePatch(options);
           return stickyBridge().localProfileResponse();
+        }
+        // 真实账号 + 覆盖模式：写请求放行到宿主，成功后把结果镜像到本地 prefs，
+        // 否则页面/侧栏用的是本地数据，用户会觉得「改了没生效」；失败按官方错误上报。
+        if (overrideActive() && isProfileUsageUrl(url)) {
+          const response = await originalSafePatch(url, options, ...args);
+          try {
+            stickyBridge().applyLocalProfilePatch(options);
+          } catch {
+            // 本地镜像失败不影响服务器结果，下次拉取以服务器为准。
+          }
+          return response;
         }
         return originalSafePatch(url, options, ...args);
       };
@@ -15405,7 +15416,7 @@ const VERSION = "0.8.1";
             ? "仅影响本地显示，不会改变账号、订阅或登录状态。"
             : "当前为 API Key 登录：Codex 官方不提供个人资料页，以下资料仅在 ChatGPT 登录后用于覆盖显示。"}${enabled
             ? "已开启：会改写 Codex 功能开关 2478676115、拦截个人资料页请求并以本地数据替换显示；头像上传不被拦截。"
-            : "默认关闭；开启后会改写 Codex 功能开关 2478676115 并拦截个人资料页请求，头像上传不受影响。"}</p>
+            : "默认关闭；开启后会改写 Codex 功能开关 2478676115，并用本地数据替换个人资料页显示；头像上传与资料页编辑会真实提交到 ChatGPT 账号（成功后同步回本地显示）。"}</p>
         </div>
         <div class="cltc-profile-card" data-disabled="${String(!enabled)}">
           ${avatarHtml}

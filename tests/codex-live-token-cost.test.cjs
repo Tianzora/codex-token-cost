@@ -816,6 +816,9 @@ assert.equal(code.includes('localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) ===
 assert.equal(code.includes('codexLiveTokenCostProfilePhotoPost'), false);
 // 头像上传不再拦截后，官方头像是唯一权威：有官方节点时不得用本地旧图覆盖。
 assert.equal(code.includes("const officialAvatar = findOfficialProfileAvatarNode(button);"), true);
+// 真实账号 + 覆盖模式下，PATCH /profiles/me 必须转发给宿主，成功后只做本地镜像。
+assert.equal(code.includes("if (overrideActive() && isProfileUsageUrl(url))"), true);
+assert.equal((code.match(/\(syntheticActive\(\) \|\| overrideActive\(\)\) && isProfileUsageUrl\(url\)/g) || []).length, 1);
 assert.equal(code.includes("const officialAvatar = dataOverride ? null : findOfficialProfileAvatarNode(button);"), false);
 assert.equal(code.includes('grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);'), true);
 assert.equal(code.includes('grid-template-columns: minmax(0, 2.05fr) repeat(4, minmax(0, .755fr)) minmax(0, 1.20fr);'), true);
@@ -6650,6 +6653,72 @@ profileLifecycleTest.then(async () => {
     assert.match(openCalls[0][0], /^https:\/\/github\.com\/[^/]+\/[^/]+$/);
     assert.equal(openCalls[0][1], "_blank");
     assert.equal(String(openCalls[0][2]).includes("noopener"), true);
+  })
+  .then(async () => {
+    // —— 个人资料覆盖：PATCH /profiles/me 放行到宿主，成功后镜像本地、失败不镜像 ——
+    const profileApi = context.__codexLiveTokenCostTest;
+    const realAccountCache = {
+      getQueryCache() {
+        return {
+          getAll() {
+            return [
+              {
+                queryKey: ["accounts", "check"],
+                state: { data: { accounts: [{ id: "real-account", account_user_id: "user-real", plan_type: "pro" }] } },
+              },
+            ];
+          },
+        };
+      },
+      invalidateQueries() {
+        return Promise.resolve();
+      },
+    };
+    profileApi.rememberProfileQueryClient(realAccountCache);
+    profileApi.refreshProfileRealChatgptCache(realAccountCache);
+    assert.equal(profileApi.profileRealChatgptCached(realAccountCache), true);
+    profileApi.saveProfileUnlockEnabled(true);
+
+    const forwarded = [];
+    const serverClient = {
+      async safeGet() {
+        throw new Error("Unauthorized");
+      },
+      async safePatch(url, options) {
+        forwarded.push({ url, options });
+        return { profile: { display_name: "Server Name", username: "server_user" } };
+      },
+    };
+    assert.equal(profileApi.patchProfileRequestClient(serverClient), true);
+    const serverResponse = await serverClient.safePatch("/wham/profiles/me", {
+      requestBody: { display_name: "Server Name", username: "server_user" },
+    });
+    assert.equal(forwarded.length, 1, "the profile write must reach the host client");
+    assert.equal(serverResponse.profile.display_name, "Server Name");
+    assert.equal(profileApi.localProfileResponse().profile.display_name, "Server Name", "a successful write mirrors into local prefs");
+
+    const failingClient = {
+      async safeGet() {
+        throw new Error("Unauthorized");
+      },
+      async safePatch() {
+        throw new Error("username taken");
+      },
+    };
+    assert.equal(profileApi.patchProfileRequestClient(failingClient), true);
+    const displayBefore = profileApi.localProfileResponse().profile.display_name;
+    let writeError = null;
+    try {
+      await failingClient.safePatch("/wham/profiles/me", { requestBody: { display_name: "Rejected Name" } });
+    } catch (error) {
+      writeError = error;
+    }
+    assert.equal(String(writeError && writeError.message), "username taken");
+    assert.equal(
+      profileApi.localProfileResponse().profile.display_name,
+      displayBefore,
+      "a failed write must not mirror into local prefs",
+    );
   })
 
   .catch((error) => {

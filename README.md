@@ -47,7 +47,7 @@ Codex Token Cost 是一个面向 [Codex++](https://github.com/BigPizzaV3/CodexPl
 
 纯 API Key 登录时，Codex 本身不提供个人资料页；脚本不再伪造登录态或资料接口，只保留 HUD、费用与本地统计。
 
-个人资料覆盖**默认关闭**，需在「设置 → 个人资料」里显式开启。开启后会改写 Codex 的功能开关 `2478676115`、拦截个人资料页请求并用本地数据替换显示；头像上传不会被拦截，仍会发到服务器。
+个人资料覆盖**默认关闭**，需在「设置 → 个人资料」里显式开启。开启后会改写 Codex 的功能开关 `2478676115`、拦截个人资料页请求并用本地数据替换显示；头像上传与资料页编辑（昵称、用户名等）会真实提交到 ChatGPT 账号，成功后同步回本地显示。
 
 ![Codex Token Cost 解锁后的个人 Profile](docs/images/codex-token-cost-profile.png)
 
