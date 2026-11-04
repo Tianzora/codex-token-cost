@@ -44,7 +44,7 @@ const VERSION = "0.8.1";
   // ---------------------------------------------------------------------------
   // 模块 01：常量与配置
   // 全部魔法数字、localStorage 键、上游 URL、schema 版本集中在这里。
-  // 改动 schema 版本必须同时升 USAGE_SYNC_FILE_STAMPS_KEY（见 WORKSPACE_CONTEXT.md 约定）。
+  // 改动 schema 版本必须同时升 USAGE_SYNC_FILE_STAMPS_KEY（见 AGENTS.md「数据口径」）。
   // ---------------------------------------------------------------------------
   const ROOT_ID = "codex-live-token-cost";
   const STYLE_ID = "codex-live-token-cost-style";
@@ -77,6 +77,9 @@ const VERSION = "0.8.1";
   const HIDDEN_PRICE_MODELS_KEY = "__codexLiveTokenCostHiddenPriceModelsV1";
   const PRICE_MIGRATION_KEY = "__codexLiveTokenCostPriceMigrationV1";
   const PRICE_MIGRATION_VERSION = "official-prices-2026-07-31-v4";
+  // 会启动本机进程 / 写盘的自动行为必须可配（市场评审要求）：价格自动同步默认关，冷备默认开但可关。
+  const PRICE_AUTO_SYNC_KEY = "__codexLiveTokenCostPriceAutoSyncV1";
+  const AUTO_BACKUP_KEY = "__codexLiveTokenCostAutoBackupV1";
   const PRICE_REMOTE_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
   // 官方定价页（https://developers.openai.com/api/docs/pricing）在售的 gpt 对话模型：
   // 只用于「模型价格」默认列表；价格仍来自 LiteLLM。未被列出的新模型在使用后仍会出现。
@@ -135,13 +138,10 @@ const VERSION = "0.8.1";
   const PRICE_SYNC_MAX_MODELS = 2000;
   // 「模型价格」默认只展示 gpt 对话/推理模型（chat/responses），其余模型使用过后才出现。
   const PRICE_DISPLAY_MODES = ["chat", "responses"];
-  const UPDATE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js";
-  const UPDATE_REPO_URL = "https://github.com/Tianzora/codex-token-cost";
-  const UPDATE_AUTO_CHECK_DELAY_MS = 4000;
-  const UPDATE_COMMAND_TIMEOUT_MS = 135000;
-  const UPDATE_STATUS_RESET_MS = 4000;
-  const UPDATE_MIN_SOURCE_LENGTH = 100000;
-  const UPDATE_CHECK_RANGE_BYTES = 8191;
+  // 项目仓库地址：只用于设置页标题旁的 Star 入口，脚本不从这里下载任何代码。
+  const REPO_URL = "https://github.com/Tianzora/codex-token-cost";
+  // 本机下载命令（仅价格表同步）的超时上限。
+  const DOWNLOAD_COMMAND_TIMEOUT_MS = 135000;
   const DAILY_USAGE_KEY = "__codexLiveTokenCostDailyUsageV1";
   const LOCAL_USAGE_KEY = "__codexLiveTokenCostLocalUsageV1";
   const ANALYTICS_ROLLUP_KEY = "__codexLiveTokenCostAnalyticsRollupV1";
@@ -629,14 +629,7 @@ const VERSION = "0.8.1";
     usageSyncAutoTimer: 0,
     usageSyncAutoAt: 0,
     usageSyncAutoFailures: 0,
-    updateBusy: false,
-    updatePhase: "",
-    updateRemoteVersion: "",
-    updateErrorKind: "",
-    updateError: "",
-    updateStatusTimer: 0,
-    updateAutoCheckTimer: 0,
-    updateClusterEl: null,
+    versionClusterEl: null,
     analyticsModel: "",
     analyticsModelsExpanded: false,
     analyticsHideUnknown: false,
@@ -2049,6 +2042,7 @@ const VERSION = "0.8.1";
     if (state.usageHostBackupTimer) return;
     // 测试环境不排自动备份：每次持久化都挂一个 8s 定时器会让回归里到处是悬挂 timer。
     if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!autoBackupEnabled()) return;
     state.usageHostBackupTimer = trackTimer(
       window.setTimeout(() => {
         state.usageHostBackupTimer = 0;
@@ -2832,7 +2826,7 @@ const VERSION = "0.8.1";
 
   async function priceCacheLoad(client, targetPath) {
     try {
-      const text = updateDecodeBase64Text(await priceSyncReadBase64(client, priceCachePath(targetPath)));
+      const text = decodeBase64Text(await priceSyncReadBase64(client, priceCachePath(targetPath)));
       const parsed = JSON.parse(text);
       const prices = normalizePriceTable(parsed?.prices);
       const count = Object.keys(prices).length;
@@ -2849,7 +2843,7 @@ const VERSION = "0.8.1";
   }
 
   async function priceCacheWrite(client, targetPath, payload) {
-    await updateWriteBase64(client, priceCachePath(targetPath), updateEncodeBase64Text(JSON.stringify(payload)));
+    await appServerWriteBase64(client, priceCachePath(targetPath), encodeBase64Text(JSON.stringify(payload)));
   }
 
   async function priceCacheWriteNow() {
@@ -2858,7 +2852,7 @@ const VERSION = "0.8.1";
     try {
       client = appServerSyncClient();
       if (!client) return false;
-      target = await updateResolveTarget();
+      target = await resolveUserScriptTarget();
     } catch {
       return false;
     }
@@ -3021,6 +3015,7 @@ const VERSION = "0.8.1";
 
   function priceSyncScheduleRetry() {
     if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
+    if (!priceAutoSyncEnabled()) return;
     if (state.priceSyncRetried || state.priceSyncRetryTimer || state.destroyed) return;
     state.priceSyncRetried = true;
     state.priceSyncRetryTimer = trackTimer(
@@ -3036,7 +3031,7 @@ const VERSION = "0.8.1";
   // 取回 base64（command/exec 的 stdout 会在 1 MiB 处截断，无法整表回传）。页面
   // fetch 到 github 会被 CSP connect-src 拦截，因此这条通道是生产唯一可行路径。
   // 启动时先读本地文件缓存，命中且未过期就直接复用，失败也不会丢已有定价。
-  function refreshDefaultPrices() {
+  function refreshDefaultPrices(options = {}) {
     if (state.priceRemoteRequest) return state.priceRemoteRequest;
     const request = (async () => {
       state.priceSyncError = "";
@@ -3049,7 +3044,7 @@ const VERSION = "0.8.1";
       }
       if (client) {
         try {
-          target = await updateResolveTarget();
+          target = await resolveUserScriptTarget();
         } catch {
           target = null;
         }
@@ -3089,16 +3084,23 @@ const VERSION = "0.8.1";
         if (!state.priceSyncedAt) state.priceSyncedAt = cachedAt;
         return true;
       }
+      // 价格同步要启动本机进程（curl / Node）：只有用户明确开启自动同步或手动点同步时才执行。
+      if (options.manual !== true && !priceAutoSyncEnabled()) {
+        state.priceSyncError = "";
+        if (!state.priceSyncedAt && cachedAt) state.priceSyncedAt = cachedAt;
+        if (state.started) render();
+        return false;
+      }
       try {
         if (!client) throw new Error("未找到本地文件通道");
         if (!target) throw new Error("Codex++ 通道不可用");
         const tempPath = `${target.targetPath}.prices.json`;
         let text = "";
         try {
-          await updateRunCommand(client, priceSyncDownloadCommand(priceSyncUrl(), tempPath), target.userDir);
-          text = updateDecodeBase64Text(await priceSyncReadBase64(client, tempPath));
+          await runDownloadCommand(client, priceSyncDownloadCommand(priceSyncUrl(), tempPath), target.userDir);
+          text = decodeBase64Text(await priceSyncReadBase64(client, tempPath));
         } finally {
-          await updateRemoveFile(client, tempPath);
+          await appServerRemoveFile(client, tempPath);
         }
         let snapshot = null;
         try {
@@ -3117,7 +3119,7 @@ const VERSION = "0.8.1";
         if (state.started) render();
         return true;
       } catch (error) {
-        state.priceSyncError = updateErrorMessage(error);
+        state.priceSyncError = errorMessageText(error);
         priceSyncScheduleRetry();
         if (state.started) render();
         return false;
@@ -3137,14 +3139,19 @@ const VERSION = "0.8.1";
   }
 
   function priceSyncStatus() {
-    if (state.priceRemoteRequest) return { tone: "busy", text: "正在同步上游价格…" };
+    if (state.priceRemoteRequest) return { tone: "busy", busy: true, text: "正在同步上游价格…" };
     if (state.priceSyncError) {
       const cachedAt = state.priceSyncedAt || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
       const cachedNote = cachedAt ? `（沿用 ${priceSyncTimeLabel(cachedAt)} 的缓存）` : "";
       return { tone: "warn", text: `上游价格同步失败：${state.priceSyncError}${cachedNote}`, retry: true };
     }
     const syncedAt = state.priceSyncedAt || UTIL.toCount(UTIL.loadJson(PRICE_REMOTE_CACHE_KEY, null)?.fetchedAt);
-    if (!syncedAt) return { tone: "idle", text: "上游价格尚未同步" };
+    if (!syncedAt) {
+      return {
+        tone: "idle",
+        text: priceAutoSyncEnabled() ? "上游价格尚未同步" : "上游价格尚未同步（当前使用内置参考价，可手动同步）",
+      };
+    }
     return { tone: "ok", text: `上游价格（${PRICE_SYNC_SOURCE_LABEL}）· 同步于 ${priceSyncTimeLabel(syncedAt)}` };
   }
 
@@ -3163,6 +3170,42 @@ const VERSION = "0.8.1";
       // Keep the setting best-effort; DOM sync can still use the default.
     }
     return value;
+  }
+
+  // 启动时自动同步价格表会运行本机 curl（Windows 下可能改用 Node），默认关闭。
+  function priceAutoSyncEnabled() {
+    try {
+      return localStorage.getItem(PRICE_AUTO_SYNC_KEY) === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function savePriceAutoSyncEnabled(value) {
+    try {
+      localStorage.setItem(PRICE_AUTO_SYNC_KEY, value ? "true" : "false");
+    } catch {
+      // 写失败时保持默认关闭，避免静默开启本机命令。
+    }
+    return Boolean(value);
+  }
+
+  // 自动冷备会写 ~/.codex/usage-ledger/：默认开启，但用户可关。
+  function autoBackupEnabled() {
+    try {
+      return localStorage.getItem(AUTO_BACKUP_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  }
+
+  function saveAutoBackupEnabled(value) {
+    try {
+      localStorage.setItem(AUTO_BACKUP_KEY, value ? "true" : "false");
+    } catch {
+      // best-effort：写失败时沿用默认值。
+    }
+    return Boolean(value);
   }
 
   function outputRateVisible() {
@@ -7094,61 +7137,10 @@ const VERSION = "0.8.1";
     return base && child ? `${base}\\${child}` : base || child;
   }
 
-  // 脚本自更新：启动时静默检测 GitHub 上的新版本；仅在检测到新版本后，于设置页
-  // 标题旁显示「一键更新」入口。页面 fetch 被 CSP 拦截，因此下载走 app-server
-  // command/exec 执行本机 curl，安装走 fs/writeFile（跨平台统一，无需 move/cmd），
-  // 写回校验通过后覆盖本地脚本文件并就地重载（destroy + eval）立即生效。
+  // 本机宿主通道助手：价格缓存 / 价格表同步共用（路径拼接 / 用户脚本目录解析 /
+  // 下载命令 / 读写文件 / base64 编解码 / 错误文案），不加载任何远端脚本。
 
-  function updateParseVersion(text) {
-    const match = /^\/\/\s*@version[ \t]+(\S+)[ \t]*$/m.exec(String(text || ""));
-    return UTIL.normalizeText(match?.[1], 40);
-  }
-
-  function updateVersionParts(value) {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(UTIL.normalizeText(value, 60));
-    if (!match) return null;
-    return {
-      numbers: [Number(match[1]), Number(match[2]), Number(match[3])],
-      prerelease: match[4] ? match[4].split(".") : [],
-    };
-  }
-
-  function compareUpdateVersions(left, right) {
-    const a = updateVersionParts(left);
-    const b = updateVersionParts(right);
-    if (!a || !b) return 0;
-    for (let index = 0; index < 3; index += 1) {
-      if (a.numbers[index] !== b.numbers[index]) return a.numbers[index] < b.numbers[index] ? -1 : 1;
-    }
-    if (!a.prerelease.length && !b.prerelease.length) return 0;
-    if (!a.prerelease.length) return 1;
-    if (!b.prerelease.length) return -1;
-    const length = Math.max(a.prerelease.length, b.prerelease.length);
-    for (let index = 0; index < length; index += 1) {
-      const leftId = a.prerelease[index];
-      const rightId = b.prerelease[index];
-      if (leftId === undefined) return -1;
-      if (rightId === undefined) return 1;
-      if (leftId === rightId) continue;
-      const leftNumeric = /^\d+$/.test(leftId);
-      const rightNumeric = /^\d+$/.test(rightId);
-      if (leftNumeric && rightNumeric) return Number(leftId) < Number(rightId) ? -1 : 1;
-      if (leftNumeric) return -1;
-      if (rightNumeric) return 1;
-      const leftSuffix = /^([A-Za-z-]+)(\d+)$/.exec(leftId);
-      const rightSuffix = /^([A-Za-z-]+)(\d+)$/.exec(rightId);
-      if (leftSuffix && rightSuffix && leftSuffix[1] === rightSuffix[1]) {
-        const leftNumber = Number(leftSuffix[2]);
-        const rightNumber = Number(rightSuffix[2]);
-        if (leftNumber !== rightNumber) return leftNumber < rightNumber ? -1 : 1;
-        continue;
-      }
-      return leftId < rightId ? -1 : 1;
-    }
-    return 0;
-  }
-
-  function updateCommandPathJoin(dir, name) {
+  function hostPathJoin(dir, name) {
     const base = UTIL.normalizeText(dir, 600).replace(/[\\/]+$/, "");
     const child = UTIL.normalizeText(name, 260).replace(/^[\\/]+/, "");
     if (!base) return child;
@@ -7157,53 +7149,7 @@ const VERSION = "0.8.1";
     return `${base}${separator}${child}`;
   }
 
-  function updateDownloadCommand(url, outPath) {
-    return [
-      "curl",
-      "-sS",
-      "-L",
-      "--fail",
-      "--connect-timeout", "10",
-      "--max-time", "60",
-      "--retry", "2",
-      "--retry-delay", "1",
-      "-o", outPath,
-      url,
-    ];
-  }
-
-  function updateCheckCommand(url, outPath) {
-    return [
-      "curl",
-      "-sS",
-      "-L",
-      "--fail",
-      "--connect-timeout", "5",
-      "--max-time", "20",
-      "--retry", "2",
-      "--retry-delay", "1",
-      "-r", `0-${UPDATE_CHECK_RANGE_BYTES}`,
-      "-o", outPath,
-      url,
-    ];
-  }
-
-  function updateYieldPaint() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return Promise.resolve();
-    return new Promise((resolve) => {
-      let settled = false;
-      const done = () => {
-        if (settled) return;
-        settled = true;
-        resolve();
-      };
-      if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(done);
-      // 窗口隐藏/最小化时 rAF 会被挂起：必须有计时器兜底，避免更新流程永久卡在“检查更新中…”。
-      window.setTimeout(done, 50);
-    });
-  }
-
-  function updateDecodeBase64Text(value) {
+  function decodeBase64Text(value) {
     const binary = window.atob(value);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
@@ -7211,7 +7157,7 @@ const VERSION = "0.8.1";
   }
 
   // btoa 只接受 Latin-1；模型名可能是中文，先按 UTF-8 编码再转 base64。
-  function updateEncodeBase64Text(value) {
+  function encodeBase64Text(value) {
     const bytes = new TextEncoder().encode(String(value));
     let binary = "";
     const chunkSize = 0x8000;
@@ -7221,26 +7167,12 @@ const VERSION = "0.8.1";
     return window.btoa(binary);
   }
 
-  function updateCacheBustUrl() {
-    return `${UPDATE_REMOTE_URL}?cltc_update=${Date.now()}`;
-  }
-
-  function updateSourceLooksValid(text, version) {
-    if (typeof text !== "string" || text.length < UPDATE_MIN_SOURCE_LENGTH) return false;
-    if (!/^\/\/\s*==UserScript==/.test(text)) return false;
-    if (!/\/\/\s*@name\s+Codex Live Token Cost/.test(text)) return false;
-    if (!text.includes("__codexLiveTokenCostVersion")) return false;
-    if (updateParseVersion(text) !== version) return false;
-    if (!text.trimEnd().endsWith("})();")) return false;
-    return true;
-  }
-
-  function updateErrorMessage(error) {
+  function errorMessageText(error) {
     const raw = error && typeof error === "object" && "message" in error ? error.message : error;
     return UTIL.normalizeText(String(raw ?? ""), 300) || "未知错误";
   }
 
-  async function updateResolveTarget() {
+  async function resolveUserScriptTarget() {
     if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) {
       throw new Error("Codex++ 通道不可用");
     }
@@ -7252,20 +7184,19 @@ const VERSION = "0.8.1";
     const entry = scripts.find((item) => UTIL.normalizeText(item?.key, 200) === key)
       || scripts.find((item) => UTIL.normalizeText(item?.name, 260).endsWith("market-codex-live-token-cost.js"));
     const name = UTIL.normalizeText(entry?.name, 260) || "market-codex-live-token-cost.js";
-    const targetPath = updateCommandPathJoin(userDir, name);
-    return { userDir, name, targetPath, downloadPath: `${targetPath}.download` };
+    return { userDir, name, targetPath: hostPathJoin(userDir, name) };
   }
 
-  function updateClientOptions() {
-    return { priority: "background", source: "codex-token-cost-update" };
+  function appServerIoOptions() {
+    return { priority: "background", source: "codex-token-cost-host-io" };
   }
 
-  async function updateRunCommand(client, command, userDir) {
-    // 三个调用方都只下载到已解析的用户脚本目录；不修改全局沙箱或代理配置。
+  async function runDownloadCommand(client, command, userDir) {
+    // 只为下载单条命令开联网，写入限定在已解析的用户脚本目录；不修改全局沙箱或代理配置。
     const params = {
       command,
       cwd: userDir,
-      timeoutMs: UPDATE_COMMAND_TIMEOUT_MS,
+      timeoutMs: DOWNLOAD_COMMAND_TIMEOUT_MS,
       sandboxPolicy: {
         type: "workspaceWrite",
         writableRoots: [userDir],
@@ -7275,7 +7206,7 @@ const VERSION = "0.8.1";
       },
     };
     const execute = async () => {
-      const response = await hostRequest(client, "command/exec", params, updateClientOptions());
+      const response = await hostRequest(client, "command/exec", params, appServerIoOptions());
       if (Number(response?.exitCode) !== 35 || !String(response?.stderr || "").includes("SEC_E_NO_CREDENTIALS")) return response;
       // Windows 受限令牌无法取得 Schannel 凭证时，使用 Node 的 TLS，仍保留证书校验。
       const rangeIndex = command.indexOf("-r");
@@ -7286,7 +7217,7 @@ const VERSION = "0.8.1";
           "const fs=require('node:fs/promises');const [url,path,range]=process.argv.slice(1);fetch(url,{headers:range?{Range:'bytes='+range}:{},signal:AbortSignal.timeout(60000)}).then(async r=>{if(!r.ok)throw Error('HTTP '+r.status);await fs.writeFile(path,Buffer.from(await r.arrayBuffer()))}).catch(e=>{console.error(e.cause?.message||e.message);process.exitCode=1})",
           command.at(-1), command[command.indexOf("-o") + 1], rangeIndex >= 0 ? command[rangeIndex + 1] : "",
         ],
-      }, updateClientOptions());
+      }, appServerIoOptions());
       if (Number(fallback?.exitCode) !== 0) {
         throw new Error(`curl TLS 凭证失败；Node 备用下载失败：${fallback?.stderr || fallback?.stdout || "请确认已安装 Node.js 22+"}`);
       }
@@ -7294,7 +7225,7 @@ const VERSION = "0.8.1";
     };
     let timer = 0;
     const timeout = new Promise((resolve, reject) => {
-      timer = window.setTimeout(() => reject(new Error("命令执行超时")), UPDATE_COMMAND_TIMEOUT_MS);
+      timer = window.setTimeout(() => reject(new Error("命令执行超时")), DOWNLOAD_COMMAND_TIMEOUT_MS);
     });
     let result = null;
     try {
@@ -7313,310 +7244,66 @@ const VERSION = "0.8.1";
     return result;
   }
 
-  async function updateReadBase64(client, path) {
-    const result = await hostRequest(client, "fs/readFile", { path }, updateClientOptions());
-    const dataBase64 = typeof result?.dataBase64 === "string" ? result.dataBase64 : "";
-    if (!dataBase64) throw new Error("读取远端脚本失败");
-    return dataBase64;
+  async function appServerWriteBase64(client, path, dataBase64) {
+    await hostRequest(client, "fs/writeFile", { path, dataBase64 }, appServerIoOptions());
   }
 
-  async function updateWriteBase64(client, path, dataBase64) {
-    await hostRequest(client, "fs/writeFile", { path, dataBase64 }, updateClientOptions());
-  }
-
-  async function updateRemoveFile(client, path) {
+  async function appServerRemoveFile(client, path) {
     try {
-      await hostRequest(client, "fs/remove", { path }, updateClientOptions());
+      await hostRequest(client, "fs/remove", { path }, appServerIoOptions());
     } catch {
-      // 清理下载临时文件失败不影响更新结果。
+      // 临时文件清理失败不影响主流程。
     }
   }
 
-  function updateClearStatusTimer() {
-    if (!state.updateStatusTimer) return;
-    window.clearTimeout(state.updateStatusTimer);
-    state.updateStatusTimer = 0;
-  }
-
-  function updateScheduleStatusReset() {
-    updateClearStatusTimer();
-    state.updateStatusTimer = trackTimer(window.setTimeout(() => {
-      state.updateStatusTimer = 0;
-      if (state.destroyed || state.updateBusy) return;
-      if (state.updatePhase === "uptodate") {
-        state.updatePhase = "";
-        renderUpdateCluster();
-      }
-    }, UPDATE_STATUS_RESET_MS));
-  }
-
-  function updateScheduleAutoCheck() {
-    if (window.__CODEX_LIVE_TOKEN_COST_TEST__) return;
-    if (state.updateAutoCheckTimer || state.destroyed) return;
-    state.updateAutoCheckTimer = trackTimer(window.setTimeout(() => {
-      state.updateAutoCheckTimer = 0;
-      if (state.destroyed) return;
-      void checkForUpdateNow({ auto: true });
-    }, UPDATE_AUTO_CHECK_DELAY_MS));
-  }
-
-  async function checkForUpdateNow(options = {}) {
-    const auto = options.auto === true;
-    if (state.destroyed || state.updateBusy) return false;
-    if (typeof window.codexPlus?.call !== "function" || !codexPlusApiReady()) {
-      state.updateError = "Codex++ 通道不可用";
-      state.updateErrorKind = "check";
-      if (!auto) {
-        state.updatePhase = "error";
-        renderUpdateCluster();
-      }
-      return false;
-    }
-    state.updateBusy = true;
-    state.updateError = "";
-    state.updateErrorKind = "";
-    if (state.updatePhase !== "available") state.updatePhase = "checking";
-    updateClearStatusTimer();
-    renderUpdateCluster();
-    await updateYieldPaint();
-    try {
-      const target = await updateResolveTarget();
-      const client = appServerSyncClient();
-      if (!client) throw new Error("未找到本地文件通道");
-      await updateRunCommand(client, updateCheckCommand(updateCacheBustUrl(), target.downloadPath), target.userDir);
-      if (state.destroyed) return false;
-      const text = await updateReadBase64(client, target.downloadPath).then(updateDecodeBase64Text);
-      if (state.destroyed) return false;
-      const remoteVersion = updateParseVersion(text);
-      if (!remoteVersion) throw new Error("远端脚本缺少版本信息");
-      await updateRemoveFile(client, target.downloadPath);
-      state.updateRemoteVersion = remoteVersion;
-      if (compareUpdateVersions(remoteVersion, VERSION) > 0) {
-        state.updatePhase = "available";
-      } else {
-        state.updateRemoteVersion = "";
-        state.updatePhase = auto ? "" : "uptodate";
-        if (!auto) updateScheduleStatusReset();
-      }
-      return true;
-    } catch (error) {
-      state.updateRemoteVersion = "";
-      state.updateError = updateErrorMessage(error);
-      if (auto) {
-        state.updatePhase = "";
-      } else {
-        state.updatePhase = "error";
-        state.updateErrorKind = "check";
-      }
-      return false;
-    } finally {
-      state.updateBusy = false;
-      if (!state.destroyed) renderUpdateCluster();
-    }
-  }
-
-  async function runScriptUpdate() {
-    if (state.destroyed || state.updateBusy) return false;
-    const retrying = state.updatePhase === "error" && state.updateErrorKind === "update";
-    if (state.updatePhase !== "available" && !retrying) return false;
-    state.updateBusy = true;
-    state.updateError = "";
-    state.updateErrorKind = "";
-    state.updatePhase = "updating";
-    updateClearStatusTimer();
-    renderUpdateCluster();
-    await updateYieldPaint();
-    try {
-      const target = await updateResolveTarget();
-      const client = appServerSyncClient();
-      if (!client) throw new Error("未找到本地文件通道");
-      await updateRunCommand(client, updateDownloadCommand(updateCacheBustUrl(), target.downloadPath), target.userDir);
-      if (state.destroyed) return false;
-      const dataBase64 = await updateReadBase64(client, target.downloadPath);
-      const text = updateDecodeBase64Text(dataBase64);
-      const remoteVersion = updateParseVersion(text);
-      if (!remoteVersion || compareUpdateVersions(remoteVersion, VERSION) <= 0) throw new Error("远端版本无效或没有变化");
-      if (!updateSourceLooksValid(text, remoteVersion)) throw new Error("下载内容校验未通过");
-      state.updateRemoteVersion = remoteVersion;
-      state.updatePhase = "applying";
-      renderUpdateCluster();
-      await updateYieldPaint();
-      await updateWriteBase64(client, target.targetPath, dataBase64);
-      if (state.destroyed) return false;
-      const verifyBase64 = await updateReadBase64(client, target.targetPath);
-      if (verifyBase64 !== dataBase64) throw new Error("脚本文件写回校验失败");
-      await updateRemoveFile(client, target.downloadPath);
-      applyUpdatedScript(text, remoteVersion);
-      return true;
-    } catch (error) {
-      if (!state.destroyed) {
-        state.updatePhase = "error";
-        state.updateErrorKind = "update";
-        state.updateError = updateErrorMessage(error);
-        renderUpdateCluster();
-      }
-      return false;
-    } finally {
-      state.updateBusy = false;
-      if (!state.destroyed) renderUpdateCluster();
-    }
-  }
-
-  function applyUpdatedScript(sourceText, remoteVersion) {
-    const registryKey = codexPlusScriptKey();
-    const registry = window.__codexPlusUserScripts;
-    const trace = {
-      at: new Date().toISOString(),
-      remoteVersion,
-      versionBefore: window.__codexLiveTokenCostVersion ?? null,
-      destroyError: "",
-      versionAfterDestroy: null,
-      evalError: "",
-      evalStack: "",
-      applied: false,
-      versionAfterEval: null,
-    };
-    window.__codexLiveTokenCostLastApply = trace;
-    try {
-      destroy();
-    } catch (error) {
-      trace.destroyError = updateErrorMessage(error);
-      reportFailure(error);
-    }
-    trace.versionAfterDestroy = window.__codexLiveTokenCostVersion ?? null;
-    let applied = false;
-    try {
-      (0, eval)(sourceText);
-      applied = window.__codexLiveTokenCostVersion === remoteVersion;
-    } catch (error) {
-      trace.evalError = updateErrorMessage(error);
-      trace.evalStack = String(error?.stack || "").slice(0, 600);
-      reportFailure(error);
-    }
-    trace.applied = applied;
-    trace.versionAfterEval = window.__codexLiveTokenCostVersion ?? null;
-    window.setTimeout(() => {
-      trace.versionAfter3s = window.__codexLiveTokenCostVersion ?? null;
-      trace.instanceAfter3s = typeof window.__codexLiveTokenCost;
-      trace.railAfter3s = !!Array.from(document.querySelectorAll?.("nav[data-app-navigation-rail] button[aria-label]") || [])
-        .find((node) => (node.getAttribute?.("aria-label") || "") === "Codex Token Cost");
-      trace.styleAfter3s = !!document.getElementById(STYLE_ID);
-    }, 3000);
-    if (!applied) {
-      window.codexPlus?.toast?.(`脚本文件已更新到 v${remoteVersion}，重启 Codex 后生效`, { type: "warn" });
-      return false;
-    }
-    try {
-      const entry = registry?.scripts?.[registryKey];
-      if (entry && typeof entry === "object") {
-        const destroyNext = window.__codexLiveTokenCost?.destroy;
-        if (typeof destroyNext === "function") entry.cleanups = [destroyNext];
-        entry.loadedAt = new Date().toISOString();
-        entry.status = "loaded";
-        entry.error = "";
-      }
-    } catch {
-      // 注册表 best-effort 修正失败不影响新实例运行。
-    }
-    window.codexPlus?.toast?.(`Codex Token Cost 已更新到 v${remoteVersion}`, { type: "success" });
-    reopenEmbeddedSettingsSoon();
-    return true;
-  }
-
-  function reopenEmbeddedSettingsSoon() {
-    const deadline = Date.now() + 6000;
-    const attempt = () => {
-      const button = Array.from(document.querySelectorAll?.('nav[data-app-navigation-rail] button[aria-label]') || [])
-        .find((node) => (node.getAttribute?.('aria-label') || '') === 'Codex Token Cost');
-      if (button?.isConnected) {
-        button.click?.();
-        return;
-      }
-      if (Date.now() < deadline) window.setTimeout(attempt, 250);
-    };
-    window.setTimeout(attempt, 300);
-  }
-
+  // 设置页标题旁的版本标记：只显示版本号与仓库入口，不检查、不下载、不 eval。
   const GITHUB_ICON_SVG =
     '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
     '<path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"></path>' +
     "</svg>";
 
-  function updateGithubButtonHtml() {
-    return `<button type="button" class="cltc-update-github" data-action="open-repo" title="在 GitHub 上 Star 支持本项目" aria-label="打开 GitHub 项目仓库">${GITHUB_ICON_SVG}</button>`;
+  function githubStarButtonHtml() {
+    return `<button type="button" class="cltc-version-github" data-action="open-repo" title="在 GitHub 上 Star 支持本项目" aria-label="打开 GitHub 项目仓库">${GITHUB_ICON_SVG}</button>`;
   }
 
-  function updateClusterHtml() {
-    const versionText = `v${VERSION}`;
-    const versionSpan = `<span class="cltc-update-version">${escapeHtml(versionText)}</span>`;
-    let body;
-    if (state.updateBusy) {
-      const note = state.updatePhase === "applying"
-        ? `正在应用 v${escapeHtml(state.updateRemoteVersion)}…`
-        : state.updatePhase === "updating" || state.updatePhase === "available"
-          ? "正在更新…"
-          : "检查更新中…";
-      body = versionSpan + `<span class="cltc-update-note">${note}</span>`;
-    } else if (state.updatePhase === "available") {
-      body = versionSpan + `<button type="button" class="cltc-update-action" data-action="update-script" title="从 GitHub 下载新版本并立即生效">一键更新 v${escapeHtml(state.updateRemoteVersion)}</button>`;
-    } else if (state.updatePhase === "error") {
-      const isUpdate = state.updateErrorKind === "update";
-      const label = isUpdate ? "更新失败，点击重试" : "检查更新失败，点击重试";
-      const action = isUpdate ? "update-script" : "check-update";
-      body = versionSpan + `<button type="button" class="cltc-update-action" data-action="${action}" data-tone="warn" title="${escapeHtml(state.updateError || "未知错误")}">${label}</button>`;
-    } else if (state.updatePhase === "uptodate") {
-      body = versionSpan + `<span class="cltc-update-note">已是最新</span>`;
-    } else {
-      const title = state.updateError
-        ? `上次检查更新失败：${escapeHtml(state.updateError)}（点击重试）`
-        : "点击检查更新";
-      body = `<button type="button" class="cltc-update-version" data-action="check-update" title="${title}">${escapeHtml(versionText)}</button>`;
-    }
-    return body + updateGithubButtonHtml();
+  function versionClusterHtml() {
+    return `<span class="cltc-version-label">${escapeHtml(`v${VERSION}`)}</span>` + githubStarButtonHtml();
   }
 
-  function ensureUpdateCluster() {
+  function ensureVersionCluster() {
     const container = state.embeddedPageContainer;
     if (!container || typeof container.closest !== "function") return null;
     const modal = container.closest(".codex-plus-modal-content") || container.closest(".codex-plus-page-overlay");
     if (!modal || typeof modal.querySelector !== "function") return null;
     const title = modal.querySelector(".codex-plus-modal-title");
     if (!title || typeof title.appendChild !== "function") return null;
-    let cluster = state.updateClusterEl;
+    let cluster = state.versionClusterEl;
     if (cluster && typeof cluster.isConnected === "boolean" && !cluster.isConnected) cluster = null;
     if (cluster && cluster.parentElement && cluster.parentElement !== title) cluster = null;
     if (!cluster) {
-      const leftover = typeof title.querySelector === "function" ? title.querySelector(".cltc-update-cluster") : null;
+      const leftover = typeof title.querySelector === "function" ? title.querySelector(".cltc-version-cluster") : null;
       if (leftover) leftover.remove?.();
       cluster = document.createElement("span");
-      cluster.className = "cltc-update-cluster";
-      cluster.setAttribute("data-phase", "idle");
-      cluster.addEventListener?.("click", handleUpdateClusterClick);
+      cluster.className = "cltc-version-cluster";
+      cluster.addEventListener?.("click", handleVersionClusterClick);
       title.appendChild(cluster);
-      state.updateClusterEl = cluster;
+      state.versionClusterEl = cluster;
     }
     return cluster;
   }
 
-  function renderUpdateCluster() {
-    const cluster = ensureUpdateCluster();
+  function renderVersionCluster() {
+    const cluster = ensureVersionCluster();
     if (!cluster) return;
-    const html = updateClusterHtml();
+    const html = versionClusterHtml();
     if (cluster.innerHTML !== html) cluster.innerHTML = html;
-    cluster.setAttribute("data-phase", state.updateBusy ? "busy" : state.updatePhase || "idle");
   }
 
-  function handleUpdateClusterClick(event) {
+  function handleVersionClusterClick(event) {
     const actionNode = event?.target?.closest?.("button[data-action]");
     if (!actionNode || state.destroyed) return;
     const action = actionNode.getAttribute?.("data-action") || "";
-    if (action === "open-repo") {
-      window.open(UPDATE_REPO_URL, "_blank", "noopener,noreferrer");
-      return;
-    }
-    if (state.updateBusy) return;
-    if (action === "update-script") void runScriptUpdate();
-    else if (action === "check-update") void checkForUpdateNow({ auto: false });
+    if (action === "open-repo") window.open(REPO_URL, "_blank", "noopener,noreferrer");
   }
 
   function usageSyncRootFromRolloutPath(value) {
@@ -12561,7 +12248,7 @@ const VERSION = "0.8.1";
     state.priceEditorOpen = true;
     state.embeddedPageContainer = container;
     container.classList.add("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings");
-    renderUpdateCluster();
+    renderVersionCluster();
     if (state.analyticsCalendar?.isOpen) return;
     const now = Date.now();
     // 流式输出期间设置页不需要 4 次/秒整体重建；用户主动操作仍立即渲染。
@@ -14282,7 +13969,7 @@ const VERSION = "0.8.1";
       .cltc-settings-overlay.cltc-settings-embedded .cltc-price-head {
         display: none;
       }
-      .cltc-update-cluster {
+      .cltc-version-cluster {
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -14294,7 +13981,7 @@ const VERSION = "0.8.1";
         white-space: nowrap;
         color: var(--color-token-text-tertiary, rgba(128, 132, 140, 0.9));
       }
-      .cltc-update-cluster button {
+      .cltc-version-cluster button {
         margin: 0;
         padding: 0;
         border: 0;
@@ -14303,48 +13990,27 @@ const VERSION = "0.8.1";
         color: inherit;
         cursor: pointer;
       }
-      .cltc-update-cluster button:hover {
+      .cltc-version-cluster button:hover {
         text-decoration: underline;
         text-underline-offset: 3px;
       }
-      .cltc-update-cluster button:focus-visible {
+      .cltc-version-cluster button:focus-visible {
         outline: 2px solid var(--color-token-focus-border, #3a83f7);
         outline-offset: 2px;
         border-radius: 3px;
       }
-      .cltc-update-cluster .cltc-update-action {
-        color: var(--color-token-text-primary, inherit);
-        font-weight: 600;
-      }
-      .cltc-update-cluster .cltc-update-action[data-tone="warn"] {
-        color: #e5484d;
-      }
-      .cltc-update-cluster .cltc-update-version {
-        position: relative;
-      }
-      .cltc-update-cluster[data-phase="available"] .cltc-update-version::after {
-        content: "";
-        position: absolute;
-        top: -2px;
-        right: -6px;
-        width: 6px;
-        height: 6px;
-        border-radius: 999px;
-        background: #e5484d;
-        pointer-events: none;
-      }
-      .cltc-update-cluster .cltc-update-github {
+      .cltc-version-cluster .cltc-version-github {
         display: inline-flex;
         align-items: center;
         color: inherit;
         opacity: 0.72;
       }
-      .cltc-update-cluster .cltc-update-github:hover {
+      .cltc-version-cluster .cltc-version-github:hover {
         color: var(--color-token-text-primary, inherit);
         opacity: 1;
         text-decoration: none;
       }
-      .cltc-update-cluster .cltc-update-github svg {
+      .cltc-version-cluster .cltc-version-github svg {
         display: block;
       }
 
@@ -15364,7 +15030,7 @@ const VERSION = "0.8.1";
     }
     if (event.target.closest?.("[data-action='sync-prices']")) {
       renderSettingsOverlay(liveSnapshot(), { animate: true });
-      void refreshDefaultPrices().then(() => {
+      void refreshDefaultPrices({ manual: true }).then(() => {
         if (state.destroyed || !state.priceEditorOpen) return;
         renderSettingsOverlay(liveSnapshot(), { animate: true });
       });
@@ -15448,7 +15114,7 @@ const VERSION = "0.8.1";
 
   async function restoreDefaultPrices() {
     clearDefaultPriceOverrides();
-    await refreshDefaultPrices();
+    await refreshDefaultPrices({ manual: true });
     clearDefaultPriceOverrides();
     if (state.started) render();
     return true;
@@ -15516,7 +15182,7 @@ const VERSION = "0.8.1";
     try {
       saved = window.__codexLiveTokenCost.setModelPrice(model, { input, cachedInput, cacheWrite, output });
     } catch (error) {
-      state.priceSaveError = `保存失败：${updateErrorMessage(error)}`;
+      state.priceSaveError = `保存失败：${errorMessageText(error)}`;
     }
     if (!saved) {
       // 失败时保留当前编辑内容，只显示错误；绝不调用 render() 重绘草稿。
@@ -15719,6 +15385,13 @@ const VERSION = "0.8.1";
                 <button type="button" data-action="rebuild-usage">重建统计</button>
               </span>
             </div>
+            <label class="cltc-toggle-field">
+              <span>
+                <strong>自动备份用量账本</strong>
+                <small>数据落盘 8 秒后自动写入 ~/.codex/usage-ledger/；关闭后只在点「备份到主机」时写盘</small>
+              </span>
+              <input type="checkbox" role="switch" aria-checked="${String(autoBackupEnabled())}" data-misc-field="autoBackup"${autoBackupEnabled() ? " checked" : ""}>
+            </label>
             ${backupHtml}
             ${ledgerHtml}
           </div>
@@ -15840,8 +15513,15 @@ const VERSION = "0.8.1";
         </div>
         <div class="cltc-price-sync" data-tone="${sync.tone}" role="status" aria-live="polite">
           <span>${escapeHtml(sync.text)}</span>
-          ${sync.retry ? `<button type="button" data-action="sync-prices">重试</button>` : ""}
+          <button type="button" data-action="sync-prices"${sync.busy ? " disabled aria-busy='true'" : ""}>${sync.busy ? "同步中…" : sync.retry ? "重试" : "同步价格"}</button>
         </div>
+        <label class="cltc-toggle-field">
+          <span>
+            <strong>启动时自动同步价格表</strong>
+            <small>开启后启动时会通过本机 curl（Windows 下可能改用 Node）从 GitHub 下载 LiteLLM 价格表；关闭时只用内置参考价与本地缓存，可随时点「同步价格」手动更新</small>
+          </span>
+          <input type="checkbox" role="switch" aria-checked="${String(priceAutoSyncEnabled())}" data-misc-field="priceAutoSync"${priceAutoSyncEnabled() ? " checked" : ""}>
+        </label>
         <div class="cltc-price-toolbar">
           <input class="cltc-price-search" data-price-search type="search" value="${escapeHtml(state.priceSearch)}" placeholder="搜索模型…" aria-label="搜索模型">
           ${filterButton("all", "全部")}
@@ -16915,6 +16595,19 @@ const VERSION = "0.8.1";
       render(true);
       return;
     }
+    const priceAutoSyncToggle = event.target?.closest?.("[data-misc-field='priceAutoSync']");
+    if (priceAutoSyncToggle) {
+      const enabled = savePriceAutoSyncEnabled(Boolean(priceAutoSyncToggle.checked));
+      if (enabled) void refreshDefaultPrices({ manual: true });
+      else renderSettingsOverlay(liveSnapshot());
+      return;
+    }
+    const autoBackupToggle = event.target?.closest?.("[data-misc-field='autoBackup']");
+    if (autoBackupToggle) {
+      saveAutoBackupEnabled(Boolean(autoBackupToggle.checked));
+      renderSettingsOverlay(liveSnapshot());
+      return;
+    }
     const profileUnlockToggle = event.target?.closest?.("[data-misc-field='profileUnlockEnabled']");
     if (profileUnlockToggle) {
       setProfileUnlockEnabled(Boolean(profileUnlockToggle.checked));
@@ -16934,7 +16627,7 @@ const VERSION = "0.8.1";
     if (state.embeddedPageContainer) {
       if (state.embeddedPageContainer.contains?.(event.target)) return;
       if (event.target?.closest?.(".codex-plus-modal-content, .codex-plus-page-overlay")) return;
-      if (state.updateClusterEl?.contains?.(event.target)) return;
+      if (state.versionClusterEl?.contains?.(event.target)) return;
       closeEmbeddedSettingsPage();
       return;
     }
@@ -17223,8 +16916,8 @@ const VERSION = "0.8.1";
     installCodexPlusEmbeddedPage();
     refreshCodexppHistory();
     scheduleUsageAutoSync();
-    updateScheduleAutoCheck();
     render();
+    // 只读本地价格缓存；未开启「启动时自动同步价格表」时不会启动任何本机下载命令。
     void refreshDefaultPrices();
   }
 
@@ -17243,9 +16936,6 @@ const VERSION = "0.8.1";
     state.destroyed = true;
     window.clearTimeout(state.startTimer);
     state.startTimer = 0;
-    if (state.updateAutoCheckTimer) window.clearTimeout(state.updateAutoCheckTimer);
-    state.updateAutoCheckTimer = 0;
-    updateClearStatusTimer();
     stopProfileUiReadinessCoordinator();
     stopSidebarProfileIdentitySync();
     state.profileUiAuthCacheKey = "";
@@ -17361,10 +17051,8 @@ const VERSION = "0.8.1";
       state.embeddedPageDispose = null;
     }
     state.embeddedPageContainer = null;
-    state.updateClusterEl?.remove?.();
-    state.updateClusterEl = null;
-    state.updateBusy = false;
-    state.updatePhase = "";
+    state.versionClusterEl?.remove?.();
+    state.versionClusterEl = null;
     state.settingsOverlay?.remove?.();
     state.settingsOverlay = null;
     if (ownsGlobals) document.getElementById(STYLE_ID)?.remove();
@@ -17687,6 +17375,10 @@ const VERSION = "0.8.1";
       saveHubVisible,
       outputRateVisible,
       saveOutputRateVisible,
+      priceAutoSyncEnabled,
+      savePriceAutoSyncEnabled,
+      autoBackupEnabled,
+      saveAutoBackupEnabled,
       hasCodexProjectContextRow,
       syncHubVisibility,
       profileSettingsHtml,
@@ -17726,30 +17418,8 @@ const VERSION = "0.8.1";
       localUsageExport,
       localLedgerMirrorTurn: (turn) => localLedgerMirrorTurn(turn),
       debugSessionState,
-      compareUpdateVersions,
-      updateParseVersion,
-      updateDownloadCommand,
-      updateCheckCommand,
-      updateCommandPathJoin,
-      updateSourceLooksValid,
-      updateClusterHtml,
-      handleUpdateClusterClick,
-      checkForUpdateNow,
-      runScriptUpdate,
-      updateStateSnapshot: () => ({
-        phase: state.updatePhase,
-        busy: state.updateBusy,
-        remoteVersion: state.updateRemoteVersion,
-        errorKind: state.updateErrorKind,
-        error: state.updateError,
-      }),
-      updateResetState: () => {
-        state.updateBusy = false;
-        state.updatePhase = "";
-        state.updateRemoteVersion = "";
-        state.updateErrorKind = "";
-        state.updateError = "";
-      },
+      versionClusterHtml,
+      handleVersionClusterClick,
       activeModelInfo,
       spoofProfileAccountPayload,
       spoofProfileAccountsCheckPayload,

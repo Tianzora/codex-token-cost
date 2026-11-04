@@ -342,7 +342,7 @@ const settingsSidebarRules = [...code.matchAll(/\.cltc-settings \.cltc-settings-
 assert.equal(settingsSidebarRules.some((rule) => rule.includes("border-right: 1px")), false);
 assert.equal(code.includes("cltc-settings-footer"), false);
 assert.equal(code.includes("cltc-settings-version"), false);
-assert.equal(code.includes("cltc-update-cluster"), true);
+assert.equal(code.includes("cltc-version-cluster"), true);
 assert.equal(code.includes("--cltc-muted: var(--color-token-text-secondary"), true);
 assert.equal(code.includes("--cltc-muted: var(--codex-plus-text-tertiary"), false);
 assert.equal(code.includes("font-weight: 650"), false);
@@ -521,12 +521,12 @@ assert.match(code, /state\.settingsOverlayCloseTimer = window\.setTimeout\(remov
 assert.match(code, /state\.settingsOverlay\.addEventListener\("keydown", handleSettingsKeydown\);/);
 assert.match(code, /if \(event\.target\?\.classList\?\.contains\("cltc-settings-overlay"\)\) \{\s+closeEmbeddedSettingsPage\(\);/);
 assert.match(code, /function closeEmbeddedSettingsPage\(\) \{[\s\S]*?state\.embeddedPageContainer = null;[\s\S]*?embeddedPageClose\(\);/);
-assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+if \(event\.target\?\.closest\?\.\("\.codex-plus-modal-content, \.codex-plus-page-overlay"\)\) return;\s+if \(state\.updateClusterEl\?\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
+assert.match(code, /function handleDocumentPointerDown\(event\) \{[\s\S]*?if \(state\.embeddedPageContainer\) \{\s+if \(state\.embeddedPageContainer\.contains\?\.\(event\.target\)\) return;\s+if \(event\.target\?\.closest\?\.\("\.codex-plus-modal-content, \.codex-plus-page-overlay"\)\) return;\s+if \(state\.versionClusterEl\?\.contains\?\.\(event\.target\)\) return;\s+closeEmbeddedSettingsPage\(\);/);
 assert.equal(code.includes('data-action="close-price"'), false);
 assert.match(code, /function clearEmbeddedRailActiveAfterNavigation\(event\) \{[\s\S]*?closest\?\.\(\"nav\[data-app-navigation-rail\] button\[aria-label\]\"\)[\s\S]*?clearEmbeddedRailActive\(\);/);
 assert.match(code, /if \(state\.embeddedPageContainer \|\| state\.priceEditorOpen\) clearEmbeddedRailActiveAfterNavigation\(event\);/);
 assert.match(code, /function clearEmbeddedRailActive\(\) \{[\s\S]*?nav\[data-app-navigation-rail\] button\[aria-label\][\s\S]*?aria-current'\, 'data-active'\, 'data-selected'[\s\S]*?removeAttribute/);
-assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}, snap = null\) \{\s+(?:if \(options\.panel[\s\S]*?;\s+)?state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+renderUpdateCluster\(\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
+assert.match(code, /function renderEmbeddedSettingsPage\(container, options = \{\}, snap = null\) \{\s+(?:if \(options\.panel[\s\S]*?;\s+)?state\.priceEditorOpen = true;\s+state\.embeddedPageContainer = container;\s+container\.classList\.add\("cltc-settings-overlay", "cltc-settings-embedded", "cltc-settings"\);\s+renderVersionCluster\(\);\s+if \(state\.analyticsCalendar\?\.isOpen\) return;/);
 assert.match(code, /animateAnalyticsSegments\(container, options\);/);
 assert.match(code, /button\.addEventListener\("pointerdown", handleSettingsNavPointerDown\)/);
 assert.match(code, /function handleSettingsNavPointerDown\(event\) \{[\s\S]*?event\.preventDefault\?\.\(\);[\s\S]*?event\.stopPropagation\?\.\(\);[\s\S]*?selectSettingsPanel/);
@@ -749,12 +749,31 @@ assert.equal(code.includes("data-profile-locked"), true);
 assert.equal(code.includes('<span class="cltc-price-title">Codex Token Cost</span>'), true);
 assert.equal(code.includes("cltc-settings-footer"), false);
 assert.equal(code.includes("cltc-settings-version"), false);
-assert.equal(code.includes('const UPDATE_REMOTE_URL = "https://raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js";'), true);
-assert.equal(code.includes("updateScheduleAutoCheck();"), true);
-assert.equal(code.includes('"cltc-update-cluster"'), true);
-assert.equal(code.includes('data-action="check-update"'), true);
-assert.equal(code.includes("一键更新 v${escapeHtml(state.updateRemoteVersion)}"), true);
-assert.equal(code.includes("(0, eval)(sourceText)"), true);
+assert.equal(code.includes("main/scripts/codex-live-token-cost.js"), false);
+assert.equal(code.includes("updateScheduleAutoCheck"), false);
+assert.equal(code.includes('"cltc-version-cluster"'), true);
+assert.equal(code.includes('data-action="check-update"'), false);
+assert.equal(code.includes("一键更新"), false);
+assert.equal(code.includes("(0, eval)("), false);
+assert.equal(/\beval\s*\(/.test(code), false);
+assert.equal(/new Function\s*\(/.test(code), false);
+assert.equal(code.includes("checkForUpdateNow"), false);
+assert.equal(code.includes("runScriptUpdate"), false);
+// 脚本里只允许出现一个 raw.githubusercontent 地址，且必须是 LiteLLM 价格表。
+assert.equal((code.match(/raw\.githubusercontent\.com/g) || []).length, 1);
+assert.equal(code.includes("BerriAI/litellm"), true);
+// 会启动本机进程或写盘的自动行为必须可关（市场评审要求）：价格自动同步默认关，自动冷备有开关。
+assert.equal(code.includes('const PRICE_AUTO_SYNC_KEY = "__codexLiveTokenCostPriceAutoSyncV1";'), true);
+assert.equal(code.includes('const AUTO_BACKUP_KEY = "__codexLiveTokenCostAutoBackupV1";'), true);
+assert.equal(code.includes("function priceAutoSyncEnabled()"), true);
+assert.equal(code.includes("function autoBackupEnabled()"), true);
+assert.equal(code.includes("if (options.manual !== true && !priceAutoSyncEnabled())"), true);
+assert.equal(code.includes("if (!priceAutoSyncEnabled()) return;"), true);
+assert.equal(code.includes("if (!autoBackupEnabled()) return;"), true);
+assert.equal(code.includes('data-misc-field="priceAutoSync"'), true);
+assert.equal(code.includes('data-misc-field="autoBackup"'), true);
+assert.equal(code.includes("refreshDefaultPrices({ manual: true })"), true);
+assert.equal(code.includes("void refreshDefaultPrices();"), true);
 assert.equal(code.includes("cltc-settings-owner"), false);
 assert.equal(code.includes("cltc-settings-kicker"), false);
 assert.equal(code.includes('<h2>个人资料</h2>'), true);
@@ -5574,6 +5593,7 @@ const profileLifecycleTest = Promise.resolve()
       },
     };
     storage.set("__codexLiveTokenCostRemotePricesV1", JSON.stringify({ version: 1, fetchedAt: 1, prices: { "gpt-legacy": { input: 1, output: 1 } } }));
+    api.savePriceAutoSyncEnabled(true);
     const syncedUpstream = {
       ...upstreamPriceFixture,
       "gpt-5.6-sol": { ...upstreamPriceFixture["gpt-5.6-sol"], input_cost_per_token: 0.0000045, output_cost_per_token: 0.000021 },
@@ -5604,6 +5624,15 @@ const profileLifecycleTest = Promise.resolve()
     priceReadCalls.length = 0;
     priceRemoveCalls.length = 0;
     priceWriteCalls.length = 0;
+
+    // 0.5) 自动同步关闭时只读本地缓存：不执行任何本机 command/exec，也不报同步失败。
+    api.savePriceAutoSyncEnabled(false);
+    assert.equal(api.priceAutoSyncEnabled(), false);
+    assert.equal(await api.refreshDefaultPrices(), false);
+    assert.equal(priceCommandCalls.length, 0);
+    assert.equal(api.priceSyncStatus().tone === "warn", false);
+    api.savePriceAutoSyncEnabled(true);
+    assert.equal(api.priceAutoSyncEnabled(), true);
 
     priceHostState.upstream = syncedUpstream;
     assert.equal(await api.refreshDefaultPrices(), true);
@@ -6582,213 +6611,45 @@ profileLifecycleTest.then(async () => {
     context.__codexLiveTokenCostVersion = undefined;
     context.__codexLiveTokenCost = undefined;
     context.__codexLiveTokenCostActiveBridge = undefined;
-    const updateToasts = [];
-    const userScriptListResult = {
-      enabled: true,
-      user_dir: "C:\\Users\\tester\\user_scripts",
-      scripts: [{ key: "user:market-codex-live-token-cost.js", name: "market-codex-live-token-cost.js", source: "user", enabled: true, status: "loaded" }],
-    };
     context.codexPlus = {
       script: { key: "user:market-codex-live-token-cost.js" },
       fail() {},
-      toast(message, options) {
-        updateToasts.push({ message, options });
-      },
-      call(route) {
-        if (route === "/user-scripts/list") return Promise.resolve(userScriptListResult);
-        return Promise.resolve({});
-      },
     };
     vm.runInNewContext(code, context, { filename: scriptPath });
-    const updateApi = context.__codexLiveTokenCostTest;
-    assert.equal(typeof updateApi.checkForUpdateNow, "function");
-    assert.equal(typeof updateApi.runScriptUpdate, "function");
-    assert.equal(typeof updateApi.updateClusterHtml, "function");
-    assert.equal(typeof updateApi.updateStateSnapshot, "function");
+    const versionApi = context.__codexLiveTokenCostTest;
+    // 市场版不再内置自更新：检查 / 下载 / 覆盖 / eval 整条链路都不存在。
+    assert.equal(typeof versionApi.checkForUpdateNow, "undefined");
+    assert.equal(typeof versionApi.runScriptUpdate, "undefined");
+    assert.equal(typeof versionApi.compareUpdateVersions, "undefined");
+    assert.equal(typeof versionApi.updateStateSnapshot, "undefined");
+    assert.equal(code.includes("window.__codexLiveTokenCostLastApply"), false);
+    assert.equal(code.includes("data-action=\"update-script\""), false);
+    assert.equal(code.includes("cltc-update"), false);
     assert.match(code, /const ownsGlobals = window\.__codexLiveTokenCost\?\.destroy === destroy;/);
     assert.match(code, /if \(ownsGlobals\) document\.getElementById\(STYLE_ID\)\?\.remove\(\);/);
-    assert.match(code, /if \(ownsGlobals\) \{\n      delete window\.__codexLiveTokenCost;\n      if \(window\.__codexLiveTokenCostVersion === VERSION\) delete window\.__codexLiveTokenCostVersion;\n    \}/);
-    assert.match(code, /window\.__codexLiveTokenCostLastApply = trace;/);
-    assert.match(code, /window\.requestAnimationFrame\(done\);\n[\s\S]{0,200}?window\.setTimeout\(done, 50\);/);
-    assert.match(code, /const done = \(\) => \{\n        if \(settled\) return;\n        settled = true;\n        resolve\(\);\n      \};/);
-    assert.match(code, /\.cltc-update-cluster \{\n        display: inline-flex;\n        align-items: center;\n        gap: 6px;\n        margin-left: 10px;/);
-    assert.match(code, /\.cltc-update-cluster \.cltc-update-version \{\n        position: relative;\n      \}/);
-    assert.match(code, /\.cltc-update-cluster\[data-phase="available"\] \.cltc-update-version::after \{\n        content: "";\n        position: absolute;\n        top: -2px;\n        right: -6px;\n        width: 6px;\n        height: 6px;\n        border-radius: 999px;\n        background: #e5484d;\n        pointer-events: none;\n      \}/);
-    assert.match(code, /const UPDATE_REPO_URL = "https:\/\/github\.com\/Tianzora\/codex-token-cost";/);
-    assert.equal(updateApi.updateParseVersion("// @version      0.7.11-beta1\n"), "0.7.11-beta1");
-    assert.equal(updateApi.updateParseVersion("// no version header"), "");
-    const compareVersions = updateApi.compareUpdateVersions;
-    assert.equal(compareVersions("0.7.10-beta1", "0.7.10-beta1"), 0);
-    assert.equal(compareVersions("0.7.10-beta1", "0.7.10"), -1);
-    assert.equal(compareVersions("0.7.10", "0.7.10-beta1"), 1);
-    assert.equal(compareVersions("0.7.9", "0.7.10-beta1"), -1);
-    assert.equal(compareVersions("0.7.11-beta1", "0.7.10-beta1"), 1);
-    assert.equal(compareVersions("0.7.10-beta2", "0.7.10-beta1"), 1);
-    assert.equal(compareVersions("0.7.10-beta10", "0.7.10-beta9"), 1);
-    assert.equal(compareVersions("1.0.0", "0.9.9"), 1);
-    assert.equal(compareVersions("bogus", "0.7.10"), 0);
-    const downloadArgs = updateApi.updateDownloadCommand("https://example.com/a.js?x=1", "C:\\tmp\\a.js.download");
-    assert.equal(downloadArgs[0], "curl");
-    assert.equal(downloadArgs[downloadArgs.indexOf("-o") + 1], "C:\\tmp\\a.js.download");
-    assert.equal(downloadArgs[downloadArgs.length - 1], "https://example.com/a.js?x=1");
-    assert.equal(downloadArgs.includes("--retry"), true);
-    const checkArgs = updateApi.updateCheckCommand("https://example.com/a.js?x=1", "C:\\tmp\\a.js.download");
-    assert.equal(checkArgs[0], "curl");
-    assert.equal(checkArgs[checkArgs.indexOf("-r") + 1], "0-8191");
-    assert.equal(checkArgs[checkArgs.indexOf("-o") + 1], "C:\\tmp\\a.js.download");
-    assert.equal(checkArgs[checkArgs.length - 1], "https://example.com/a.js?x=1");
-    assert.equal(updateApi.updateCommandPathJoin("C:\\Users\\tester\\user_scripts\\", "market-codex-live-token-cost.js"), "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js");
-    assert.equal(updateApi.updateCommandPathJoin("/Users/tester/user_scripts", "a.js"), "/Users/tester/user_scripts/a.js");
-    const fakeSource = (version) => [
-      "// ==UserScript==",
-      "// @name         Codex Live Token Cost",
-      `// @version      ${version}`,
-      "// ==/UserScript==",
-      `// ${"x".repeat(110000)}`,
-      "(() => {",
-      '  "use strict";',
-      `  window.__codexLiveTokenCostVersion = ${JSON.stringify(version)};`,
-      "  window.__codexLiveTokenCost = { destroy() {} };",
-      "})();",
-    ].join("\n");
-    assert.equal(updateApi.updateSourceLooksValid(fakeSource("0.7.11-beta1"), "0.7.11-beta1"), true);
-    assert.equal(updateApi.updateSourceLooksValid(fakeSource("0.7.11-beta1"), "0.7.12"), false);
-    assert.equal(updateApi.updateSourceLooksValid("// too short", "0.7.11-beta1"), false);
-
-    updateApi.updateResetState();
-    const savedCodexPlus = context.codexPlus;
-    context.codexPlus = undefined;
-    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), false);
-    assert.equal(updateApi.updateStateSnapshot().phase, "");
-    assert.equal(updateApi.updateStateSnapshot().error, "Codex++ 通道不可用");
-    assert.equal(await updateApi.checkForUpdateNow({ auto: false }), false);
-    assert.equal(updateApi.updateStateSnapshot().phase, "error");
-    assert.equal(updateApi.updateStateSnapshot().errorKind, "check");
-    context.codexPlus = savedCodexPlus;
-
-    const base64Of = (text) => Buffer.from(text, "utf8").toString("base64");
-    const targetPath = "C:\\Users\\tester\\user_scripts\\market-codex-live-token-cost.js";
-    const downloadPath = `${targetPath}.download`;
-    const commandCalls = [];
-    const readCalls = [];
-    const writeCalls = [];
-    const removeCalls = [];
-    let remoteSource = fakeSource("0.8.1");
-    let writtenBase64 = "";
-    let corruptTargetRead = false;
-    const hostClient = {
-      hostId: "local",
-      sendRequest(route, payload) {
-        if (route === "command/exec") {
-          commandCalls.push(payload.command);
-          return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
-        }
-        if (route === "fs/readFile") {
-          readCalls.push(payload.path);
-          if (payload.path === downloadPath) return Promise.resolve({ dataBase64: base64Of(remoteSource) });
-          if (payload.path === targetPath) return Promise.resolve({ dataBase64: corruptTargetRead ? base64Of("corrupt") : writtenBase64 || base64Of(code) });
-          return Promise.resolve({ dataBase64: "" });
-        }
-        if (route === "fs/writeFile") {
-          writeCalls.push({ path: payload.path, dataBase64: payload.dataBase64 });
-          writtenBase64 = payload.dataBase64;
-          return Promise.resolve({});
-        }
-        if (route === "fs/remove") {
-          removeCalls.push(payload.path);
-          return Promise.resolve({});
-        }
-        return Promise.resolve({});
-      },
-    };
-    context.__codexPlusNativeHostClients = new Map([["local", { ref: { deref: () => hostClient } }]]);
-
-    updateApi.updateResetState();
-    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), true);
-    assert.equal(updateApi.updateStateSnapshot().phase, "");
-    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "");
-    assert.equal(commandCalls.length, 1);
-    assert.equal(commandCalls[0].includes("-r"), true);
-    assert.equal(commandCalls[0][commandCalls[0].length - 1].includes("raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js"), true);
-
-    updateApi.updateResetState();
-    assert.equal(await updateApi.checkForUpdateNow({ auto: false }), true);
-    assert.equal(updateApi.updateStateSnapshot().phase, "uptodate");
-    assert.equal(updateApi.updateClusterHtml().includes("已是最新"), true);
-    assert.equal(updateApi.updateClusterHtml().includes('data-action="open-repo"'), true);
-
-    remoteSource = fakeSource("0.8.2");
-    updateApi.updateResetState();
-    assert.equal(await updateApi.checkForUpdateNow({ auto: true }), true);
-    assert.equal(updateApi.updateStateSnapshot().phase, "available");
-    assert.equal(updateApi.updateStateSnapshot().remoteVersion, "0.8.2");
-    assert.equal(updateApi.updateClusterHtml().includes("一键更新 v0.8.2"), true);
-    const availableHtml = updateApi.updateClusterHtml();
-    assert.equal(availableHtml.includes('data-action="open-repo"'), true);
-    assert.equal(availableHtml.includes('class="cltc-update-github"'), true);
-    assert.equal(availableHtml.includes("<svg"), true);
+    assert.match(code, /const REPO_URL = "https:\/\/github\.com\/[^"]+";/);
+    assert.match(code, /\.cltc-version-cluster \{\n        display: inline-flex;\n        align-items: center;\n        gap: 6px;\n        margin-left: 10px;/);
+    // 设置页标题旁的版本标记只显示版本号与仓库入口。
+    assert.equal(typeof versionApi.versionClusterHtml, "function");
+    const clusterHtml = versionApi.versionClusterHtml();
+    assert.equal(clusterHtml.includes("v0.8.1"), true);
+    assert.equal(clusterHtml.includes('data-action="open-repo"'), true);
+    assert.equal(clusterHtml.includes('class="cltc-version-label"'), true);
+    assert.equal(clusterHtml.includes('class="cltc-version-github"'), true);
     const openCalls = [];
     context.open = (url, target, features) => {
       openCalls.push([url, target, features]);
       return null;
     };
-    updateApi.handleUpdateClusterClick({
+    versionApi.handleVersionClusterClick({
       target: { closest: () => ({ getAttribute: (name) => (name === "data-action" ? "open-repo" : null) }) },
     });
     assert.equal(openCalls.length, 1);
-    assert.equal(openCalls[0][0], "https://github.com/Tianzora/codex-token-cost");
+    assert.match(openCalls[0][0], /^https:\/\/github\.com\/[^/]+\/[^/]+$/);
     assert.equal(openCalls[0][1], "_blank");
     assert.equal(String(openCalls[0][2]).includes("noopener"), true);
-
-    const previousInstance = context.__codexLiveTokenCost;
-    const registryKey = "user:market-codex-live-token-cost.js";
-    const registryEntry = {
-      key: registryKey,
-      name: "market-codex-live-token-cost.js",
-      source: "user",
-      status: "loaded",
-      error: "",
-      loadedAt: "2026-07-04T00:00:00.000Z",
-      cleanups: [previousInstance.destroy],
-    };
-    context.__codexPlusUserScripts = { scripts: { [registryKey]: registryEntry } };
-    const versionBeforeUpdate = context.__codexLiveTokenCostVersion;
-
-    const freshRemoteSource = remoteSource;
-    remoteSource = fakeSource("0.8.1");
-    assert.equal(await updateApi.runScriptUpdate(), false);
-    assert.equal(updateApi.updateStateSnapshot().phase, "error");
-    assert.equal(updateApi.updateStateSnapshot().errorKind, "update");
-    assert.equal(writeCalls.length, 0);
-    assert.equal(context.__codexLiveTokenCostVersion, versionBeforeUpdate);
-    remoteSource = freshRemoteSource;
-
-    corruptTargetRead = true;
-    assert.equal(await updateApi.runScriptUpdate(), false);
-    assert.equal(updateApi.updateStateSnapshot().phase, "error");
-    assert.equal(updateApi.updateStateSnapshot().errorKind, "update");
-    assert.equal(context.__codexLiveTokenCostVersion, versionBeforeUpdate);
-    assert.equal(context.__codexLiveTokenCost, previousInstance);
-    corruptTargetRead = false;
-
-    assert.equal(await updateApi.runScriptUpdate(), true);
-    assert.equal(context.__codexLiveTokenCostVersion, "0.8.2");
-    assert.equal(context.__codexLiveTokenCost === previousInstance, false);
-    assert.equal(typeof context.__codexLiveTokenCost.destroy, "function");
-    assert.equal(registryEntry.cleanups[0], context.__codexLiveTokenCost.destroy);
-    assert.equal(registryEntry.loadedAt !== "2026-07-04T00:00:00.000Z", true);
-    assert.equal(registryEntry.status, "loaded");
-    assert.equal(writeCalls.length, 2);
-    assert.equal(writeCalls[1].path, targetPath);
-    assert.equal(writeCalls[1].dataBase64, base64Of(remoteSource));
-    assert.equal(removeCalls.includes(downloadPath), true);
-    assert.equal(readCalls.includes(targetPath), true);
-    assert.equal(updateToasts.some((entry) => String(entry.message).includes("已更新到 v0.8.2")), true);
-    const lastCommand = commandCalls[commandCalls.length - 1];
-    assert.equal(lastCommand[0], "curl");
-    assert.equal(lastCommand.includes("-r"), false);
-    assert.equal(lastCommand[lastCommand.length - 1].includes("raw.githubusercontent.com/Tianzora/codex-token-cost/main/scripts/codex-live-token-cost.js"), true);
   })
+
   .catch((error) => {
   setImmediate(() => {
     throw error;
