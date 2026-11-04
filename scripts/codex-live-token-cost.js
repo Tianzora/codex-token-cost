@@ -1324,12 +1324,12 @@ const VERSION = "0.8.1";
   // 旧账本迁移出来的事实行是整轮聚合，不是逐响应记录；同一 turn 一旦有
   // rollout record，就必须让位，否则整轮聚合会叠加在逐响应明细之上。
   // 粒度按 turn：旧线程只补到部分新响应时，未覆盖的旧轮次仍要计入权威口径；
-  // 但 legacy 与 rollout 的 turnId 不同源时，退回线程级让位，避免重复计数。
+  // 没有 threadId 的事实按空线程归并，仍靠 turnId 与合成 ID 前缀去重，避免双计。
   function usageFactSupersededIds() {
     const records = Array.from(state.usageFacts.values());
     const detailTurns = new Map();
     for (const record of records) {
-      if (record.source === "legacy-migration" || !record.threadId || !record.turnId) continue;
+      if (record.source === "legacy-migration" || !record.turnId) continue;
       const turns = detailTurns.get(record.threadId) || new Set();
       turns.add(record.turnId);
       detailTurns.set(record.threadId, turns);

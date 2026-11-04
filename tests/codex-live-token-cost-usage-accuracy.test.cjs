@@ -1596,6 +1596,33 @@ const metaLine = (threadId) =>
     );
   }
 
+  // ==========================================================================
+  // A15. thread-less facts still dedupe by turn id (no double counting)
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "legacy:turn-shared:0:x",
+      turnId: "turn-shared",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "legacy-migration",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_turn_shared",
+      turnId: "turn-shared",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "rollout_record",
+    });
+    assert.equal(api.usageFactTotals().total, 200, "the raw table keeps both rows");
+    assert.equal(
+      api.usageFactAuthoritativeTotals().total,
+      100,
+      "thread-less facts must still dedupe by turn id, otherwise usage doubles",
+    );
+  }
+
   console.log("usage accuracy P0 tests passed");
 })().catch((error) => {
   console.error(error);
