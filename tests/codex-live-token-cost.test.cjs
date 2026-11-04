@@ -774,6 +774,10 @@ assert.equal(code.includes('data-misc-field="priceAutoSync"'), true);
 assert.equal(code.includes('data-misc-field="autoBackup"'), true);
 assert.equal(code.includes("refreshDefaultPrices({ manual: true })"), true);
 assert.equal(code.includes("void refreshDefaultPrices();"), true);
+// 数据完整性的三处修复必须钉住：按 turn 让位、失败不写印章、归档分片可恢复。
+assert.equal(code.includes('recordedTurns.has(`${record.threadId || ""}:${record.turnId}`)'), true);
+assert.equal(code.includes('if (factsPersisted) await usageSyncStoreFileStamps(collected.nextStamps);'), true);
+assert.equal(code.includes('`${day}.ndjson.archived`'), true);
 assert.equal(code.includes("cltc-settings-owner"), false);
 assert.equal(code.includes("cltc-settings-kicker"), false);
 assert.equal(code.includes('<h2>个人资料</h2>'), true);

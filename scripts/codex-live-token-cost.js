@@ -1311,19 +1311,21 @@ const VERSION = "0.8.1";
     return merged;
   }
 
-  // 旧账本迁移出来的事实行是整轮聚合，不是逐响应记录；同一线程一旦有
+  // 旧账本迁移出来的事实行是整轮聚合，不是逐响应记录；同一 turn 一旦有
   // rollout record，就必须让位，否则整轮聚合会叠加在逐响应明细之上。
+  // 粒度必须是 turn 而不是线程：旧线程只补到部分新响应时，未覆盖的旧轮次
+  // 仍然要计入权威口径，否则会从统计与冷备里整段消失。
   function usageFactSupersededIds() {
     const records = Array.from(state.usageFacts.values());
-    const recordedThreads = new Set();
+    const recordedTurns = new Set();
     for (const record of records) {
-      if (record.source !== "legacy-migration" && record.threadId) recordedThreads.add(record.threadId);
+      if (record.source === "legacy-migration" || !record.turnId) continue;
+      recordedTurns.add(`${record.threadId || ""}:${record.turnId}`);
     }
     const superseded = new Set();
     for (const record of records) {
-      if (record.source === "legacy-migration" && record.threadId && recordedThreads.has(record.threadId)) {
-        superseded.add(record.responseId);
-      }
+      if (record.source !== "legacy-migration" || !record.turnId) continue;
+      if (recordedTurns.has(`${record.threadId || ""}:${record.turnId}`)) superseded.add(record.responseId);
     }
     return superseded;
   }
@@ -2074,7 +2076,12 @@ const VERSION = "0.8.1";
       try {
         text = await usageFactHostReadFile(client, usageSyncJoinPath(dir, `${day}.ndjson`));
       } catch {
-        continue;
+        // 超过保留期的分片会被改名为 .ndjson.archived，内容与校验和不变，仍然要能恢复。
+        try {
+          text = await usageFactHostReadFile(client, usageSyncJoinPath(dir, `${day}.ndjson.archived`));
+        } catch {
+          continue;
+        }
       }
       const expected = manifest.checksums?.[day];
       if (expected && usageFactChecksum(text) !== expected) {
@@ -7668,7 +7675,9 @@ const VERSION = "0.8.1";
       state.usageFactFallbackTurns.set(turnId, UTIL.toCount(row.fallbackResponses) || UTIL.toCount(row.callCount));
       state.usageFactFallbackThreads.set(turnId, UTIL.normalizeText(row.threadKey, 240).replace(/^local:/, ""));
     }
-    await usageSyncStoreFileStamps(collected.nextStamps);
+    // 事实没真正落盘时不写文件印章：否则下次同步会因为这些文件「没变」而跳过，
+    // 丢失的响应永远补不回来。读不到变化的文件下次还会重新解析，去重是幂等的。
+    if (factsPersisted) await usageSyncStoreFileStamps(collected.nextStamps);
     const observability = usageSyncEnsureObservability({ ...(collected.observability || {}) });
     const reconcile = usageFactReconcileSummary();
     state.usageSyncResult = {

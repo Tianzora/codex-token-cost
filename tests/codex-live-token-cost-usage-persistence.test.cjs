@@ -559,6 +559,38 @@ function createFakeAppServer(files = {}) {
   }
 
   // ==========================================================================
+  // B4c. shards past the retention window are renamed to .ndjson.archived and
+  // must still be restorable after an IndexedDB wipe
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    api.usageFactUpsert({ responseId: "resp_archive_1", threadId: "01t-archive", turnId: "turn-archive", usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } });
+    const client = createFakeAppServer();
+    await api.usageFactBackupToHost({ client, root: "C:\\Users\\test\\.codex" });
+    const expectedCount = api.usageFactTotals().count;
+    const dir = "C:\\Users\\test\\.codex\\usage-ledger";
+    const manifestPath = `${dir}\\manifest.json`;
+    const manifest = JSON.parse(client.files.get(manifestPath));
+    const day = manifest.days[0];
+    const oldDay = new Date(currentNow - 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const shard = client.files.get(`${dir}\\${day}.ndjson`);
+    client.files.delete(`${dir}\\${day}.ndjson`);
+    client.files.set(`${dir}\\${oldDay}.ndjson`, shard);
+    manifest.days = manifest.days.map((item) => (item === day ? oldDay : item));
+    manifest.checksums[oldDay] = manifest.checksums[day];
+    delete manifest.checksums[day];
+    client.files.set(manifestPath, JSON.stringify(manifest));
+    const pruned = await api.usageFactPruneHostBackups(client, { root: "C:\\Users\\test\\.codex" });
+    assert.equal(Array.from(pruned.archived).includes(oldDay), true, "the aged shard is archived");
+    assert.equal(client.files.has(`${dir}\\${oldDay}.ndjson`), false, "the active file is gone");
+    fake.clearDatabase(PROFILE_DB_NAME);
+    api.usageFactReset();
+    const restored = await api.usageFactRestoreFromHostBackup({ client, root: "C:\\Users\\test\\.codex" });
+    assert.equal(restored, true, "the archived shard must be restorable");
+    assert.equal(api.usageFactTotals().count, expectedCount, "every fact comes back from the archive");
+  }
+
+  // ==========================================================================
   // B10. host capability matrix (P2 #3)
   // ==========================================================================
   {

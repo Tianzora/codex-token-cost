@@ -1533,6 +1533,40 @@ const metaLine = (threadId) =>
     assert.equal(api.usageFactRecord(responseId).model, "gpt-5.5", "the model comes from the Profile turn");
   }
 
+  // ==========================================================================
+  // A13. a partially synced thread keeps the legacy turns the detail does not cover
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "legacy:turn-old:0:x",
+      threadId: "thread-partial",
+      turnId: "turn-old",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "legacy-migration",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_partial_new",
+      threadId: "thread-partial",
+      turnId: "turn-new",
+      usage: { input_tokens: 50, output_tokens: 0, total_tokens: 50 },
+      observedAtMs: Date.now(),
+      source: "rollout_record",
+    });
+    assert.equal(api.usageFactAuthoritativeTotals().total, 150, "an uncovered legacy turn stays in the authoritative totals");
+    api.usageFactUpsert({
+      responseId: "resp_partial_old_detail",
+      threadId: "thread-partial",
+      turnId: "turn-old",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "rollout_record",
+    });
+    assert.equal(api.usageFactTotals().total, 250, "the raw table keeps every row");
+    assert.equal(api.usageFactAuthoritativeTotals().total, 150, "a legacy row is dropped once its own turn has rollout detail");
+  }
+
   console.log("usage accuracy P0 tests passed");
 })().catch((error) => {
   console.error(error);
