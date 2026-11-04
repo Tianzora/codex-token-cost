@@ -678,6 +678,8 @@ const VERSION = "0.8.1";
     profileUnlockInstallCount: 0,
     // Test-only: the API-key profile spoof is disabled in production (see profileSyntheticEnabled).
     profileSyntheticTestEnabled: false,
+    // 服务器写入成功但本地镜像失败（localStorage 满）时置位：本次会话停止本地覆盖。
+    profileOverrideDegraded: false,
     // The settings section list is a module-level array; remember it after the first hit so the
     // global Array.prototype.filter wrapper is O(1) for every unrelated filter call.
     settingsSectionsSource: null,
@@ -3400,12 +3402,28 @@ const VERSION = "0.8.1";
     }
   }
 
+  // 服务器写入成功、本地镜像失败（localStorage 满）时：停止本次会话的本地覆盖，
+  // 让界面直接读取服务器数据，避免「账号已改、界面还是旧值」的静默不一致。
+  function disableProfileDataOverrideForSession() {
+    state.profileOverrideDegraded = true;
+    try {
+      if (state.profileIdentityButtons.size || state.profileIdentityMenuItems.size || state.profileIdentityMenus.size) {
+        restoreSidebarProfileIdentity();
+      }
+    } catch (error) {
+      reportFailure(error);
+    }
+    return false;
+  }
+
   function profileDataOverrideEnabledFor(queryClient) {
+    if (state.profileOverrideDegraded) return false;
     return profileUnlockEnabled() && profileRealChatgptCached(queryClient);
   }
 
   function saveProfileUnlockEnabled(value) {
     profileUnlockEnabledRuntime = Boolean(value);
+    if (profileUnlockEnabledRuntime) state.profileOverrideDegraded = false;
     try {
       localStorage.setItem(PROFILE_UNLOCK_ENABLED_KEY, profileUnlockEnabledRuntime ? "true" : "false");
     } catch {
@@ -11811,7 +11829,14 @@ const VERSION = "0.8.1";
           try {
             stickyBridge().applyLocalProfilePatch(options);
           } catch {
-            // 本地镜像失败不影响服务器结果，下次拉取以服务器为准。
+            // localStorage 满时 data:image 最容易失败：去掉图片字段再镜像一次。
+            const patch = { ...normalizeProfilePatchPayload(options) };
+            for (const key of ["profile_picture_url", "profilePictureUrl", "avatar_url", "avatarUrl"]) delete patch[key];
+            try {
+              stickyBridge().applyLocalProfilePatch(patch);
+            } catch {
+              stickyBridge().disableProfileDataOverrideForSession?.();
+            }
           }
           return response;
         }
@@ -17486,6 +17511,7 @@ const VERSION = "0.8.1";
     spoofProfileAccountsCheckPayload,
     localProfileAccountsCheckResponse,
     profileUiAuthContextValue,
+    disableProfileDataOverrideForSession,
   };
   window.__codexLiveTokenCostActiveBridge = state.activeBridge;
 

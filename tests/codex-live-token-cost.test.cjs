@@ -818,6 +818,8 @@ assert.equal(code.includes('codexLiveTokenCostProfilePhotoPost'), false);
 assert.equal(code.includes("const officialAvatar = findOfficialProfileAvatarNode(button);"), true);
 // 真实账号 + 覆盖模式下，PATCH /profiles/me 必须转发给宿主，成功后只做本地镜像。
 assert.equal(code.includes("if (overrideActive() && isProfileUsageUrl(url))"), true);
+assert.equal(code.includes("function disableProfileDataOverrideForSession()"), true);
+assert.equal(code.includes("state.profileOverrideDegraded = true"), true);
 assert.equal((code.match(/\(syntheticActive\(\) \|\| overrideActive\(\)\) && isProfileUsageUrl\(url\)/g) || []).length, 1);
 assert.equal(code.includes("const officialAvatar = dataOverride ? null : findOfficialProfileAvatarNode(button);"), false);
 assert.equal(code.includes('grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);'), true);
@@ -6719,6 +6721,42 @@ profileLifecycleTest.then(async () => {
       displayBefore,
       "a failed write must not mirror into local prefs",
     );
+
+    // 服务器成功但本地镜像失败（localStorage 满）：停止本次会话的本地覆盖，
+    // 后续读取直接走宿主，避免「账号已改、界面还是旧值」。
+    const mirrorFailClient = {
+      async safeGet() {
+        return { profile: { display_name: "Server Truth" } };
+      },
+      async safePatch() {
+        return { profile: { display_name: "Server Truth" } };
+      },
+    };
+    assert.equal(profileApi.patchProfileRequestClient(mirrorFailClient), true);
+    const originalSetItem = context.localStorage.setItem;
+    context.localStorage.setItem = function quotaBlockedStorage(key, value) {
+      if (key === "__codexLiveTokenCostProfilePrefsV1") {
+        const error = new Error("quota exceeded");
+        error.name = "QuotaExceededError";
+        throw error;
+      }
+      return originalSetItem.call(this, key, value);
+    };
+    const displayBeforeQuota = profileApi.localProfileResponse().profile.display_name;
+    await mirrorFailClient.safePatch("/wham/profiles/me", { requestBody: { display_name: "Server Truth" } });
+    assert.equal(
+      profileApi.localProfileResponse().profile.display_name,
+      displayBeforeQuota,
+      "a failed local mirror must not pretend the edit landed locally",
+    );
+    assert.equal(
+      profileApi.profileDataOverrideEnabledFor(realAccountCache),
+      false,
+      "after a failed mirror the session must stop overriding profile reads",
+    );
+    context.localStorage.setItem = originalSetItem;
+    const officialRead = await mirrorFailClient.safeGet("/wham/profiles/me");
+    assert.equal(officialRead.profile.display_name, "Server Truth", "reads fall back to the host data after degradation");
   })
 
   .catch((error) => {
