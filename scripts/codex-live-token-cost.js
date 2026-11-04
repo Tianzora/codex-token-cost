@@ -1311,21 +1311,46 @@ const VERSION = "0.8.1";
     return merged;
   }
 
+  // 迁移行的 turnId 可能是合成 ID（按天/模型聚合，或本地 fallback 的 local: 前缀），
+  // 与运行时 turn_id 永远对不上；这类行只要线程已有明细就必须让位，否则会重复计数。
+  function usageFactLegacySyntheticTurnId(turnId) {
+    const id = UTIL.normalizeText(turnId, 240);
+    if (!id) return false;
+    return ["analytics:", "local-archive:", "legacy-archive:", "today-local:", "today-ledger:", "codexpp-history:", "local:"].some(
+      (prefix) => id.startsWith(prefix),
+    );
+  }
+
   // 旧账本迁移出来的事实行是整轮聚合，不是逐响应记录；同一 turn 一旦有
   // rollout record，就必须让位，否则整轮聚合会叠加在逐响应明细之上。
-  // 粒度必须是 turn 而不是线程：旧线程只补到部分新响应时，未覆盖的旧轮次
-  // 仍然要计入权威口径，否则会从统计与冷备里整段消失。
+  // 粒度按 turn：旧线程只补到部分新响应时，未覆盖的旧轮次仍要计入权威口径；
+  // 但 legacy 与 rollout 的 turnId 不同源时，退回线程级让位，避免重复计数。
   function usageFactSupersededIds() {
     const records = Array.from(state.usageFacts.values());
-    const recordedTurns = new Set();
+    const detailTurns = new Map();
     for (const record of records) {
-      if (record.source === "legacy-migration" || !record.turnId) continue;
-      recordedTurns.add(`${record.threadId || ""}:${record.turnId}`);
+      if (record.source === "legacy-migration" || !record.threadId || !record.turnId) continue;
+      const turns = detailTurns.get(record.threadId) || new Set();
+      turns.add(record.turnId);
+      detailTurns.set(record.threadId, turns);
     }
-    const superseded = new Set();
+    const legacyByThread = new Map();
     for (const record of records) {
       if (record.source !== "legacy-migration" || !record.turnId) continue;
-      if (recordedTurns.has(`${record.threadId || ""}:${record.turnId}`)) superseded.add(record.responseId);
+      const threadId = record.threadId || "";
+      const list = legacyByThread.get(threadId) || [];
+      list.push(record);
+      legacyByThread.set(threadId, list);
+    }
+    const superseded = new Set();
+    for (const [threadId, legacyRecords] of legacyByThread) {
+      const detail = detailTurns.get(threadId);
+      if (!detail || !detail.size) continue;
+      for (const record of legacyRecords) {
+        // 命中同一 turn，或 turnId 本身就是运行时无法产生的合成聚合 ID：这行必须让位。
+        // 其余情况是「真实 turn ID 但本次还没同步到」，保留它才不会丢历史。
+        if (detail.has(record.turnId) || usageFactLegacySyntheticTurnId(record.turnId)) superseded.add(record.responseId);
+      }
     }
     return superseded;
   }

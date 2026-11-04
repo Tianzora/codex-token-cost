@@ -1567,6 +1567,35 @@ const metaLine = (threadId) =>
     assert.equal(api.usageFactAuthoritativeTotals().total, 150, "a legacy row is dropped once its own turn has rollout detail");
   }
 
+  // ==========================================================================
+  // A14. legacy rows whose turn ids do not align still yield per thread (no inflation)
+  // ==========================================================================
+  {
+    api.usageFactReset();
+    api.usageFactUpsert({
+      responseId: "legacy:local-turn:0:x",
+      threadId: "thread-local-id",
+      turnId: "local:turn-local",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "legacy-migration",
+    });
+    api.usageFactUpsert({
+      responseId: "resp_runtime_turn",
+      threadId: "thread-local-id",
+      turnId: "turn_runtime",
+      usage: { input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      observedAtMs: Date.now(),
+      source: "rollout_record",
+    });
+    assert.equal(api.usageFactTotals().total, 200, "the raw table keeps both rows");
+    assert.equal(
+      api.usageFactAuthoritativeTotals().total,
+      100,
+      "when turn ids do not align the legacy row must still yield, otherwise totals inflate",
+    );
+  }
+
   console.log("usage accuracy P0 tests passed");
 })().catch((error) => {
   console.error(error);
