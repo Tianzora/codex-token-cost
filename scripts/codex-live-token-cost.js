@@ -10918,10 +10918,9 @@ const VERSION = "0.8.1";
 
     const prefs = localProfilePrefs();
     const displayName = prefs.displayName || prefs.username || "Local Usage";
-    // Synthetic (API-key) mode: Codex itself now renders the avatar from the spoofed login identity.
-    // Leave its DOM untouched so size, wrapper and object-fit stay byte-identical to the official UI.
-    // In data-override mode the local avatar is still meant to replace a real ChatGPT photo.
-    const officialAvatar = dataOverride ? null : findOfficialProfileAvatarNode(button);
+    // 头像上传现在原样发往服务器，官方头像是唯一权威：只要官方节点还在就不注入本地图，
+    // 否则上传成功后侧栏会一直显示旧图。只有官方节点缺失时才回退到本地图/首字母。
+    const officialAvatar = findOfficialProfileAvatarNode(button);
     let snapshot = button.__codexLiveTokenCostProfileIdentity;
     if (!snapshot) {
       snapshot = {

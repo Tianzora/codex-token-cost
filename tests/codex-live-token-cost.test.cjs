@@ -814,6 +814,9 @@ assert.equal(code.includes('data-misc-field="profileUnlockEnabled"'), true);
 assert.equal(code.includes('localStorage.getItem(PROFILE_UNLOCK_ENABLED_KEY) === "true"'), true);
 // 头像上传不再被拦截：没有任何包装 client.post 的代码。
 assert.equal(code.includes('codexLiveTokenCostProfilePhotoPost'), false);
+// 头像上传不再拦截后，官方头像是唯一权威：有官方节点时不得用本地旧图覆盖。
+assert.equal(code.includes("const officialAvatar = findOfficialProfileAvatarNode(button);"), true);
+assert.equal(code.includes("const officialAvatar = dataOverride ? null : findOfficialProfileAvatarNode(button);"), false);
 assert.equal(code.includes('grid-template-columns: minmax(0, 1.55fr) minmax(0, .70fr) minmax(0, 1fr) minmax(0, .82fr) minmax(0, .82fr) minmax(0, 1.51fr);'), true);
 assert.equal(code.includes('grid-template-columns: minmax(0, 2.05fr) repeat(4, minmax(0, .755fr)) minmax(0, 1.20fr);'), true);
 assert.equal(code.includes('data-cltc-output-rate-visible="true"'), true);
